@@ -98,8 +98,9 @@
   "error": 0,                       // 非 0 时其余字段可能缺失
   "uid": 1002, "name": "xigu", "email": "a@b.com",
   "nick": "xigu", "desc": "", "sex": 0, "icon": ":/res/head_1.jpg",
-  "apply_list": [                   // 待处理的好友申请
-    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "status":0}
+  "apply_list": [                   // 申请记录，direction 区分方向
+    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "status":0,
+     "direction":0}                  // 0 别人申请我，1 我申请别人
   ],
   "friend_list": [                  // 好友列表
     {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "back":""}
@@ -122,7 +123,7 @@
 
 `applyname` 是申请留言（为空时服务端用默认句），`bakname` 是备注名。
 
-**1010 好友申请回执** `{error:int}`
+**1010 好友申请回执** `{error:int}` —— 非 0 表示申请没有写入，客户端保留输入并提示重试。
 
 **1011 好友申请通知** `{error, applyuid, name, desc, icon, sex, nick}`
 

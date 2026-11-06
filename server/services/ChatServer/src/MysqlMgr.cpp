@@ -58,6 +58,12 @@ bool MysqlMgr::GetApplyList(int touid,
 	return _dao.GetApplyList(touid, applyList, begin, limit);
 }
 
+bool MysqlMgr::GetSentApplyList(int from_uid,
+	std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit)
+{
+	return _dao.GetSentApplyList(from_uid, applyList, begin, limit);
+}
+
 bool MysqlMgr::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info)
 {
 	//调用数据库访问对象的GetFriendList方法, 将获取好友列表的请求转发给数据库访问对象处理

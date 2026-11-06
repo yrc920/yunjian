@@ -121,11 +121,13 @@ SessionService::SessionService() : _ready(false)
                 auto *mgr = UserMgr::GetInstance().get();
                 if (!mgr->CheckFriendById(info->_uid))
                     mgr->AddFriend(info);
+                // 对方通过了我的申请，我发出去的那条记录也跟着变成已通过
+                mgr->SetApplyStatus(info->_uid, 1, 1);
                 mgr->SetThreadId(info->_uid, info->_thread_id);
                 if (!info->_welcome_msgs.empty())
                     mgr->AppendFriendChatMsg(info->_uid, info->_welcome_msgs);
             });
-    connect(tcp, &TcpMgr::sig_auth_rsp, this, [](std::shared_ptr<AuthRsp> rsp) {
+    connect(tcp, &TcpMgr::sig_auth_rsp, this, [this](std::shared_ptr<AuthRsp> rsp) {
         if (!rsp)
             return;
         // 服务端确认通过后，申请条目从「添加」变成「已添加」
@@ -136,6 +138,8 @@ SessionService::SessionService() : _ready(false)
         mgr->SetThreadId(rsp->_uid, rsp->_thread_id);
         if (!rsp->_welcome_msgs.empty())
             mgr->AppendFriendChatMsg(rsp->_uid, rsp->_welcome_msgs);
+        // 好友和欢迎消息都已就位，这里再通知界面跳到会话
+        emit friendApproved(rsp->_uid);
     });
     connect(tcp, &TcpMgr::sig_con_success, this, &SessionService::onTcpConnected);
     connect(tcp, &TcpMgr::sig_login_failed, this, &SessionService::onChatLoginFailed);

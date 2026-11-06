@@ -43,13 +43,16 @@ public:
 };
 
 //好友申请信息数据结构
+//_direction 区分方向：0 别人申请我，1 我申请别人；两边都显示在「新的朋友」里
 struct ApplyInfo {
-    ApplyInfo(int uid, QString name, QString desc, QString icon, QString nick, int sex, int status) :
-        _uid(uid),_name(name),_desc(desc), _icon(icon),_nick(nick),_sex(sex),_status(status){}
+    ApplyInfo(int uid, QString name, QString desc, QString icon, QString nick, int sex, int status,
+              int direction = 0) :
+        _uid(uid),_name(name),_desc(desc), _icon(icon),_nick(nick),_sex(sex),_status(status),
+        _direction(direction){}
 
     ApplyInfo(std::shared_ptr<AddFriendApply> addinfo) : _uid(addinfo->_from_uid),
         _name(addinfo->_name), _desc(addinfo->_desc), _icon(addinfo->_icon),
-        _nick(addinfo->_nick),_sex(addinfo->_sex), _status(0) {}
+        _nick(addinfo->_nick),_sex(addinfo->_sex), _status(0), _direction(0) {}
 
     void SetIcon(QString head){ _icon = head; }
 
@@ -60,6 +63,7 @@ struct ApplyInfo {
     QString _nick;
     int _sex;
     int _status;
+    int _direction = 0;
 };
 
 struct TextChatData;

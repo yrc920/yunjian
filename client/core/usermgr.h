@@ -36,9 +36,12 @@ public:
 
     void AppendApplyList(QJsonArray array);
     void AppendFriendList(QJsonArray array);
-    bool AlreadyApply(int uid); //检查是否已经有来自指定用户ID的好友申请
-    void AddApplyList(std::shared_ptr<ApplyInfo> app); //添加好友申请到申请列表
-    void SetApplyStatus(int uid, int status); //更新某条申请的处理状态（0 待处理 / 1 已添加）
+    bool AlreadyApply(int uid); //是否已经收到这个人的好友申请
+    bool AlreadySentApply(int uid); //是否已经向这个人发过还未通过的申请
+    void AddApplyList(std::shared_ptr<ApplyInfo> app); //别人申请我，追加到申请列表
+    void AddSentApply(int uid, const QString &name, const QString &nick,
+                      const QString &icon, const QString &desc);
+    void SetApplyStatus(int uid, int status, int direction = 0); //0 待处理 / 1 已通过
     bool CheckFriendById(int uid); //检查指定用户ID是否是好友
     void AddFriend(std::shared_ptr<AuthRsp> auth_rsp);
     void AddFriend(std::shared_ptr<AuthInfo> auth_info);

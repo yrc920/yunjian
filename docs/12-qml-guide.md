@@ -35,7 +35,9 @@ core 不依赖 Gui/Quick；这一边界通过头文件依赖和代码审查维�
 | 头像编辑（弹层） | `qml/AvatarEditor.qml` | `ImageCropper` + `UserMgr::GetIcon` / `SetLocalAvatar` |
 | 申请添加好友（弹层） | `qml/FriendDialogs.qml` | `ChatBridge::applyTo` |
 | 验证申请（弹层） | `qml/FriendDialogs.qml` | `ChatBridge::authApply` |
-| 搜索结果（弹层） | `qml/FriendDialogs.qml` | `ChatBridge::searchState` |
+| 联系人页加好友浮层 | `qml/AddFriendPopover.qml` | `ChatBridge::addFriendOpen` / `searchState` / `applyState` |
+| 聊天页好友过滤 | `qml/FriendSearchPopup.qml` | `ChatBridge::friendQuery` / `friendMatches` |
+| 共用搜索输入 | `qml/SearchField.qml` | 无，查询由父页面决定 |
 | 根窗口 + 掉线提示 | `qml/Main.qml` | `ShellBridge` |
 
 界面共用 `Theme.qml` 的日夜语义色、`AppIcon.qml` 的 Canvas 操作图标、

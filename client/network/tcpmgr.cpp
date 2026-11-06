@@ -190,35 +190,18 @@ void TcpMgr::initHandlers()
     });
 
     //注册处理添加好友响应的消息处理函数
+    //失败回包同样要交给上层，界面才能提示“申请没有发出去”
     _handlers.insert(ID_ADD_FRIEND_RSP, [this](ReqId id, int len, QByteArray data) {
-        Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
+        Q_UNUSED(len);
         qDebug() << "handle id is " << id << " data is " << data;
 
-        QJsonDocument jsonDoc = QJsonDocument::fromJson(data); //将QByteArray转换为QJsonDocument
-
-        //检查转换是否成功
-        if (jsonDoc.isNull()) {
-            qDebug() << "Failed to create QJsonDocument.";
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            qDebug() << "Add Friend Rsp Failed, err is Json Parse Err";
+            emit sig_add_friend_rsp(QJsonObject{{QStringLiteral("error"), ErrorCodes::ERR_JSON}});
             return;
         }
-
-        QJsonObject jsonObj = jsonDoc.object(); //从QJsonDocument中提取QJsonObject
-
-        //如果JSON对象中不包含"error"字段，说明服务器返回的数据格式不正确
-        if (!jsonObj.contains("error")) {
-            int err = ErrorCodes::ERR_JSON; //定义一个错误码表示JSON解析错误
-            qDebug() << "Add Friend Failed, err is Json Parse Err" << err;
-            return;
-        }
-
-        int err = jsonObj["error"].toInt();
-        //如果服务器返回的错误码不为0，说明添加好友失败
-        if (err != ErrorCodes::SUCCESS) {
-            qDebug() << "Add Friend Failed, err is " << err;
-            return;
-        }
-
-        qDebug() << "Add Friend Success " ;
+        emit sig_add_friend_rsp(jsonDoc.object());
     });
 
     //注册处理添加好友申请通知的消息处理函数

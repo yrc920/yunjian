@@ -22,6 +22,7 @@ public:
         IconRole,
         DescRole,
         StatusRole,
+        DirectionRole, //0 别人申请我，1 我申请别人
     };
 
     explicit ApplyListModel(QObject *parent = nullptr);

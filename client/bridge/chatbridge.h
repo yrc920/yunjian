@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
@@ -24,8 +25,7 @@
  *   资料页「发消息」 → 回到会话页
  *
  * 同时托管：三个列表模型（会话与联系人共用一个好友模型，申请单独一个）、
- * 搜索状态机（搜到自己忽略、已是好友直接跳会话、陌生人交界面弹窗），
- * 以及发消息、加好友、同意申请的协议调用。
+ * 联系人页的加好友浮层状态、聊天页的好友过滤，以及发消息、加好友、同意申请的协议调用。
  */
 class ChatBridge : public QObject
 {
@@ -47,14 +47,26 @@ class ChatBridge : public QObject
     Q_PROPERTY(int searchState READ searchState NOTIFY searchStateChanged)
     Q_PROPERTY(QVariantMap searchResult READ searchResult NOTIFY searchResultChanged)
     Q_PROPERTY(QString searchMessage READ searchMessage NOTIFY searchStateChanged)
+    Q_PROPERTY(bool addFriendOpen READ addFriendOpen NOTIFY addFriendOpenChanged)
+    Q_PROPERTY(QString friendQuery READ friendQuery WRITE setFriendQuery NOTIFY friendQueryChanged)
+    Q_PROPERTY(QVariantList friendMatches READ friendMatches NOTIFY friendMatchesChanged)
+    Q_PROPERTY(int applyState READ applyState NOTIFY applyStateChanged)
+    Q_PROPERTY(QString applyMessage READ applyMessage NOTIFY applyStateChanged)
 
 public:
     //左侧栏目：会话 / 联系人 / 设置
     enum Mode { ChatMode = 0, ContactMode = 1, SettingsMode = 2 };
     //右侧页面取值与 QML 的 pane 判断一致
     enum Pane { EmptyPane = 0, ChatPage = 1, FriendInfoPage = 2, ApplyFriendPage = 3, UserInfoPage = 4 };
+    //联系人页加好友浮层的展示状态，QML 按这些名字切换结果区域
+    enum SearchState { SearchIdle = 0, SearchSearching, SearchStranger, SearchNotFound,
+                       SearchSelf, SearchAlreadyFriend, SearchAlreadyApplied };
+    //申请发送状态：浮层据此显示发送中、已发送和失败重试
+    enum ApplyState { ApplyIdle = 0, ApplySending, ApplySent, ApplyFailed };
     Q_ENUM(Mode)
     Q_ENUM(Pane)
+    Q_ENUM(SearchState)
+    Q_ENUM(ApplyState)
 
     explicit ChatBridge(QObject *parent = nullptr);
 
@@ -79,10 +91,26 @@ public:
     QString searchText() const { return _searchText; }
     void setSearchText(const QString &text);
 
-    // 搜索状态：0 空闲 / 1 搜索中 / 2 找到陌生人 / 3 没找到
+    // 加好友搜索状态，界面按 SearchState 枚举切换结果区域
     int searchState() const { return _searchState; }
     QVariantMap searchResult() const { return _searchResult; }
     QString searchMessage() const { return _searchMessage; }
+
+    // 联系人页的加好友浮层；打开时搜索框保持焦点
+    bool addFriendOpen() const { return _addFriendOpen; }
+    Q_INVOKABLE void openAddFriend();
+    Q_INVOKABLE void closeAddFriend();
+
+    // 聊天页的好友过滤：只匹配名字与昵称，不触发服务端搜索
+    QString friendQuery() const { return _friendQuery; }
+    void setFriendQuery(const QString &query);
+    QVariantList friendMatches() const { return _friendMatches; }
+    Q_INVOKABLE void clearFriendSearch();
+
+    // 申请发送状态：浮层显示「发送中 / 已发送 / 失败」
+    int applyState() const { return _applyState; }
+    QString applyMessage() const { return _applyMessage; }
+    Q_INVOKABLE void retryApply();
 
     //侧栏导航
     Q_INVOKABLE void showChatMode();
@@ -98,7 +126,9 @@ public:
     Q_INVOKABLE bool sendParts(const QVariantList &parts);
     Q_INVOKABLE void search();
     Q_INVOKABLE void clearSearch();
-    Q_INVOKABLE void applyTo(int uid, const QString &verify, const QString &remark);
+    // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录
+    Q_INVOKABLE void applyTo(int uid, const QString &name, const QString &nick,
+                             const QString &icon, const QString &verify, const QString &remark);
     Q_INVOKABLE void authApply(int uid, const QString &remark);
 
 signals:
@@ -110,10 +140,16 @@ signals:
     void searchTextChanged();
     void searchStateChanged();
     void searchResultChanged();
+    void addFriendOpenChanged();
+    void friendQueryChanged();
+    void friendMatchesChanged();
+    void applyStateChanged();
 
 private:
     void setMode(int mode);
     void setPane(int pane);
+    void rebuildFriendMatches();
+    void setApplyState(int state, const QString &message = {});
 
     FriendListModel *_friends = nullptr;
     ApplyListModel *_applies = nullptr;
@@ -126,9 +162,23 @@ private:
     int _currentUid = 0;
     QString _currentName;
     QString _searchText;
-    int _searchState = 0;
+    int _searchState = SearchIdle;
     QVariantMap _searchResult;
     QString _searchMessage;
+    QString _pendingQuery; // 本次在途搜索的关键词，用于丢弃改词后回来的旧结果
+    bool _addFriendOpen = false;
+    QString _friendQuery;
+    QVariantList _friendMatches;
+
+    // 最近一次申请的目标与文案，失败重试时原样再发
+    int _applyUid = 0;
+    QString _applyName;
+    QString _applyNick;
+    QString _applyIcon;
+    QString _applyVerify;
+    QString _applyRemark;
+    int _applyState = ApplyIdle;
+    QString _applyMessage;
 };
 
 #endif // CHATBRIDGE_H

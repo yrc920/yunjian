@@ -34,6 +34,9 @@ public:
 	//获取好友申请列表, 根据起始id和限制条数返回列表
 	bool GetApplyList(int touid,
 		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int offset, int limit);
+	//获取我发出的好友申请, 按申请id升序分页; 与收到方向分开展示
+	bool GetSentApplyList(int from_uid,
+		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int offset, int limit);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
 	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建; 非好友返回0
 	//按会话ID升序分页取会话列表, has_more 表示还有下一页

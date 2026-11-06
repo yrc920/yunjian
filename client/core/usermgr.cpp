@@ -116,8 +116,9 @@ void UserMgr::AppendApplyList(QJsonArray array)
         auto sex = value["sex"].toInt();
         auto uid = value["uid"].toInt();
         auto status = value["status"].toInt();
+        auto direction = value["direction"].toInt();
         //将好友申请信息封装成ApplyInfo对象的智能指针
-        auto info = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status);
+        auto info = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status, direction);
         _apply_list.push_back(info); //将好友申请信息添加到申请列表中
     }
 
@@ -147,10 +148,19 @@ void UserMgr::AppendFriendList(QJsonArray array) {
 bool UserMgr::AlreadyApply(int uid)
 {
     for(auto& apply: _apply_list){
-        //如果申请列表中已经存在来自指定用户ID的好友申请, 则返回true, 表示已经有好友申请
-        if(apply->_uid == uid){
+        //只统计别人申请我的方向；我发出去的申请不能拦住对方的新申请
+        if(apply->_uid == uid && apply->_direction == 0){
             return true;
         }
+    }
+    return false;
+}
+
+bool UserMgr::AlreadySentApply(int uid)
+{
+    for (auto &apply : _apply_list) {
+        if (apply->_uid == uid && apply->_direction == 1 && apply->_status == 0)
+            return true;
     }
     return false;
 }
@@ -162,10 +172,32 @@ void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
     emit ApplyListChanged();
 }
 
-void UserMgr::SetApplyStatus(int uid, int status)
+// 我发出的申请：同一个人只保留一条，重复申请时更新留言与状态
+void UserMgr::AddSentApply(int uid, const QString &name, const QString &nick,
+                           const QString &icon, const QString &desc)
 {
     for (auto &apply : _apply_list) {
-        if (apply->_uid != uid || apply->_status == status)
+        if (apply->_uid != uid || apply->_direction != 1)
+            continue;
+        emit ApplyListAboutToChange();
+        apply->_name = name;
+        apply->_nick = nick;
+        apply->_icon = icon;
+        apply->_desc = desc;
+        apply->_status = 0;
+        emit ApplyListChanged();
+        return;
+    }
+
+    emit ApplyListAboutToChange();
+    _apply_list.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, 0, 0, 1));
+    emit ApplyListChanged();
+}
+
+void UserMgr::SetApplyStatus(int uid, int status, int direction)
+{
+    for (auto &apply : _apply_list) {
+        if (apply->_uid != uid || apply->_direction != direction || apply->_status == status)
             continue;
         emit ApplyListAboutToChange();
         apply->_status = status;

@@ -36,6 +36,7 @@ signals:
     void connecting();                       // 开始连接，界面可显示进度
     void connectFailed(const QString &msg);  // 连接层面失败（超时 / 未连上）
     void sessionReady();                     // 长连接就绪，可以进入聊天界面
+    void friendApproved(int uid);            // 自己刚通过的好友申请，界面可进入会话
 
 private:
     SessionService();

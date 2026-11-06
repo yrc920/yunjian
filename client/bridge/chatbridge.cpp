@@ -20,42 +20,87 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     connect(friendService, &FriendService::userFound, this,
             [this](int uid, const QString &name, const QString &nick,
                    const QString &desc, const QString &icon, int) {
-                if (_searchState != 1)
+                if (_searchState != SearchSearching)
                     return;
-                // 搜到自己：没有意义，直接退掉搜索态
-                if (uid == UserMgr::GetInstance()->GetUid()) {
-                    clearSearch();
-                    return;
-                }
-
-                // 已经是好友：不弹「添加」，直接跳到这个人的会话
-                if (UserMgr::GetInstance()->CheckFriendById(uid)) {
-                    clearSearch();
-                    openChat(uid);
+                // 用户在等待期间改了关键词：这次结果已经过期，回到空闲让界面重新搜
+                if (_searchText.trimmed() != _pendingQuery) {
+                    _searchState = SearchIdle;
+                    _searchResult.clear();
+                    emit searchResultChanged();
+                    emit searchStateChanged();
                     return;
                 }
 
-                // 陌生人：把结果交给界面弹确认窗
+                // 结果统一留在浮层里展示，自己、已是好友都不再自动跳转
                 _searchResult = {{QStringLiteral("uid"), uid},
                                  {QStringLiteral("name"), name},
                                  {QStringLiteral("nick"), nick},
                                  {QStringLiteral("icon"), icon},
                                  {QStringLiteral("desc"), desc}};
-                _searchState = 2;
                 _searchMessage.clear();
+                if (uid == UserMgr::GetInstance()->GetUid()) {
+                    _searchState = SearchSelf;
+                    _searchMessage = tr("这是你自己的账号");
+                } else if (UserMgr::GetInstance()->CheckFriendById(uid)) {
+                    _searchState = SearchAlreadyFriend;
+                } else if (UserMgr::GetInstance()->AlreadySentApply(uid)) {
+                    _searchState = SearchAlreadyApplied;
+                } else {
+                    _searchState = SearchStranger;
+                }
                 emit searchResultChanged();
                 emit searchStateChanged();
             });
     connect(friendService, &FriendService::searchFailed, this,
             [this](const QString &message) {
-                if (_searchState != 1)
+                if (_searchState != SearchSearching)
                     return;
+                if (_searchText.trimmed() != _pendingQuery) {
+                    _searchState = SearchIdle;
+                    _searchResult.clear();
+                    emit searchResultChanged();
+                    emit searchStateChanged();
+                    return;
+                }
                 _searchResult.clear();
-                _searchState = 3;
+                _searchState = SearchNotFound;
                 _searchMessage = message;
                 emit searchResultChanged();
                 emit searchStateChanged();
             });
+
+    // 好友列表变化时，聊天页的过滤结果要跟着更新；没有查询词就不用算
+    auto *userMgr = UserMgr::GetInstance().get();
+    connect(userMgr, &UserMgr::FriendListChanged, this, [this] {
+        if (!_friendQuery.trimmed().isEmpty())
+            rebuildFriendMatches();
+    });
+    connect(userMgr, &UserMgr::FriendChatChanged, this, [this](int) {
+        if (!_friendQuery.trimmed().isEmpty())
+            rebuildFriendMatches();
+    });
+
+    // 申请回执：成功后把这条记录补进「新的朋友」，失败留在浮层里提示
+    connect(friendService, &FriendService::applyFinished, this,
+            [this](bool ok, const QString &message) {
+                if (_applyUid <= 0)
+                    return;
+                // 用户在等待期间换了搜索对象：记录照加，但不再改别人浮层的状态
+                const bool sameTarget = _searchResult.value(QStringLiteral("uid")).toInt() == _applyUid;
+                if (!ok) {
+                    if (sameTarget)
+                        setApplyState(ApplyFailed, message);
+                    return;
+                }
+                auto *mgr = UserMgr::GetInstance().get();
+                mgr->AddSentApply(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify);
+                if (sameTarget)
+                    setApplyState(ApplySent, tr("申请已发送，等待对方通过"));
+            });
+
+    // 我通过别人的申请后，服务端已经建好会话和欢迎消息，直接进入聊天
+    connect(SessionService::GetInstance().get(), &SessionService::friendApproved,
+            this, &ChatBridge::openChat);
 
     // 进入聊天界面时默认打开第一个会话，避免右侧一片空白
     if (_friends->rowCount() > 0) {
@@ -72,7 +117,7 @@ void ChatBridge::setSearchText(const QString &text)
     _searchText = text;
     emit searchTextChanged();
 
-    // 输入框被清空时顺手退出搜索态，弹窗和结果都要收掉
+    //输入框被清空时顺手回到空闲态，浮层里的旧结果一起收掉
     if (text.trimmed().isEmpty())
         clearSearch();
 }
@@ -80,16 +125,28 @@ void ChatBridge::setSearchText(const QString &text)
 void ChatBridge::search()
 {
     const QString text = _searchText.trimmed();
-    if (text.isEmpty() || _searchState == 1 || !SessionService::GetInstance()->isReady())
+    if (text.isEmpty() || _searchState == SearchSearching)
         return;
+    if (!SessionService::GetInstance()->isReady()) {
+        _searchResult.clear();
+        _searchState = SearchNotFound;
+        _searchMessage = tr("聊天服务尚未连接，请稍后再试");
+        emit searchResultChanged();
+        emit searchStateChanged();
+        return;
+    }
 
-    // 先切到「搜索中」，界面据此禁用重复回车
-    _searchState = 1;
+    // 先切到「搜索中」，界面据此禁用重复回车；旧结果同时清掉，避免闪一下上一个人
+    _pendingQuery = text;
+    _searchResult.clear();
+    _searchState = SearchSearching;
     _searchMessage.clear();
+    setApplyState(ApplyIdle);
+    emit searchResultChanged();
     emit searchStateChanged();
 
     if (!FriendService::GetInstance()->searchUser(text)) {
-        _searchState = 3;
+        _searchState = SearchNotFound;
         _searchMessage = tr("上一次搜索尚未结束，请稍后重试");
         emit searchStateChanged();
     }
@@ -97,21 +154,142 @@ void ChatBridge::search()
 
 void ChatBridge::clearSearch()
 {
-    if (_searchState == 0 && _searchResult.isEmpty() && _searchText.isEmpty())
+    if (_searchState == SearchIdle && _searchResult.isEmpty() && _searchText.isEmpty())
         return;
 
     _searchText.clear();
     _searchResult.clear();
     _searchMessage.clear();
-    _searchState = 0;
+    _pendingQuery.clear();
+    _searchState = SearchIdle;
+    setApplyState(ApplyIdle);
     emit searchTextChanged();
     emit searchResultChanged();
     emit searchStateChanged();
 }
 
-void ChatBridge::applyTo(int uid, const QString &verify, const QString &remark)
+// 打开加好友浮层；从聊天页过来时先落到联系人，右侧仍显示「新的朋友」
+void ChatBridge::openAddFriend()
 {
-    FriendService::GetInstance()->applyFriend(uid, verify, remark);
+    if (_mode != ContactMode) {
+        setMode(ContactMode);
+        setPane(ApplyFriendPage);
+    }
+    if (_addFriendOpen)
+        return;
+    setApplyState(ApplyIdle);
+    _addFriendOpen = true;
+    emit addFriendOpenChanged();
+}
+
+// 关闭浮层时把查询、结果和状态一起复位，下次打开从引导文案开始
+void ChatBridge::closeAddFriend()
+{
+    const bool wasOpen = _addFriendOpen;
+    _addFriendOpen = false;
+    clearSearch();
+    if (wasOpen)
+        emit addFriendOpenChanged();
+}
+
+// 聊天页过滤：只在本地好友数据里找，不发请求
+void ChatBridge::setFriendQuery(const QString &query)
+{
+    if (_friendQuery == query)
+        return;
+    _friendQuery = query;
+    emit friendQueryChanged();
+    rebuildFriendMatches();
+}
+
+void ChatBridge::clearFriendSearch()
+{
+    if (_friendQuery.isEmpty() && _friendMatches.isEmpty())
+        return;
+    _friendQuery.clear();
+    _friendMatches.clear();
+    emit friendQueryChanged();
+    emit friendMatchesChanged();
+}
+
+// 重建聊天页过滤结果：只读 UserMgr 的好友数据，不复制业务状态
+void ChatBridge::rebuildFriendMatches()
+{
+    QVariantList matches;
+    const QString query = _friendQuery.trimmed();
+    if (!query.isEmpty()) {
+        auto *mgr = UserMgr::GetInstance().get();
+        const int count = mgr->FriendCount();
+        for (int row = 0; row < count; ++row) {
+            auto info = mgr->FriendAt(row);
+            if (!info)
+                continue;
+            if (!info->_name.contains(query, Qt::CaseInsensitive)
+                && !info->_nick.contains(query, Qt::CaseInsensitive))
+                continue;
+
+            // 摘要与好友列表保持一致；图片消息只显示占位
+            QString lastText = info->_last_msg;
+            if (!info->_chat_thread->_chat_msgs.empty()) {
+                const auto &last = info->_chat_thread->_chat_msgs.back();
+                lastText = last->_imageSource.isEmpty()
+                    ? last->_msg_content : QStringLiteral("[图片]");
+            }
+            matches.append(QVariantMap{
+                {QStringLiteral("uid"), info->_uid},
+                {QStringLiteral("name"), info->_name},
+                {QStringLiteral("nick"), info->_nick},
+                {QStringLiteral("icon"), info->_icon},
+                {QStringLiteral("lastText"), lastText},
+            });
+        }
+    }
+    _friendMatches = matches;
+    emit friendMatchesChanged();
+}
+
+void ChatBridge::applyTo(int uid, const QString &name, const QString &nick,
+                         const QString &icon, const QString &verify, const QString &remark)
+{
+    if (uid <= 0)
+        return;
+    if (!SessionService::GetInstance()->isReady()) {
+        setApplyState(ApplyFailed, tr("聊天服务尚未连接，请稍后再试"));
+        return;
+    }
+
+    // 先交给协议层，确认真的发出去了再记下目标；失败时不覆盖上一次在途申请
+    if (!FriendService::GetInstance()->applyFriend(uid, verify, remark)) {
+        setApplyState(ApplyFailed, tr("上一次申请还在发送，请稍候"));
+        return;
+    }
+
+    _applyUid = uid;
+    _applyName = name;
+    _applyNick = nick;
+    _applyIcon = icon;
+    _applyVerify = verify;
+    _applyRemark = remark;
+    setApplyState(ApplySending, tr("正在发送申请…"));
+}
+
+void ChatBridge::retryApply()
+{
+    // 上一次根本没发出去：回到普通状态，让「添加到通讯录」重新走表单
+    if (_applyUid <= 0) {
+        setApplyState(ApplyIdle);
+        return;
+    }
+    applyTo(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify, _applyRemark);
+}
+
+void ChatBridge::setApplyState(int state, const QString &message)
+{
+    if (_applyState == state && _applyMessage == message)
+        return;
+    _applyState = state;
+    _applyMessage = message;
+    emit applyStateChanged();
 }
 
 void ChatBridge::authApply(int uid, const QString &remark)
@@ -154,7 +332,8 @@ QString ChatBridge::myUserName() const
 
 void ChatBridge::showChatMode()
 {
-    clearSearch();
+    closeAddFriend();
+    clearFriendSearch();
     setMode(ChatMode);
 
     // 有当前会话就回到会话页，没有就停在空态
@@ -163,7 +342,8 @@ void ChatBridge::showChatMode()
 
 void ChatBridge::showContactMode()
 {
-    clearSearch();
+    closeAddFriend();
+    clearFriendSearch();
     setMode(ContactMode);
 
     // 点「联系人」直接落在「新的朋友」，这是列表里第一个入口
@@ -172,7 +352,8 @@ void ChatBridge::showContactMode()
 
 void ChatBridge::showSettings()
 {
-    clearSearch();
+    closeAddFriend();
+    clearFriendSearch();
     setMode(SettingsMode);
     setPane(UserInfoPage);
 }
@@ -183,7 +364,8 @@ void ChatBridge::openChat(int uid)
     if (!info)
         return;
 
-    clearSearch();
+    closeAddFriend();
+    clearFriendSearch();
 
     _currentUid = uid;
     ChatService::GetInstance()->ensurePrivateChat(uid);
@@ -202,6 +384,8 @@ void ChatBridge::openProfile(int uid)
     auto info = UserMgr::GetInstance()->GetFriendById(uid);
     if (!info)
         return;
+
+    closeAddFriend();
 
     // 界面只认这一份快照，字段缺失时 QML 侧有兜底
     _profile = {
@@ -223,6 +407,7 @@ void ChatBridge::openProfile(int uid)
 
 void ChatBridge::openApplyList()
 {
+    closeAddFriend();
     setMode(ContactMode);
     setPane(ApplyFriendPage);
 }

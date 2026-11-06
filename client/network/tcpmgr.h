@@ -53,6 +53,7 @@ signals:
     void sig_login_failed(int); //登录失败的信号，参数为错误码
     void sig_user_search(std::shared_ptr<SearchInfo>); //用户搜索结果的信号
     void sig_friend_apply(std::shared_ptr<AddFriendApply>); //申请对方为好友的信号
+    void sig_add_friend_rsp(const QJsonObject &data); //1010 申请回执，失败也要交给界面判断
     void sig_add_auth_friend(std::shared_ptr<AuthInfo>); //对方同意好友申请的信号
     void sig_auth_rsp(std::shared_ptr<AuthRsp>); //同意好友申请的响应信号
     void sig_text_chat_msg(std::shared_ptr<TextChatMsg>); //收到文本消息的信号

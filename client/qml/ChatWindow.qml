@@ -11,9 +11,84 @@ Item {
     readonly property int indexWidth: 280
     readonly property int listHeaderHeight: 78
 
+    readonly property int friendCount: bridge.friends.count
+    readonly property int pendingCount: bridge.applies.pendingCount
+    readonly property int chatCount: bridge.friends.chatCount
+    // 联系人空态：没有好友也没有待处理申请时才显示引导卡
+    readonly property bool contactGuideVisible: bridge.mode === ChatBridge.ContactMode
+        && friendCount === 0 && pendingCount === 0
+    // 有好友或有申请时，列表顶部保留「新的朋友」入口
+    readonly property bool newFriendEntryVisible: bridge.mode === ChatBridge.ContactMode
+        && (friendCount > 0 || pendingCount > 0)
+    property bool functionMenuOpen: false
+
+    readonly property string emptyTitle: friendCount === 0
+        ? (pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理" : "还没有好友，先添加一位吧")
+        : (chatCount === 0 ? "还没有会话，去联系人看看" : "选一位朋友，聊聊吧")
+    readonly property string emptyAction: friendCount === 0
+        ? (pendingCount > 0 ? "去处理" : "添加朋友")
+        : (chatCount === 0 ? "去联系人" : "")
+
+    function handlePlus() {
+        if (bridge.mode === ChatBridge.ChatMode) {
+            functionMenuOpen = !functionMenuOpen
+            return
+        }
+        if (bridge.addFriendOpen) {
+            bridge.closeAddFriend()
+            return
+        }
+        bridge.openAddFriend()
+        Qt.callLater(addSearch.forceInputFocus)
+    }
+
+    function openAddFriendFromChat() {
+        functionMenuOpen = false
+        bridge.showContactMode()
+        bridge.openAddFriend()
+        Qt.callLater(addSearch.forceInputFocus)
+    }
+
+    function runEmptyAction() {
+        if (friendCount === 0) {
+            if (pendingCount > 0) {
+                bridge.openApplyList()
+            } else {
+                bridge.showContactMode()
+                bridge.openAddFriend()
+            }
+            return
+        }
+        // 有好友但没有会话：落到联系人列表，并打开第一位好友的资料页
+        const first = bridge.friends.get(0)
+        bridge.showContactMode()
+        if (first && first.uid)
+            bridge.openProfile(first.uid)
+    }
+
     ChatBridge {
         id: bridge
         objectName: "chatBridge"
+    }
+
+    // 输入框是命令式更新的：bridge 变化时同步文本，避免绑定被打断后清不掉
+    Connections {
+        target: bridge
+        function onSearchTextChanged() {
+            addSearch.setText(bridge.searchText)
+        }
+        function onFriendQueryChanged() {
+            chatSearch.setText(bridge.friendQuery)
+        }
+        function onModeChanged() {
+            root.functionMenuOpen = false
+        }
+        function onAddFriendOpenChanged() {
+            if (bridge.addFriendOpen)
+                Qt.callLater(addSearch.forceInputFocus)
+            else
+                addSearch.clearInputFocus()
+        }
     }
 
     Rectangle {
@@ -137,7 +212,7 @@ Item {
                 width: parent.width
                 height: root.listHeaderHeight
 
-                // 标题与统计随模式切换，右侧加号只负责把焦点交给搜索框
+                // 标题与统计随模式切换；加号在聊天页打开功能菜单，在联系人页打开加好友浮层
                 Text {
                     x: 22
                     y: 21
@@ -166,10 +241,10 @@ Item {
                     color: searchEntry.containsMouse || activeFocus ? Theme.selected : Theme.panelAlt
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
-                    Accessible.name: "搜索添加好友"
-                    Accessible.onPressAction: searchInput.forceActiveFocus()
-                    Keys.onSpacePressed: searchInput.forceActiveFocus()
-                    Keys.onReturnPressed: searchInput.forceActiveFocus()
+                    Accessible.name: bridge.mode === ChatBridge.ChatMode ? "更多功能" : "添加朋友"
+                    Accessible.onPressAction: root.handlePlus()
+                    Keys.onSpacePressed: root.handlePlus()
+                    Keys.onReturnPressed: root.handlePlus()
                     AppIcon {
                         anchors.centerIn: parent
                         name: "plus"
@@ -181,92 +256,94 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: searchInput.forceActiveFocus()
+                        onClicked: root.handlePlus()
                     }
                 }
             }
 
-            // 搜索用户名或 UID：输入只同步文本，回车才发出请求，Esc 清空
-            Rectangle {
-                id: searchBox
+            // 两种模式共用同一个输入位置：聊天页过滤好友，联系人页添加朋友
+            Item {
+                id: searchArea
                 x: 16
                 y: listHeader.height + 2
                 width: parent.width - 32
                 height: 38
-                radius: 7
-                color: searchInput.activeFocus ? Theme.fieldBg : Theme.panelAlt
-                border.width: 1
-                border.color: searchInput.activeFocus ? Theme.primary : "transparent"
 
-                AppIcon {
-                    x: 11
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: "search"
-                    size: 16
-                    color: Theme.textHint
+                SearchField {
+                    id: chatSearch
+                    anchors.fill: parent
+                    visible: bridge.mode === ChatBridge.ChatMode
+                    placeholder: "搜索好友"
+                    inputObjectName: "chatSearchInput"
+                    onTextEdited: (value) => bridge.friendQuery = value
+                    onAccepted: {
+                        if (bridge.friendMatches.length > 0)
+                            bridge.openChat(bridge.friendMatches[0].uid)
+                    }
+                    onEscapePressed: bridge.clearFriendSearch()
+                    onClearRequested: bridge.clearFriendSearch()
+                    onFocusGained: root.functionMenuOpen = false
                 }
-                TextInput {
-                    id: searchInput
-                    objectName: "searchInput"
-                    anchors.left: parent.left
-                    anchors.leftMargin: 35
-                    anchors.right: parent.right
-                    anchors.rightMargin: clearSearch.visible ? 32 : 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 28
-                    verticalAlignment: TextInput.AlignVCenter
-                    text: bridge.searchText
-                    font.pixelSize: 12
-                    color: Theme.textPrimary
-                    selectionColor: Theme.selected
-                    selectedTextColor: Theme.textPrimary
-                    clip: true
-                    selectByMouse: true
-                    activeFocusOnTab: true
-                    Accessible.name: "搜索用户名或 UID"
-                    onTextEdited: bridge.searchText = text
+                SearchField {
+                    id: addSearch
+                    anchors.fill: parent
+                    visible: bridge.mode === ChatBridge.ContactMode
+                    placeholder: "想找谁？"
+                    inputObjectName: "searchInput"
+                    onTextEdited: (value) => bridge.searchText = value
                     onAccepted: bridge.search()
-                    Keys.onEscapePressed: bridge.clearSearch()
+                    onEscapePressed: bridge.closeAddFriend()
+                    onClearRequested: bridge.clearSearch()
+                    onFocusGained: bridge.openAddFriend()
                 }
-                Text {
-                    x: 35
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: searchInput.length === 0 && !searchInput.inputMethodComposing
-                    text: "搜索用户名 / UID"
-                    color: Theme.textHint
-                    font.pixelSize: 12
+            }
+
+            // 聊天页好友过滤结果，浮在会话列表上方
+            FriendSearchPopup {
+                id: friendSearchPopup
+                visible: bridge.mode === ChatBridge.ChatMode && bridge.friendQuery.trim().length > 0
+                x: searchArea.x
+                y: searchArea.y + searchArea.height
+                width: searchArea.width
+                z: 24
+                controller: bridge
+                onAddFriendRequested: root.openAddFriendFromChat()
+            }
+
+            // 联系人页加好友浮层，搜索框仍是上面的输入框
+            AddFriendPopover {
+                id: addFriendPopover
+                visible: bridge.addFriendOpen
+                x: searchArea.x
+                y: searchArea.y + searchArea.height
+                width: searchArea.width
+                z: 24
+                controller: bridge
+                onApplyRequested: (uid, name) => dialogs.openApplyDialog(uid, name)
+                onRetryRequested: {
+                    bridge.clearSearch()
+                    addSearch.forceInputFocus()
                 }
-                Rectangle {
-                    id: clearSearch
-                    visible: searchInput.length > 0
-                    anchors.right: parent.right
-                    anchors.rightMargin: 5
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 26
-                    height: 26
-                    radius: 5
-                    color: clearArea.containsMouse || activeFocus ? Theme.selected : "transparent"
-                    activeFocusOnTab: visible
-                    Accessible.role: Accessible.Button
-                    Accessible.name: "清空搜索"
-                    Accessible.onPressAction: bridge.clearSearch()
-                    Keys.onSpacePressed: bridge.clearSearch()
-                    Keys.onReturnPressed: bridge.clearSearch()
-                    Keys.onEnterPressed: bridge.clearSearch()
-                    AppIcon {
-                        anchors.centerIn: parent
-                        name: "close"
-                        size: 13
-                        color: Theme.textSecondary
-                    }
-                    MouseArea {
-                        id: clearArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: bridge.clearSearch()
-                    }
-                }
+            }
+
+            // 浮层打开时，点列表空白处只负责收起，不触发下面的条目
+            MouseArea {
+                visible: bridge.addFriendOpen
+                anchors.top: searchArea.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                z: 20
+                onClicked: bridge.closeAddFriend()
+            }
+            MouseArea {
+                visible: bridge.mode === ChatBridge.ChatMode && bridge.friendQuery.trim().length > 0
+                anchors.top: searchArea.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                z: 20
+                onClicked: bridge.clearFriendSearch()
             }
 
             // 会话与联系人共用同一个好友模型；聊天模式下没有 thread_id 的条目高度为0，
@@ -275,25 +352,26 @@ Item {
                 id: friendsList
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: searchBox.bottom
+                anchors.top: searchArea.bottom
                 anchors.topMargin: 17
                 anchors.bottom: parent.bottom
                 clip: true
                 model: bridge.friends
                 spacing: 2
                 boundsBehavior: Flickable.StopAtBounds
+                visible: !root.contactGuideVisible
 
-                // 联系人模式在列表顶部固定「新的朋友」，未处理数量来自申请模型
+                // 联系人列表顶部固定「新的朋友」；没有好友但有申请时只显示这一行
                 header: Item {
                     width: friendsList.width
-                    height: bridge.mode === ChatBridge.ContactMode ? 94 : 0
-                    visible: bridge.mode === ChatBridge.ContactMode
+                    height: root.newFriendEntryVisible ? (root.friendCount > 0 ? 96 : 72) : 0
+                    visible: root.newFriendEntryVisible
 
                     Rectangle {
                         id: newFriendButton
                         x: 12
                         width: parent.width - 24
-                        height: 56
+                        height: 62
                         radius: 7
                         color: bridge.pane === ChatBridge.ApplyFriendPage ? Theme.selected
                                : (newFriendArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
@@ -301,7 +379,8 @@ Item {
                         border.color: activeFocus ? Theme.primary : "transparent"
                         activeFocusOnTab: visible
                         Accessible.role: Accessible.Button
-                        Accessible.name: "新的朋友"
+                        Accessible.name: root.pendingCount > 0
+                            ? "新的朋友，" + root.pendingCount + " 条申请待处理" : "新的朋友"
                         Accessible.onPressAction: bridge.openApplyList()
                         Keys.onSpacePressed: bridge.openApplyList()
                         Keys.onReturnPressed: bridge.openApplyList()
@@ -321,15 +400,31 @@ Item {
                                 color: Theme.primary
                             }
                         }
-                        Text {
+                        Column {
                             x: 58
+                            width: parent.width - 58 - 38
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "新的朋友"
-                            font.pixelSize: 14
-                            color: Theme.textPrimary
+                            spacing: 3
+                            Text {
+                                width: parent.width
+                                text: "新的朋友"
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                color: Theme.textPrimary
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                width: parent.width
+                                visible: root.pendingCount > 0
+                                text: root.pendingCount + " 条申请待处理"
+                                textFormat: Text.PlainText
+                                font.pixelSize: 10
+                                color: Theme.textSecondary
+                                elide: Text.ElideRight
+                            }
                         }
                         Rectangle {
-                            visible: bridge.applies.pendingCount > 0
+                            visible: root.pendingCount > 0
                             anchors.right: parent.right
                             anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
@@ -340,7 +435,7 @@ Item {
                             Text {
                                 id: pendingLabel
                                 anchors.centerIn: parent
-                                text: bridge.applies.pendingCount
+                                text: root.pendingCount
                                 font.pixelSize: 10
                                 color: Theme.primaryText
                             }
@@ -358,7 +453,8 @@ Item {
                     }
                     Text {
                         x: 22
-                        y: 71
+                        y: 74
+                        visible: root.friendCount > 0
                         text: "全部联系人"
                         font.pixelSize: 11
                         color: Theme.textHint
@@ -468,17 +564,73 @@ Item {
                 }
             }
 
-            // 空态按模式区分：聊天看真实会话数，联系人看好友总数
+            // 聊天列表没有会话时的轻提示；联系人空态由下面的引导卡承担
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                y: bridge.mode === ChatBridge.ContactMode ? 278 : 210
-                visible: bridge.mode === ChatBridge.ChatMode
-                    ? bridge.friends.chatCount === 0
-                    : bridge.friends.count === 0
-                text: bridge.mode === ChatBridge.ChatMode ? "还没有会话" : "还没有好友"
+                y: searchArea.y + searchArea.height + 54
+                visible: bridge.mode === ChatBridge.ChatMode && root.chatCount === 0
+                text: root.friendCount === 0 ? "还没有好友" : "还没有会话"
                 font.pixelSize: 12
                 color: Theme.textHint
             }
+
+            // 没有好友也没有待处理申请时，才显示这张引导卡
+            Rectangle {
+                id: contactGuide
+                visible: root.contactGuideVisible && !bridge.addFriendOpen
+                x: 16
+                y: searchArea.y + searchArea.height + 18
+                width: parent.width - 32
+                height: guideContent.implicitHeight + 36
+                radius: 10
+                color: Theme.panelAlt
+                border.width: 1
+                border.color: Theme.line
+
+                Column {
+                    id: guideContent
+                    x: 18
+                    y: 18
+                    width: parent.width - 36
+                    spacing: 10
+
+                    Rectangle {
+                        width: 36
+                        height: 36
+                        radius: 9
+                        color: Theme.primarySoft
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "contacts"
+                            size: 20
+                            color: Theme.primary
+                        }
+                    }
+                    Text {
+                        text: "通讯录还是空的"
+                        color: Theme.textPrimary
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        width: parent.width
+                        text: "搜个用户名或 ID，发去申请，通过了就能聊起来。"
+                        color: Theme.textSecondary
+                        font.pixelSize: 11
+                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    }
+                    AppButton {
+                        width: parent.width
+                        height: 36
+                        text: "添加朋友"
+                        onClicked: {
+                            bridge.openAddFriend()
+                            Qt.callLater(addSearch.forceInputFocus)
+                        }
+                    }
+                }
+            }
+
             Rectangle {
                 anchors.right: parent.right
                 width: 1
@@ -502,7 +654,8 @@ Item {
 
             Column {
                 anchors.centerIn: parent
-                spacing: 20
+                width: Math.min(360, parent.width - 80)
+                spacing: 18
                 visible: bridge.pane === ChatBridge.EmptyPane
                 PaperCompanion {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -511,10 +664,20 @@ Item {
                     compact: true
                 }
                 Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "选一位朋友，聊聊吧"
+                    width: parent.width
+                    text: root.emptyTitle
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     color: Theme.textSecondary
                     font.pixelSize: 14
+                }
+                AppButton {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 150
+                    height: 38
+                    visible: root.emptyAction.length > 0
+                    text: root.emptyAction
+                    onClicked: root.runEmptyAction()
                 }
             }
 
@@ -543,6 +706,7 @@ Item {
                 visible: bridge.pane === ChatBridge.ApplyFriendPage
                 applies: bridge.applies
                 onAuthRequested: (uid, name, desc) => dialogs.openAuthDialog(uid, name, desc)
+                onChatRequested: (uid) => bridge.openChat(uid)
             }
             UserInfoPage {
                 id: userInfoPage
@@ -550,6 +714,67 @@ Item {
                 visible: bridge.pane === ChatBridge.UserInfoPage
                 controller: bridge
                 onEditAvatarRequested: avatarEditor.chooseImage()
+            }
+        }
+    }
+
+    // 聊天页加号的功能菜单：挂在加号下方，向右甩开，超出的部分落在内容区
+    MouseArea {
+        visible: root.functionMenuOpen && bridge.mode === ChatBridge.ChatMode
+        x: root.sidebarWidth
+        y: 0
+        width: parent.width - root.sidebarWidth
+        height: parent.height
+        z: 28
+        onClicked: root.functionMenuOpen = false
+    }
+    Rectangle {
+        id: functionMenu
+        visible: root.functionMenuOpen && bridge.mode === ChatBridge.ChatMode
+        // 加号左边沿：面板宽减右边距和按钮宽，菜单从这里向右伸
+        x: root.sidebarWidth + root.indexWidth - 48
+        y: 58
+        width: 152
+        height: 44
+        radius: 8
+        color: Theme.panelBg
+        border.width: 1
+        border.color: Theme.line
+        z: 30
+
+        // 目前只有「加好友」一项；以后加群聊时在同一列追加条目即可
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 2
+            radius: 6
+            color: menuArea.containsMouse || activeFocus ? Theme.selected : "transparent"
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: "加好友"
+            Accessible.onPressAction: root.openAddFriendFromChat()
+            Keys.onSpacePressed: root.openAddFriendFromChat()
+            Keys.onReturnPressed: root.openAddFriendFromChat()
+            Row {
+                x: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 9
+                AppIcon {
+                    name: "user"
+                    size: 16
+                    color: Theme.primary
+                }
+                Text {
+                    text: "加好友"
+                    color: Theme.textPrimary
+                    font.pixelSize: 12
+                }
+            }
+            MouseArea {
+                id: menuArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openAddFriendFromChat()
             }
         }
     }

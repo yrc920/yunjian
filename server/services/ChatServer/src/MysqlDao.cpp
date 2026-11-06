@@ -381,6 +381,47 @@ bool MysqlDao::GetApplyList(int touid,
 	}
 }
 
+//我发出的申请: 对方是被申请人, 所以按 to_uid 关联用户资料
+bool MysqlDao::GetSentApplyList(int from_uid,
+	std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+
+	try {
+		auto res = con->_session->sql(
+			"select apply.to_uid, apply.status, user.name, user.nick, user.sex, apply.descs "
+			"from friend_apply as apply join user on apply.to_uid = user.uid where apply.from_uid = ? "
+			"and apply.id > ? order by apply.id ASC LIMIT ? ")
+			.bind(from_uid).bind(begin).bind(limit).execute();
+
+		auto row = res.fetchOne();
+		while (!row.isNull()) {
+			auto uid = row[0].get<int>();
+			auto status = row[1].get<int>();
+			auto name = row[2].get<std::string>();
+			auto nick = row[3].get<std::string>();
+			auto sex = row[4].get<int>();
+			auto desc = row[5].get<std::string>();
+			//desc 存的是我填的留言, 界面据此显示自己发出去的内容
+			applyList.push_back(std::make_shared<ApplyInfo>(uid, name, desc, "", nick, sex, status));
+			row = res.fetchOne();
+		}
+
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false;
+		std::cerr << "Mysqlx Error loading sent apply list: " << e.what() << std::endl;
+		return false;
+	}
+}
+
 bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info_list)
 {
 	auto con = pool_->getConnection();

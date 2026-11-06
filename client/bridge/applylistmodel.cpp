@@ -36,6 +36,7 @@ QVariant ApplyListModel::data(const QModelIndex &index, int role) const
     case IconRole: return info->_icon;
     case DescRole: return info->_desc;
     case StatusRole: return info->_status;
+    case DirectionRole: return info->_direction;
     default: return {};
     }
 }
@@ -50,17 +51,18 @@ QHash<int, QByteArray> ApplyListModel::roleNames() const
         {IconRole, "icon"},
         {DescRole, "desc"},
         {StatusRole, "status"},
+        {DirectionRole, "direction"},
     };
 }
 
-// 未处理的申请数量，侧栏红点用它
+// 只有别人申请我的未处理记录算待处理，我发出去的不占红点
 int ApplyListModel::pendingCount() const
 {
     int pending = 0;
     const int total = UserMgr::GetInstance()->ApplyCount();
     for (int row = 0; row < total; ++row) {
         auto info = UserMgr::GetInstance()->ApplyAt(row);
-        if (info && info->_status == 0)
+        if (info && info->_status == 0 && info->_direction == 0)
             ++pending;
     }
     return pending;
@@ -77,6 +79,7 @@ QVariantMap ApplyListModel::get(int row) const
         {QStringLiteral("icon"), data(idx, IconRole)},
         {QStringLiteral("desc"), data(idx, DescRole)},
         {QStringLiteral("status"), data(idx, StatusRole)},
+        {QStringLiteral("direction"), data(idx, DirectionRole)},
     };
 }
 

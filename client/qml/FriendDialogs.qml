@@ -2,7 +2,7 @@ import QtQuick
 import XiguChat
 
 // 好友表单共用一个弹层；标题和操作始终可见，内容按需滚动。
-// overlay 决定当前形态：apply 填写申请、auth 通过申请、found 展示搜索结果、notfound 提示未找到。
+// overlay 只有两种形态：apply 填写申请、auth 通过申请。
 FocusScope {
     id: root
     objectName: "friendDialogs"
@@ -11,6 +11,7 @@ FocusScope {
     property string overlay: ""
     property int pendingUid: 0
     property string pendingName: ""
+    property string pendingNick: ""
     property string pendingDesc: ""
     property string pendingIcon: ""
     // 常用标签只用于本次表单，不会提交到服务端
@@ -23,18 +24,11 @@ FocusScope {
     z: 10
     Keys.onEscapePressed: closeDialog()
 
-    // 标题与主按钮文案完全由 overlay 推导，模板里不再各写一套
-    readonly property string heading: overlay === "apply" ? "添加朋友"
-        : overlay === "auth" ? "通过好友申请"
-        : overlay === "found" ? "找到这位朋友" : "没有找到这个用户"
-    readonly property string actionText: overlay === "apply" ? "发送申请"
-        : overlay === "auth" ? "同意添加"
-        : overlay === "found" ? "添加到通讯录" : "知道了"
+    // 标题与主按钮文案由 overlay 推导，申请和通过共用一套骨架
+    readonly property string heading: overlay === "apply" ? "添加朋友" : "通过好友申请"
+    readonly property string actionText: overlay === "apply" ? "发送申请" : "同意添加"
 
-    // 搜索类弹层关闭时顺手退出搜索态，避免结果残留在输入框旁边
     function closeDialog() {
-        if (overlay === "found" || overlay === "notfound")
-            controller.clearSearch()
         overlay = ""
     }
 
@@ -60,6 +54,9 @@ FocusScope {
     function openApplyDialog(uid, name) {
         pendingUid = uid
         pendingName = name
+        pendingNick = controller.searchResult.nick || ""
+        pendingDesc = controller.searchResult.desc || ""
+        pendingIcon = controller.searchResult.icon || ""
         selectedTags = []
         verifyInput.text = defaultWelcome()
         applyRemarkInput.text = name
@@ -93,15 +90,12 @@ FocusScope {
     }
 
     function submit() {
-        if (overlay === "found") {
-            const uid = pendingUid
-            const name = pendingName
-            controller.clearSearch()
-            openApplyDialog(uid, name)
-        } else if (overlay === "apply") {
+        if (overlay === "apply") {
             // 留空就原样发空，由服务端回退到默认留言；不要在这里再补一次默认句
-            controller.applyTo(pendingUid, verifyInput.text.trim(),
+            controller.applyTo(pendingUid, pendingName, pendingNick, pendingIcon,
+                               verifyInput.text.trim(),
                                applyRemarkInput.text || pendingName)
+            // 浮层留在原地，由它显示「发送中 / 已发送 / 失败」
             overlay = ""
         } else if (overlay === "auth") {
             controller.authApply(pendingUid, authRemarkInput.text)
@@ -216,7 +210,6 @@ FocusScope {
                 Row {
                     width: parent.width
                     spacing: 14
-                    visible: root.overlay !== "notfound"
                     Avatar {
                         width: 52
                         height: 52
@@ -248,12 +241,12 @@ FocusScope {
 
                 Column {
                     width: parent.width
-                    visible: root.overlay === "found" || root.overlay === "auth"
+                    visible: root.overlay === "auth"
                     spacing: 16
                     Spacer { gap: 4 }
                     Text {
                         width: parent.width
-                        text: root.pendingDesc || (root.overlay === "auth" ? "请求添加你为好友" : "")
+                        text: root.pendingDesc || "请求添加你为好友"
                         textFormat: Text.PlainText
                         visible: text.length > 0
                         color: Theme.textSecondary
@@ -403,32 +396,6 @@ FocusScope {
                         onAccepted: root.submit()
                     }
                 }
-
-                Column {
-                    width: parent.width
-                    visible: root.overlay === "notfound"
-                    spacing: 18
-                    Rectangle {
-                        width: 48
-                        height: 48
-                        radius: 10
-                        color: Theme.panelAlt
-                        AppIcon {
-                            anchors.centerIn: parent
-                            name: "search"
-                            size: 23
-                            color: Theme.textSecondary
-                        }
-                    }
-                    Text {
-                        width: parent.width
-                        text: root.controller.searchMessage || "检查一下用户名或 ID，再试一次。"
-                        textFormat: Text.PlainText
-                        color: Theme.textSecondary
-                        font.pixelSize: Theme.fontBody
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    }
-                }
             }
         }
 
@@ -453,43 +420,15 @@ FocusScope {
                 width: parent.width - 56
                 spacing: 12
                 CodeButton {
-                    visible: root.overlay !== "notfound"
                     width: (parent.width - 12) / 2
                     text: "取消"
                     onClicked: root.closeDialog()
                 }
                 AppButton {
-                    width: root.overlay === "notfound" ? parent.width : (parent.width - 12) / 2
+                    width: (parent.width - 12) / 2
                     text: root.actionText
                     onClicked: root.submit()
                 }
-            }
-        }
-    }
-
-    // 搜索状态由 ChatBridge 推进：2 显示结果，3 显示未找到，回到 0 时收起弹层
-    Connections {
-        target: controller
-        function onSearchStateChanged() {
-            if (controller.searchState === 2) {
-                root.pendingUid = controller.searchResult.uid
-                root.pendingName = controller.searchResult.name || ""
-                root.pendingDesc = controller.searchResult.desc || ""
-                root.pendingIcon = controller.searchResult.icon || ""
-                root.overlay = "found"
-                content.contentY = 0
-                root.forceActiveFocus()
-            } else if (controller.searchState === 3) {
-                root.pendingUid = 0
-                root.pendingName = ""
-                root.pendingDesc = ""
-                root.pendingIcon = ""
-                root.overlay = "notfound"
-                content.contentY = 0
-                root.forceActiveFocus()
-            } else if (controller.searchState === 0
-                       && (root.overlay === "found" || root.overlay === "notfound")) {
-                root.overlay = ""
             }
         }
     }

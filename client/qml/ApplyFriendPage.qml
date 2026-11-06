@@ -7,6 +7,7 @@ Item {
 
     property var applies: null
     signal authRequested(int uid, string name, string desc)
+    signal chatRequested(int uid)
 
     Rectangle {
         anchors.fill: parent
@@ -100,7 +101,10 @@ Item {
                 }
                 Text {
                     width: parent.width
-                    text: model.desc.length > 0 ? model.desc : "请求添加你为好友"
+                    // 收到的申请显示对方留言；发出的申请显示自己的留言和等待状态
+                    text: model.direction === 1
+                        ? (model.desc.length > 0 ? "我：" + model.desc : "等待对方通过")
+                        : (model.desc.length > 0 ? model.desc : "请求添加你为好友")
                     textFormat: Text.PlainText
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSmall
@@ -119,9 +123,16 @@ Item {
 
                 AppButton {
                     anchors.fill: parent
-                    visible: model.status === 0
+                    visible: model.direction === 0 && model.status === 0
                     text: "添加"
                     onClicked: root.authRequested(model.uid, model.name, model.desc)
+                }
+                Text {
+                    anchors.centerIn: parent
+                    visible: model.direction === 1 && model.status === 0
+                    text: "等待验证"
+                    color: Theme.textHint
+                    font.pixelSize: Theme.fontSmall
                 }
                 Row {
                     anchors.centerIn: parent
@@ -133,7 +144,7 @@ Item {
                         color: Theme.textHint
                     }
                     Text {
-                        text: "已添加"
+                        text: model.direction === 1 ? "已通过" : "已添加"
                         color: Theme.textHint
                         font.pixelSize: Theme.fontSmall
                     }
@@ -145,6 +156,14 @@ Item {
                 width: parent.width - 20
                 height: 1
                 color: Theme.line
+            }
+
+            // 已通过的行整行可点，直接进入会话；待处理的行仍由右侧按钮负责
+            MouseArea {
+                anchors.fill: parent
+                enabled: model.status !== 0
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: root.chatRequested(model.uid)
             }
         }
     }

@@ -220,6 +220,9 @@ set(QML_FILES
     qml/Reset.qml
     qml/ChatWindow.qml
     qml/FriendDialogs.qml
+    qml/SearchField.qml
+    qml/AddFriendPopover.qml
+    qml/FriendSearchPopup.qml
     qml/ChatPage.qml
     qml/FriendInfoPage.qml
     qml/ApplyFriendPage.qml

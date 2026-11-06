@@ -234,7 +234,25 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 			obj["sex"] = apply->_sex;
 			obj["desc"] = apply->_desc;
 			obj["status"] = apply->_status;
+			obj["direction"] = 0; //别人申请我
 			rtvalue["apply_list"].append(obj); //将好友申请信息添加到Json值对象的apply_list数组中
+		}
+	}
+
+	//我发出去的申请同样下发, 客户端在「新的朋友」里显示等待验证
+	std::vector<std::shared_ptr<ApplyInfo>> sent_apply_list;
+	if (MysqlMgr::GetInstance()->GetSentApplyList(uid, sent_apply_list, 0, 10)) {
+		for (auto& apply : sent_apply_list) {
+			Json::Value obj;
+			obj["name"] = apply->_name;
+			obj["uid"] = apply->_uid;
+			obj["icon"] = apply->_icon;
+			obj["nick"] = apply->_nick;
+			obj["sex"] = apply->_sex;
+			obj["desc"] = apply->_desc;
+			obj["status"] = apply->_status;
+			obj["direction"] = 1; //我申请别人
+			rtvalue["apply_list"].append(obj);
 		}
 	}
 

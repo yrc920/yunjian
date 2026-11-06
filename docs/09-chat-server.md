@@ -191,8 +191,11 @@ flowchart TB
 
 1. 解析 `{uid, applyname, bakname, touid}`，`applyname` 是申请留言（为空时用默认句）；
 2. `MysqlMgr::AddFriendApply(uid, touid, welcome, bakname)`：把申请留言写 `friend_apply.descs`，备注写 `friend_apply.back_name`；重复申请用 `ON DUPLICATE KEY UPDATE` 覆盖；
-3. 查 `uip_<touid>`；
-4. 本实例 → 构造 1011 通知（`name` 是申请人资料名，`desc` 是申请留言）；跨实例 → `NotifyAddFriend`。
+3. 回 1010，`error` 表示申请是否已经落库；
+4. 查 `uip_<touid>`；
+5. 本实例 → 构造 1011 通知（`name` 是申请人资料名，`desc` 是申请留言）；跨实例 → `NotifyAddFriend`。
+
+登录回包的 `apply_list` 同时包含两个方向：`GetApplyList` 取别人申请我的，`GetSentApplyList` 取我发出去的，后者带 `direction=1`，客户端在「新的朋友」里显示为等待验证。
 
 ### 同意（1013）
 

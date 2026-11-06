@@ -26,6 +26,9 @@ public:
 	//获取好友申请列表, 根据起始id和限制条数返回列表
 	bool GetApplyList(int touid,
 		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit = 10);
+	//我发出的好友申请, 与收到的申请分方向展示
+	bool GetSentApplyList(int from_uid,
+		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit = 10);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
 	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建
 	//分页读取会话列表与消息, 具体语义见 MysqlDao 中同名方法
