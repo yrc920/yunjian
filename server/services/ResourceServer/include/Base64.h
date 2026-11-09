@@ -5,6 +5,6 @@
 #include <string>
 
 namespace base64 {
-std::string Encode(const std::string& input);
-bool Decode(const std::string& input, std::string& output);
+std::string Encode(const std::string& input); //标准Base64编码
+bool Decode(const std::string& input, std::string& output); //失败返回false，不产生半截数据
 }

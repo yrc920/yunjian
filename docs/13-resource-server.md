@@ -172,11 +172,14 @@
 `client/core/service/fileservice.{h,cpp}` 负责业务编排：
 
 - `UploadAvatar`：校验 PNG、计算 MD5，建立上传状态并启动第一片；
-- `OnSessionReady`：登录完成后拉取本机与好友缺失的头像，已有缓存直接使用；
-- 下载完成后，本机头像写回 `LocalAvatarPath`，好友头像写回
-  `AppDataLocation/avatars/cache/<网关哈希>/<uid>/<name>` 并刷新列表；
+- `OnSessionReady`：登录完成后拉取本机、好友与好友申请里缺失的头像，已有缓存直接使用；
+- 下载完成后，本机头像写回 `LocalAvatarPath`，好友/申请人头像写回
+  `AppDataLocation/avatars/cache/<网关哈希>/<uid>/<name>` 并刷新对应列表；
 - 新头像开始上传前取消本机旧头像的下载，避免服务端以 `seq=1` 截断文件后
   旧下载把本机头像覆盖成残缺内容。
+- 同一个 uid 可能同时出现在好友列表和「新的朋友」：`UserMgr::SetContactIcon` 会同时替换
+  `FriendInfo` 与 `ApplyInfo` 的 icon，并分别发出 `FriendIconChanged` / `ApplyIconChanged`，
+  列表模型只刷新对应行；好友申请的 icon 由 ChatServer 的申请列表 SQL 直接关联 `user.icon` 得到。
 
 个人资料页展示同步进度与「暂停/继续」按钮；同步失败不回滚本机头像，只显示错误码。
 

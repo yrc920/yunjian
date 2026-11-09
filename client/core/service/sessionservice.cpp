@@ -157,7 +157,7 @@ SessionService::SessionService() : _ready(false)
             _ready = false;
             _heartbeat.stop();
             UserMgr::GetInstance()->FailPendingMessages();
-            FileService::GetInstance()->CloseResource();
+            FileService::GetInstance()->CloseResource(); //聊天断开后资源连接也不保留
         }
     });
     connect(tcp, &TcpMgr::sig_notify_offline, this, [this] {
@@ -167,7 +167,7 @@ SessionService::SessionService() : _ready(false)
         }
         _ready = false;
         _heartbeat.stop();
-        FileService::GetInstance()->CloseResource();
+        FileService::GetInstance()->CloseResource(); //被顶下线后token已失效，资源服务也不能用
     });
 }
 
@@ -193,7 +193,7 @@ void SessionService::connectToChat(const ServerInfo &info)
 
     //聊天连接与资源连接并行建立；资源服务器不可用不应阻塞聊天登录
     TcpMgr::GetInstance()->ConnectToServer(info);
-    FileService::GetInstance()->ConnectToResource(info);
+    FileService::GetInstance()->ConnectToResource(info); //与聊天并行建连，不阻塞登录
 }
 
 // 主动结束会话：停心跳、停超时、断开连接
@@ -248,7 +248,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
         return;
     }
     auto *mgr = UserMgr::GetInstance().get();
-    mgr->SetToken(_pending.Token);
+    mgr->SetToken(_pending.Token); //资源服务器校验同一个utoken
     mgr->SetUserInfo(std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
         data["nick"].toString(), data["icon"].toString(), data["sex"].toInt()));
     mgr->AppendApplyList(data["apply_list"].toArray());
@@ -265,7 +265,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     _ready = true;
     _current = _pending;
     _heartbeat.start();
-    FileService::GetInstance()->OnSessionReady();
+    FileService::GetInstance()->OnSessionReady(); //登录完成后再补拉缺失头像
     emit sessionReady();
 }
 

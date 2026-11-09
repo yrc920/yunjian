@@ -195,7 +195,7 @@ flowchart TB
 4. 查 `uip_<touid>`；
 5. 本实例 → 构造 1011 通知（`name` 是申请人资料名，`desc` 是申请留言）；跨实例 → `NotifyAddFriend`。
 
-登录回包的 `apply_list` 同时包含两个方向：`GetApplyList` 取别人申请我的，`GetSentApplyList` 取我发出去的，后者带 `direction=1`，客户端在「新的朋友」里显示为等待验证。
+登录回包的 `apply_list` 同时包含两个方向：`GetApplyList` 取别人申请我的，`GetSentApplyList` 取我发出去的，后者带 `direction=1`，客户端在「新的朋友」里显示为等待验证。两条 SQL 都关联 `user` 表并取出 `user.icon`，申请人的头像变化后重新登录即可拿到新文件名，再由 ResourceServer 下载成本地缓存。
 
 ### 同意（1013）
 

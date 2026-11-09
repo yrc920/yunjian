@@ -11,7 +11,7 @@
  Target Server Version : 90704 (9.7.4)
  File Encoding         : 65001
 
- Date: 04/11/2026 22:08:21
+ Date: 09/11/2026 09:38:09
 */
 
 SET NAMES utf8mb4;
@@ -26,8 +26,8 @@ CREATE TABLE `chat_message` (
   `thread_id` bigint unsigned NOT NULL,
   `sender_id` int NOT NULL,
   `recv_id` int NOT NULL,
-  `client_msg_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `content` text COLLATE utf8mb4_unicode_ci NOT NULL,
+  `client_msg_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `status` tinyint unsigned NOT NULL DEFAULT '0',
@@ -91,8 +91,8 @@ CREATE TABLE `friend_apply` (
   `from_uid` int NOT NULL,
   `to_uid` int NOT NULL,
   `status` smallint NOT NULL DEFAULT '0',
-  `descs` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `back_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `descs` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `back_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `from_to_uid` (`from_uid`,`to_uid`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
@@ -109,7 +109,7 @@ COMMIT;
 DROP TABLE IF EXISTS `group_chat`;
 CREATE TABLE `group_chat` (
   `thread_id` bigint unsigned NOT NULL,
-  `group_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `group_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `owner_id` int NOT NULL DEFAULT '0',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`),
@@ -187,8 +187,8 @@ CREATE TABLE `user` (
 -- Records of user
 -- ----------------------------
 BEGIN;
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (1, 1001, '西故', '3099154616@qq.com', '$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8', 'xigu', '', 0, ':/res/head_1.jpg');
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (2, 1002, '霄宫', 'xigu920@163.com', '$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870', '烟花', '', 1, ':/res/head_1.jpg');
+INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (1, 1001, '西故', '3099154616@qq.com', '$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8', 'xigu', '', 0, '');
+INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (2, 1002, '霄宫', 'xigu920@163.com', '$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870', '烟花', '', 1, '');
 INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (3, 1003, 'test1', '123@123.com', '$argon2id$v=19$m=262144,t=3,p=1$UhGmcWrXNJq/tMMW6g0gAQ$3SzQ/AyU/+Y7Vb+byrI9At5yXz9imXbNcrmZ7W4HNCU', '', '', 0, '');
 INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (4, 1004, 'test2', '456@456.com', '$argon2id$v=19$m=262144,t=3,p=1$9plVfbgTD5bk1C99b6hlXA$jCdqshgcsz52get45glPtwwXX5zPjxEgbRs8rwcRAwk', '', '', 0, '');
 INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (5, 1005, 'test3', '789@789.com', '$argon2id$v=19$m=262144,t=3,p=1$a+JGv9GlxLHO9ZOZbK0Nmw$kU0hSeyL/bAy8YielfzDMq3nYs+pKfeeCUqRXRvaN7A', '', '', 0, '');

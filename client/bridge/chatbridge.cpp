@@ -308,27 +308,27 @@ QString ChatBridge::myIcon() const
 
 bool ChatBridge::avatarUploading() const
 {
-    return FileService::GetInstance()->IsUploading();
+    return FileService::GetInstance()->IsUploading(); //控制进度条显隐
 }
 
 bool ChatBridge::avatarUploadPaused() const
 {
-    return FileService::GetInstance()->IsPaused();
+    return FileService::GetInstance()->IsPaused(); //控制按钮文案
 }
 
 int ChatBridge::avatarProgress() const
 {
-    return FileService::GetInstance()->Progress();
+    return FileService::GetInstance()->Progress(); //0..100
 }
 
 QString ChatBridge::avatarMessage() const
 {
-    return FileService::GetInstance()->Message();
+    return FileService::GetInstance()->Message(); //“正在同步/暂停/失败”提示
 }
 
 void ChatBridge::toggleAvatarUpload()
 {
-    FileService::GetInstance()->ToggleUploadPaused();
+    FileService::GetInstance()->ToggleUploadPaused(); //暂停与继续共用
 }
 
 QVariantMap ChatBridge::myProfile() const

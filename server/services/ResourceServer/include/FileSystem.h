@@ -15,13 +15,13 @@ class FileSystem : public Singleton<FileSystem>
 public:
 	~FileSystem();
 
-	void PostUploadTask(std::shared_ptr<FileTask> task);
-	void PostDownloadTask(std::shared_ptr<DownloadTask> task);
-	void Stop();
+	void PostUploadTask(std::shared_ptr<FileTask> task); //按文件名分派到落盘线程
+	void PostDownloadTask(std::shared_ptr<DownloadTask> task); //按文件名分派到下载线程
+	void Stop(); //停止所有文件线程
 
 private:
 	FileSystem();
 
-	std::vector<std::shared_ptr<FileWorker>> _file_workers;
-	std::vector<std::shared_ptr<DownloadWorker>> _download_workers;
+	std::vector<std::shared_ptr<FileWorker>> _file_workers; //上传落盘
+	std::vector<std::shared_ptr<DownloadWorker>> _download_workers; //只读下载
 };

@@ -16,11 +16,11 @@ public:
 	DownloadWorker();
 	~DownloadWorker();
 
-	void PostTask(std::shared_ptr<DownloadTask> task);
-	void Stop();
+	void PostTask(std::shared_ptr<DownloadTask> task); //入队一个下载请求
+	void Stop(); //停止并join
 
 private:
-	void TaskCallback(std::shared_ptr<DownloadTask> task);
+	void TaskCallback(std::shared_ptr<DownloadTask> task); //按seq读一片并回调
 
 	std::thread _work_thread;
 	std::queue<std::shared_ptr<DownloadTask>> _task_que;

@@ -17,18 +17,18 @@ struct FileTask {
 		_md5(std::move(md5)), _seq(seq), _total_size(total_size), _trans_size(trans_size),
 		_last(last), _data(std::move(data)), _avatar(avatar), _callback(std::move(callback)) {}
 
-	std::shared_ptr<CSession> _session;
+	std::shared_ptr<CSession> _session; //回包时保持会话存活
 	int _uid;
-	std::string _path;
+	std::string _path; //已拼好的绝对/相对存储路径
 	std::string _name;
 	std::string _md5;
 	int _seq;
 	long long _total_size;
-	long long _trans_size;
+	long long _trans_size; //本片写完后应达到的偏移
 	int _last;
 	std::string _data; //Base64，解码和写盘都在文件线程完成
-	bool _avatar;
-	std::function<void(int)> _callback;
+	bool _avatar; //最后一片是否要写user.icon
+	std::function<void(int)> _callback; //写盘结果，只回错误码
 };
 
 struct DownloadTask {
@@ -43,5 +43,5 @@ struct DownloadTask {
 	std::string _path;
 	std::string _name;
 	int _seq;
-	Callback _callback;
+	Callback _callback; //error, Base64数据, 当前偏移, 总大小, 是否最后一片
 };

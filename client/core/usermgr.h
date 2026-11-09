@@ -47,7 +47,8 @@ public:
     void AddDownloadFile(std::shared_ptr<DownloadFileInfo> info);
     std::shared_ptr<DownloadFileInfo> GetDownloadFile(const QString &name);
     void RemoveDownloadFile(const QString &name);
-    void SetFriendIcon(int uid, const QString &icon); //下载完成后替换为本地缓存路径
+    //头像下载完成后同时替换好友列表与好友申请里的同一 uid，避免两个列表显示不同头像
+    void SetContactIcon(int uid, const QString &icon);
 
     void AppendApplyList(QJsonArray array);
     void AppendFriendList(QJsonArray array);
@@ -92,6 +93,7 @@ signals:
     void ApplyListChanged();         // 好友申请列表变化
     void FriendChatChanged(int uid); // 某个好友的消息变化
     void FriendIconChanged(int uid); // 好友头像下载完成，只刷新对应行
+    void ApplyIconChanged(int uid);  // 好友申请里同一个人头像变化，只刷新申请行
 
 private:
     UserMgr();

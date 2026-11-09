@@ -12,20 +12,20 @@
 class CServer : public std::enable_shared_from_this<CServer>
 {
 public:
-	CServer(boost::asio::io_context& io_context, short port);
+	CServer(boost::asio::io_context& io_context, short port); //绑定端口并挂第一个accept
 	~CServer();
 
-	void ClearSession(std::string session_id);
-	bool CheckValid(std::string session_id);
-	void Stop();
+	void ClearSession(std::string session_id); //断连时从会话表移除
+	bool CheckValid(std::string session_id); //读回调确认会话仍有效
+	void Stop(); //停accept并关闭所有会话
 
 private:
-	void HandleAccept(std::shared_ptr<CSession> session, const boost::system::error_code& error);
-	void StartAccept();
+	void HandleAccept(std::shared_ptr<CSession> session, const boost::system::error_code& error); //accept完成
+	void StartAccept(); //从IOContextPool取执行器挂下一个accept
 
 	short _port;
 	tcp::acceptor _acceptor;
-	std::map<std::string, std::shared_ptr<CSession>> _sessions;
-	std::mutex _mutex;
-	std::atomic<bool> _stopped{false};
+	std::map<std::string, std::shared_ptr<CSession>> _sessions; //会话ID -> 会话
+	std::mutex _mutex; //读写会话表都从这里过
+	std::atomic<bool> _stopped{false}; //停服后不再挂新的accept
 };

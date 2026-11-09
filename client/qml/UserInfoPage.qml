@@ -109,7 +109,7 @@ Item {
                 Accessible.name: text
             }
 
-            // 同步状态：上传中显示进度条与暂停按钮，完成后只留一行结果
+            // 同步状态一行文字：上传中显示进度提示，完成后显示“头像已同步”，失败显示错误码
             Text {
                 width: parent.width
                 topPadding: 6
@@ -120,6 +120,7 @@ Item {
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WordWrap
             }
+            // 进度条只在真正上传时出现；宽度按 0..100 的比例拉伸
             Rectangle {
                 width: parent.width
                 height: 4
@@ -134,6 +135,7 @@ Item {
                     Behavior on width { NumberAnimation { duration: 120 } }
                 }
             }
+            // 暂停只停止下一片，不取消已经在途的分片；继续时客户端会先向服务器同步进度
             AppButton {
                 width: 112
                 height: 36

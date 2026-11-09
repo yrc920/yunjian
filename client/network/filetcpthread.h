@@ -7,8 +7,8 @@
 class FileTcpThread
 {
 public:
-    FileTcpThread();
-    ~FileTcpThread();
+    FileTcpThread(); //创建资源网络线程并迁移FileTcpMgr
+    ~FileTcpThread(); //关连接、迁回主线程、join
     FileTcpThread(const FileTcpThread &) = delete;
     FileTcpThread &operator=(const FileTcpThread &) = delete;
 

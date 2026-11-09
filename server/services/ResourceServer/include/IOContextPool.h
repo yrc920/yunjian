@@ -21,7 +21,6 @@ public:
 	boost::asio::io_context& GetIOContext(); //按轮询取一个 io_context
 	void Stop(); //停止事件循环并回收线程
 	void StopAfterDrain(); //释放保活，处理完已投递回调后回收线程
-
 private:
 	explicit IOContextPool(std::size_t size = std::thread::hardware_concurrency());
 

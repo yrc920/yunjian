@@ -25,45 +25,47 @@ public:
     friend class Singleton<FileService>;
     ~FileService();
 
-    void ConnectToResource(const ServerInfo &info);
-    void CloseResource();
+    void ConnectToResource(const ServerInfo &info); //建立资源服务器连接
+    void CloseResource(); //退出登录/换账号时断开，并清理下载归属
     void OnSessionReady(); //聊天登录完成，可以拉取缺失头像
 
-    void UploadAvatar(const QString &path);
-    void SetUploadPaused(bool paused);
-    void ToggleUploadPaused();
+    void UploadAvatar(const QString &path); //裁剪器保存后的PNG路径
+    void SetUploadPaused(bool paused); //暂停/继续，继续时会先同步服务器进度
+    void ToggleUploadPaused(); //QML按钮用
 
-    bool IsUploading() const { return _uploading; }
-    bool IsPaused() const { return _paused; }
-    int Progress() const;
-    QString Message() const { return _message; }
+    bool IsUploading() const { return _uploading; } //是否显示进度条
+    bool IsPaused() const { return _paused; } //按钮文案用
+    int Progress() const; //0..100
+    QString Message() const { return _message; } //个人资料页提示
 
 signals:
+    //所有状态变化走同一个信号，QML 只绑四个只读属性，不直接认识上传细节
     void uploadStateChanged();
 
 private:
     FileService();
 
-    void TryStartResourceSync();
-    void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath);
-    void CancelOwnAvatarDownload();
-    void HandleUploadProgress(const QString &name, qint64 trans, qint64 total);
-    void HandleUploadFinished(const QString &name);
-    void HandleUploadFailed(const QString &name, int error);
-    void HandleDownloadFinished(const QString &name, const QString &path);
-    void HandleDownloadFailed(const QString &name, int error);
+    void TryStartResourceSync(); //连接与登录都完成后补拉头像
+    void CacheContactIcon(int uid, const QString &iconName); //查缓存或发起下载
+    void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath); //建下载状态
+    void CancelOwnAvatarDownload(); //上传前取消本机旧头像下载
+    void HandleUploadProgress(const QString &name, qint64 trans, qint64 total); //更新进度
+    void HandleUploadFinished(const QString &name); //收尾
+    void HandleUploadFailed(const QString &name, int error); //结束并提示
+    void HandleDownloadFinished(const QString &name, const QString &path); //写回好友/申请/本机
+    void HandleDownloadFailed(const QString &name, int error); //删半截缓存
 
-    bool _connected = false;
-    bool _sessionReady = false;
-    bool _resourceConfigured = false;
-    bool _uploading = false;
-    bool _paused = false;
-    QString _uploadMd5;
-    QString _uploadName;
-    QString _message;
-    qint64 _trans_size = 0;
-    qint64 _total_size = 0;
-    QMap<QString, int> _download_owners; //资源名 -> 头像属于谁
+    bool _connected = false; //资源服务器TCP是否已连上
+    bool _sessionReady = false; //聊天登录是否已完成，两个条件都满足才开始拉头像
+    bool _resourceConfigured = false; //服务端是否下发了res_host/res_port
+    bool _uploading = false; //是否有头像正在同步（暂停时仍为true）
+    bool _paused = false; //用户是否点了暂停
+    QString _uploadMd5; //当前上传的资源名，暂停续传和失败清理都要用
+    QString _uploadName; //md5.png，显示提示与日志用
+    QString _message; //个人资料页展示的同步状态
+    qint64 _trans_size = 0; //服务器已确认落盘的字节数
+    qint64 _total_size = 0; //本次头像总大小
+    QMap<QString, int> _download_owners; //资源名 -> 头像属于谁，回包后更新对应联系人
 };
 
 #endif // FILESERVICE_H

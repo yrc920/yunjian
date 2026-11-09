@@ -16,12 +16,12 @@ public:
 	FileWorker();
 	~FileWorker();
 
-	void PostTask(std::shared_ptr<FileTask> task);
-	void Stop();
+	void PostTask(std::shared_ptr<FileTask> task); //入队一个分片
+	void Stop(); //停止并join
 
 private:
-	void TaskCallback(std::shared_ptr<FileTask> task);
-	void UpdateAvatarInfo(int uid, const std::string& name);
+	void TaskCallback(std::shared_ptr<FileTask> task); //解码、写盘、推进进度
+	void UpdateAvatarInfo(int uid, const std::string& name); //最后一片写user.icon与缓存
 
 	std::thread _work_thread;
 	std::queue<std::shared_ptr<FileTask>> _task_que;

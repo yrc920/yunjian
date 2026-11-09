@@ -6,8 +6,9 @@
 
 LogicSystem::LogicSystem()
 {
+	//逻辑线程数固定：每个worker有自己的队列和线程，不与其他worker共享锁
 	for (int i = 0; i < LOGIC_WORKER_COUNT; ++i)
-		_workers.push_back(std::make_shared<LogicWorker>());
+		_workers.push_back(std::make_shared<LogicWorker>()); //启动即建线程
 }
 
 LogicSystem::~LogicSystem()
@@ -15,27 +16,26 @@ LogicSystem::~LogicSystem()
 	Stop();
 }
 
-//同一会话固定落到同一逻辑线程，避免同一连接的多片请求并发处理
 void LogicSystem::PostMsgToQue(std::shared_ptr<LogicNode> msg)
 {
 	if (_workers.empty() || !msg || !msg->_session)
-		return;
-	auto index = std::hash<std::string>{}(msg->_session->GetSessionId()) % _workers.size();
-	_workers[index]->PostTask(std::move(msg));
+		return; //没有worker或消息不完整
+	auto index = std::hash<std::string>{}(msg->_session->GetSessionId()) % _workers.size(); //同一会话固定同一线程
+	_workers[index]->PostTask(std::move(msg)); //入该线程队列
 }
 
 void LogicSystem::Stop()
 {
 	for (auto& worker : _workers)
-		worker->Stop();
+		worker->Stop(); //重复调用安全
 }
 
 void LogicSystem::AddFileInfo(std::shared_ptr<FileInfo> info)
 {
 	if (!info)
 		return;
-	std::lock_guard<std::mutex> lock(_file_mtx);
-	_file_infos[info->_md5] = std::move(info);
+	std::lock_guard<std::mutex> lock(_file_mtx); //多个逻辑线程与文件线程共用
+	_file_infos[info->_md5] = std::move(info); //seq=1时覆盖旧记录
 }
 
 std::shared_ptr<FileInfo> LogicSystem::GetFileInfo(const std::string& md5)
@@ -43,7 +43,7 @@ std::shared_ptr<FileInfo> LogicSystem::GetFileInfo(const std::string& md5)
 	std::lock_guard<std::mutex> lock(_file_mtx);
 	auto iter = _file_infos.find(md5);
 	if (iter == _file_infos.end())
-		return nullptr;
+		return nullptr; //内存里没有，调用方再走LoadFileInfo
 	return iter->second;
 }
 
@@ -52,7 +52,7 @@ bool LogicSystem::LoadFileInfo(const std::string& md5, std::shared_ptr<FileInfo>
 	{
 		std::lock_guard<std::mutex> lock(_file_mtx);
 		auto iter = _file_infos.find(md5);
-		if (iter != _file_infos.end()) {
+		if (iter != _file_infos.end()) { //优先内存
 			info = iter->second;
 			return true;
 		}
@@ -60,27 +60,28 @@ bool LogicSystem::LoadFileInfo(const std::string& md5, std::shared_ptr<FileInfo>
 
 	std::string value;
 	if (!RedisMgr::GetInstance()->Get(FILE_INFO_PREFIX + md5, value))
-		return false;
+		return false; //Redis也没有这次传输
 
 	Json::Reader reader;
 	Json::Value root;
 	if (!reader.parse(value, root) || !root.isObject())
-		return false;
+		return false; //坏数据按没有进度处理
 
 	auto loaded = std::make_shared<FileInfo>();
-	loaded->_md5 = md5;
-	loaded->_file_path = root["file_path"].asString();
-	loaded->_name = root["name"].asString();
-	loaded->_uid = root["uid"].asInt();
-	loaded->_seq = root["seq"].asInt();
-	loaded->_total_size = root["total_size"].asInt64();
-	loaded->_trans_size = root["trans_size"].asInt64();
-	loaded->_avatar = root["avatar"].asBool();
+	loaded->_md5 = md5; //键本身就是md5
+	loaded->_file_path = root["file_path"].asString(); //首次上传时确定的路径
+	loaded->_name = root["name"].asString(); //文件名
+	loaded->_uid = root["uid"].asInt(); //归属用户
+	loaded->_seq = root["seq"].asInt(); //最后落盘分片
+	loaded->_total_size = root["total_size"].asInt64(); //总大小
+	loaded->_trans_size = root["trans_size"].asInt64(); //已落盘大小
+	loaded->_avatar = root["avatar"].asBool(); //是否头像
 
+	//字段不完整说明 Redis 里是坏数据，按没有进度处理，客户端会从第一片重来
 	if (loaded->_name.empty() || loaded->_file_path.empty() || loaded->_uid <= 0)
 		return false;
 
-	AddFileInfo(loaded);
+	AddFileInfo(loaded); //写回内存，后续分片不再查Redis
 	info = std::move(loaded);
 	return true;
 }
@@ -91,24 +92,24 @@ void LogicSystem::SaveFileInfo(const std::shared_ptr<FileInfo>& info)
 		return;
 
 	Json::Value root;
-	root["file_path"] = info->_file_path;
-	root["name"] = info->_name;
-	root["uid"] = info->_uid;
-	root["seq"] = info->_seq;
-	root["total_size"] = Json::Int64(info->_total_size);
-	root["trans_size"] = Json::Int64(info->_trans_size);
-	root["avatar"] = info->_avatar;
+	root["file_path"] = info->_file_path; //续传时沿用首次路径
+	root["name"] = info->_name; //文件名
+	root["uid"] = info->_uid; //归属用户
+	root["seq"] = info->_seq; //已落盘分片
+	root["total_size"] = Json::Int64(info->_total_size); //总大小
+	root["trans_size"] = Json::Int64(info->_trans_size); //已落盘大小
+	root["avatar"] = info->_avatar; //是否头像
 
 	if (!RedisMgr::GetInstance()->SetExp(FILE_INFO_PREFIX + info->_md5,
-		root.toStyledString(), FILE_INFO_EXPIRE)) {
+		root.toStyledString(), FILE_INFO_EXPIRE)) { //一小时过期
 		std::cerr << "save file progress to redis failed, md5: " << info->_md5 << std::endl;
 	}
 
-	AddFileInfo(info);
+	AddFileInfo(info); //内存与Redis保持一致
 }
 
 void LogicSystem::RemoveFileInfo(const std::string& md5)
 {
 	std::lock_guard<std::mutex> lock(_file_mtx);
-	_file_infos.erase(md5);
+	_file_infos.erase(md5); //只删内存，Redis留作最后同步
 }

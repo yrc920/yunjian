@@ -7,8 +7,8 @@
 class TcpThread
 {
 public:
-    TcpThread();
-    ~TcpThread();
+    TcpThread(); //创建线程并迁移TcpMgr
+    ~TcpThread(); //关连接、迁回主线程、join
     TcpThread(const TcpThread &) = delete;
     TcpThread &operator=(const TcpThread &) = delete;
 

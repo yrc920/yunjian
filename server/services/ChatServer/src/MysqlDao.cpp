@@ -351,8 +351,9 @@ bool MysqlDao::GetApplyList(int touid,
 		});
 
 	try {
-		//执行查询语句, 根据起始id和限制条数返回列表
-		auto res = con->_session->sql("select apply.from_uid, apply.status, user.name, user.nick, user.sex, apply.descs "
+		//申请列表直接关联用户表取当前资料，头像必须一起查，
+		//否则申请人换了头像后「新的朋友」仍只能显示空图标
+		auto res = con->_session->sql("select apply.from_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs "
 			"from friend_apply as apply join user on apply.from_uid = user.uid where apply.to_uid = ? "
 			"and apply.id > ? order by apply.id ASC LIMIT ? ")
 			.bind(touid).bind(begin).bind(limit).execute();
@@ -365,9 +366,10 @@ bool MysqlDao::GetApplyList(int touid,
 			auto status = row[1].get<int>();
 			auto nick = row[3].get<std::string>();
 			auto sex = row[4].get<int>();
-			auto desc = row[5].get<std::string>();
+			auto icon = row[5].get<std::string>();
+			auto desc = row[6].get<std::string>();
 			//将查询结果中的好友申请信息封装成ApplyInfo对象
-			auto apply_ptr = std::make_shared<ApplyInfo>(uid, name, desc, "", nick, sex, status);
+			auto apply_ptr = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status);
 			applyList.push_back(apply_ptr); //将查询结果中的好友申请信息存储在applyList中
 			row = res.fetchOne();
 		}
@@ -394,8 +396,9 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 		});
 
 	try {
+		//我发出的申请展示的是对方头像，同样要取 user.icon
 		auto res = con->_session->sql(
-			"select apply.to_uid, apply.status, user.name, user.nick, user.sex, apply.descs "
+			"select apply.to_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs "
 			"from friend_apply as apply join user on apply.to_uid = user.uid where apply.from_uid = ? "
 			"and apply.id > ? order by apply.id ASC LIMIT ? ")
 			.bind(from_uid).bind(begin).bind(limit).execute();
@@ -407,9 +410,10 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 			auto name = row[2].get<std::string>();
 			auto nick = row[3].get<std::string>();
 			auto sex = row[4].get<int>();
-			auto desc = row[5].get<std::string>();
+			auto icon = row[5].get<std::string>();
+			auto desc = row[6].get<std::string>();
 			//desc 存的是我填的留言, 界面据此显示自己发出去的内容
-			applyList.push_back(std::make_shared<ApplyInfo>(uid, name, desc, "", nick, sex, status));
+			applyList.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status));
 			row = res.fetchOne();
 		}
 

@@ -7,7 +7,7 @@
 #include "CSession.h"
 
 namespace resource {
-void HandleUpload(std::shared_ptr<CSession> session, const std::string& data, bool avatar);
-void HandleSync(std::shared_ptr<CSession> session, const std::string& data);
-void HandleDownload(std::shared_ptr<CSession> session, const std::string& data);
+void HandleUpload(std::shared_ptr<CSession> session, const std::string& data, bool avatar); //上传一片
+void HandleSync(std::shared_ptr<CSession> session, const std::string& data); //查询已落盘进度
+void HandleDownload(std::shared_ptr<CSession> session, const std::string& data); //下载一片
 }

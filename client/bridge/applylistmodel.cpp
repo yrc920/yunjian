@@ -9,6 +9,18 @@ ApplyListModel::ApplyListModel(QObject *parent) : QAbstractListModel(parent)
             this, [this] { beginResetModel(); });
     connect(UserMgr::GetInstance().get(), &UserMgr::ApplyListChanged,
             this, &ApplyListModel::onApplyListChanged);
+    // 头像下载完成只换这一行的 icon，不整表重置，申请列表不会闪
+    connect(UserMgr::GetInstance().get(), &UserMgr::ApplyIconChanged,
+            this, [this](int uid) {
+                const int total = UserMgr::GetInstance()->ApplyCount(); //当前申请条数
+                for (int row = 0; row < total; ++row) { //同一个uid可能同时出现在收/发两行
+                    auto info = UserMgr::GetInstance()->ApplyAt(row);
+                    if (!info || info->_uid != uid)
+                        continue; //不是这次更新的申请人，跳过
+                    const QModelIndex idx = index(row, 0);
+                    emit dataChanged(idx, idx, {IconRole}); //只刷icon角色，QML会重新取图
+                }
+            });
 }
 
 // 行数取 UserMgr 的申请条数

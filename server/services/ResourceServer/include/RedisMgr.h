@@ -18,13 +18,13 @@ class RedisMgr : public Singleton<RedisMgr>,
 public:
 	~RedisMgr();
 
-	bool Get(const std::string& key, std::string& value);
-	bool Set(const std::string& key, const std::string& value);
+	bool Get(const std::string& key, std::string& value); //读字符串
+	bool Set(const std::string& key, const std::string& value); //写字符串
 	//写入并设置过期秒数，续传进度需要自动过期
 	bool SetExp(const std::string& key, const std::string& value, int expire_seconds);
-	bool Del(const std::string& key);
+	bool Del(const std::string& key); //删除键
 
-	void Close();
+	void Close(); //停止连接池，释放空闲连接
 
 private:
 	RedisMgr();

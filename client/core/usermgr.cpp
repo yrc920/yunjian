@@ -70,7 +70,7 @@ int UserMgr::GetUid()
 void UserMgr::SetToken(const QString &token)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    _token = token;
+    _token = token; //资源服务器复用聊天登录下发的token
 }
 
 QString UserMgr::GetToken() const
@@ -128,8 +128,8 @@ QString UserMgr::GetIcon() const
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (!_user_info)
-        return {};
-    return _localIcon.isEmpty() ? _user_info->_icon : _localIcon;
+        return {}; //还没登录
+    return _localIcon.isEmpty() ? _user_info->_icon : _localIcon; //本机优先，缺失回落服务端
 }
 
 //只更新内存中的显示头像；写盘由裁剪器完成，失败时不发布变更
@@ -152,7 +152,7 @@ void UserMgr::AddUploadFile(std::shared_ptr<UploadFileInfo> info)
     if (!info || info->_md5.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    _uploads[info->_md5] = std::move(info);
+    _uploads[info->_md5] = std::move(info); //回包按md5查，重复上传覆盖旧状态
 }
 
 std::shared_ptr<UploadFileInfo> UserMgr::GetUploadFile(const QString &md5)
@@ -166,13 +166,13 @@ void UserMgr::RemoveUploadFile(const QString &md5)
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     _uploads.remove(md5);
     if (_uploads.isEmpty())
-        _upload_paused = false;
+        _upload_paused = false; //没有在途任务，暂停标志复位
 }
 
 void UserMgr::SetUploadPaused(bool paused)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    _upload_paused = paused;
+    _upload_paused = paused; //只改标志，已在途的分片仍会回包
 }
 
 bool UserMgr::UploadPaused() const
@@ -186,7 +186,7 @@ void UserMgr::AddDownloadFile(std::shared_ptr<DownloadFileInfo> info)
     if (!info || info->_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    _downloads[info->_name] = std::move(info);
+    _downloads[info->_name] = std::move(info); //同名资源只下载一次
 }
 
 std::shared_ptr<DownloadFileInfo> UserMgr::GetDownloadFile(const QString &name)
@@ -198,17 +198,33 @@ std::shared_ptr<DownloadFileInfo> UserMgr::GetDownloadFile(const QString &name)
 void UserMgr::RemoveDownloadFile(const QString &name)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    _downloads.remove(name);
+    _downloads.remove(name); //完成或失败都必须移除，否则同名资源不会再重试
 }
 
-void UserMgr::SetFriendIcon(int uid, const QString &icon)
+void UserMgr::SetContactIcon(int uid, const QString &icon)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
+    bool friend_changed = false; //好友列表是否有变化
+    bool apply_changed = false; //申请列表是否有变化
+
     auto iter = _friend_map.find(uid);
-    if (iter == _friend_map.end() || iter.value()->_icon == icon)
-        return;
-    iter.value()->_icon = icon;
-    emit FriendIconChanged(uid);
+    if (iter != _friend_map.end() && iter.value()->_icon != icon) {
+        iter.value()->_icon = icon; //好友行换成缓存路径
+        friend_changed = true;
+    }
+
+    for (auto &apply : _apply_list) {
+        //同一 uid 可能有收到/发出两条申请，全部一起刷新
+        if (apply->_uid == uid && apply->_icon != icon) {
+            apply->_icon = icon; //申请行也换，否则只有好友列表变
+            apply_changed = true;
+        }
+    }
+
+    if (friend_changed)
+        emit FriendIconChanged(uid); //只刷新好友列表对应行
+    if (apply_changed)
+        emit ApplyIconChanged(uid); //只刷新申请列表对应行
 }
 
 void UserMgr::AppendApplyList(QJsonArray array)
