@@ -196,7 +196,7 @@ CA =                     # CA 证书包路径；留空按平台自动探测
 Port = 9090                 # 面向客户端的 TCP 端口
 
 [Storage]
-Path = storage              # 相对服务工作目录；头像存 <Path>/<uid>/<name>
+Path = storage              # 相对服务工作目录；文件存 <Path>/<uid>/<name>
 
 [Mysql]  ...同 GateServer...
 [Redis]  ...同 GateServer...

@@ -2,10 +2,32 @@
 #include "Base64.h"
 #include "const.h"
 #include <boost/filesystem.hpp>
+#include <json/json.h>
 #include <fstream>
 #include <vector>
 #include <iostream>
 #include <algorithm>
+
+namespace {
+
+//下载结果放进Json：成功才带分片和偏移，失败只留错误码，响应字段由逻辑层补
+void FinishDownload(const std::shared_ptr<DownloadTask>& task, int error,
+	const std::string& data = std::string(), long long current_size = 0,
+	long long total_size = 0, bool last = false)
+{
+	Json::Value result;
+	result["error"] = error;
+	if (error == ErrorCodes::Success) {
+		result["data"] = data; //Base64分片
+		result["current_size"] = Json::Int64(current_size); //本片结束偏移
+		result["total_size"] = Json::Int64(total_size); //文件总大小
+		result["is_last"] = last; //本片是否已经读到文件尾
+	}
+	if (task->_callback)
+		task->_callback(result);
+}
+
+}
 
 DownloadWorker::DownloadWorker()
 {
@@ -58,14 +80,14 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	boost::system::error_code ec;
 	const auto total_size = static_cast<long long>(boost::filesystem::file_size(task->_path, ec));
 	if (ec) { //文件不存在或无权访问
-		task->_callback(ErrorCodes::FileNotExists, {}, 0, 0, false);
+		FinishDownload(task, ErrorCodes::FileNotExists);
 		return;
 	}
 
 	//seq从1开始；offset已经到文件尾说明客户端请求越界
 	const long long offset = static_cast<long long>(task->_seq - 1) * MAX_FILE_LEN;
 	if (task->_seq < 1 || offset >= total_size) {
-		task->_callback(ErrorCodes::FileDataInvalid, {}, 0, total_size, false); //返回真实大小便于排查
+		FinishDownload(task, ErrorCodes::FileDataInvalid, {}, 0, total_size); //真实大小便于排查
 		return;
 	}
 
@@ -76,7 +98,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 
 	std::ifstream infile(task->_path, std::ios::binary); //只读打开，不改变文件
 	if (!infile) {
-		task->_callback(ErrorCodes::FileNotExists, {}, 0, total_size, false);
+		FinishDownload(task, ErrorCodes::FileNotExists, {}, 0, total_size);
 		return;
 	}
 
@@ -84,11 +106,11 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	std::string data(read_len, '\0'); //预分配读取缓冲
 	infile.read(data.data(), static_cast<std::streamsize>(read_len));
 	if (!infile) { //文件被截断或IO错误
-		task->_callback(ErrorCodes::FileWritePermissionFailed, {}, 0, total_size, false);
+		FinishDownload(task, ErrorCodes::FileWritePermissionFailed, {}, 0, total_size);
 		return;
 	}
 
 	const bool last = offset + static_cast<long long>(read_len) >= total_size; //是否读到文件尾
-	task->_callback(ErrorCodes::Success, base64::Encode(data),
+	FinishDownload(task, ErrorCodes::Success, base64::Encode(data),
 		offset + static_cast<long long>(read_len), total_size, last); //数据与偏移一起回给逻辑线程
 }

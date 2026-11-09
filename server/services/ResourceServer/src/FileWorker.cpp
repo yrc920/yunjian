@@ -9,6 +9,19 @@
 #include <fstream>
 #include <iostream>
 
+namespace {
+
+//文件线程只把结果放进Json，回包字段由逻辑层的回调补齐
+void FinishTask(const std::shared_ptr<FileTask>& task, int error)
+{
+	Json::Value result;
+	result["error"] = error;
+	if (task->_callback)
+		task->_callback(result);
+}
+
+}
+
 FileWorker::FileWorker()
 {
 	_work_thread = std::thread([this]() { //每个worker独占一个线程
@@ -60,7 +73,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 {
 	std::string decoded;
 	if (!base64::Decode(task->_data, decoded) || decoded.empty()) { //分片内容非法
-		task->_callback(ErrorCodes::FileDataInvalid); //回错误码给逻辑线程
+		FinishTask(task, ErrorCodes::FileDataInvalid); //回错误码给逻辑线程
 		return;
 	}
 
@@ -68,7 +81,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 	const long long expected_trans = static_cast<long long>(task->_seq - 1) * MAX_FILE_LEN
 		+ static_cast<long long>(decoded.size());
 	if (task->_seq < 1 || decoded.size() > MAX_FILE_LEN || expected_trans != task->_trans_size) {
-		task->_callback(ErrorCodes::FileDataInvalid); //序号、长度、偏移任一项不符
+		FinishTask(task, ErrorCodes::FileDataInvalid); //序号、长度、偏移任一项不符
 		return;
 	}
 
@@ -85,21 +98,21 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		std::ofstream outfile(task->_path, mode); //打开目标文件
 		if (!outfile) { //目录权限或磁盘问题
 			std::cerr << "无法打开文件进行写入: " << task->_path << std::endl;
-			task->_callback(ErrorCodes::FileWritePermissionFailed);
+			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 			return;
 		}
 
 		outfile.write(decoded.data(), static_cast<std::streamsize>(decoded.size())); //写本片
 		if (!outfile) { //写满磁盘或IO错误
 			std::cerr << "写入文件失败: " << task->_path << std::endl;
-			task->_callback(ErrorCodes::FileWritePermissionFailed);
+			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 			return;
 		}
 		outfile.close(); //关闭后数据才真正落盘
 	}
 	catch (std::exception& e) { //文件系统异常不能逃出线程
 		std::cerr << "FileWorker exception: " << e.what() << std::endl;
-		task->_callback(ErrorCodes::FileWritePermissionFailed);
+		FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 		return;
 	}
 
@@ -116,7 +129,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		UpdateAvatarInfo(task->_uid, task->_name);
 	}
 
-	task->_callback(ErrorCodes::Success); //通知逻辑线程回包
+	FinishTask(task, ErrorCodes::Success); //通知逻辑线程回包
 }
 
 void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)

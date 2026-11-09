@@ -29,6 +29,11 @@
 
 客户端同一时刻只允许一个分片在途，收到回包后才发下一片，因此不需要锁住整个文件。
 
+任务结果通过 `ResultCallback`（`std::function<void(const Json::Value&)>`）从文件线程交回逻辑线程：
+`FileWorker` / `DownloadWorker` 只填 `error` 和自己产出的字段（分片数据、偏移、是否最后一片），
+回包字段由 `ResourceHandler` 里的回调补齐后发送。文件线程因此不接触协议细节，
+后续增加新的资源类型时也不用改回调签名。
+
 ---
 
 ## 13.2 帧格式
@@ -144,8 +149,7 @@
 | 位置 | 键 / 路径 | 内容 |
 | --- | --- | --- |
 | Redis | `file_upload_<md5>` | `file_path`、`name`、`uid`、`seq`、`total_size`、`trans_size`、`avatar`；`SETEX` 3600 秒 |
-| 磁盘 | `<Storage>/<uid>/<name>` | 头像文件 |
-| 磁盘 | `<Storage>/files/<name>` | 通用文件 |
+| 磁盘 | `<Storage>/<uid>/<name>` | 头像与通用文件都按上传者分目录，下载用 `owner_uid` 拼出同一路径 |
 | MySQL | `user.icon` | 最后一片落盘后写入文件名 |
 | Redis | `ubaseinfo_<uid>`、`nameinfo_<name>` | 同步更新 icon，ChatServer 登录直接读取 |
 

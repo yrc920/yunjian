@@ -43,29 +43,32 @@ bool IsSafeName(const std::string& name)
 	return boost::filesystem::path(name).filename().string() == name;
 }
 
-bool ValidateToken(int uid, const std::string& token)
+//返回ErrorCodes，用来区分“uid没有登录令牌”和“令牌不匹配”
+int ValidateToken(int uid, const std::string& token)
 {
 	if (uid <= 0 || token.empty())
-		return false;
+		return ErrorCodes::UidInvalid;
 
 	std::string value;
 	if (!RedisMgr::GetInstance()->Get(USERTOKENPREFIX + std::to_string(uid), value))
-		return false;
-	return value == token;
+		return ErrorCodes::UidInvalid; //Redis里没有这个uid的令牌，token无从比对
+	return value == token ? ErrorCodes::Success : ErrorCodes::TokenInvalid;
 }
 
-bool EnsureSessionUser(const std::shared_ptr<CSession>& session, int uid, const std::string& token)
+//首个请求校验token并把uid绑到连接，后续分片只比对连接身份
+int EnsureSessionUser(const std::shared_ptr<CSession>& session, int uid, const std::string& token)
 {
 	if (uid <= 0)
-		return false;
+		return ErrorCodes::UidInvalid;
 
 	const int bound_uid = session->GetUserId();
 	if (bound_uid != 0)
-		return bound_uid == uid;
+		return bound_uid == uid ? ErrorCodes::Success : ErrorCodes::TokenInvalid;
 
-	if (!ValidateToken(uid, token))
-		return false;
-	return session->BindUser(uid);
+	const int error = ValidateToken(uid, token);
+	if (error != ErrorCodes::Success)
+		return error;
+	return session->BindUser(uid) ? ErrorCodes::Success : ErrorCodes::TokenInvalid;
 }
 
 void SendUploadResponse(const std::shared_ptr<CSession>& session, bool avatar, int error,
@@ -133,17 +136,16 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		return;
 	}
 
-	if (!EnsureSessionUser(session, uid, token)) { //首片校验token，后续校验连接绑定
-		SendUploadResponse(session, avatar, ErrorCodes::TokenInvalid, md5, name, seq,
+	const int auth_error = EnsureSessionUser(session, uid, token); //首片校验token，后续校验连接绑定
+	if (auth_error != ErrorCodes::Success) {
+		SendUploadResponse(session, avatar, auth_error, md5, name, seq,
 			total_size, trans_size, last, uid);
 		return;
 	}
 
-	//头像按用户分目录，通用文件单独存放；文件名已在上面排除路径分隔符
+	//头像与通用文件都按用户分目录：下载时拿 owner_uid 就能拼出同一路径
 	auto storage = ConfigMgr::Inst().GetStoragePath();
-	boost::filesystem::path file_path = avatar
-		? storage / std::to_string(uid) / name
-		: storage / "files" / name;
+	boost::filesystem::path file_path = storage / std::to_string(uid) / name;
 
 	//第一片建立进度记录：路径、总大小、是否头像都在此时固定下来
 	std::shared_ptr<FileInfo> file_info;
@@ -181,12 +183,23 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		}
 	}
 
-	//写盘是异步的：FileWorker完成后再回包，成功且是最后一片时清掉内存进度
-	auto callback = [session, avatar, md5, name, seq, total_size, trans_size, last, uid](int error) {
-		SendUploadResponse(session, avatar, error, md5, name, seq, total_size, trans_size, last, uid);
-		if (error == ErrorCodes::Success && last == 1) {
+	//写盘是异步的：文件线程只回结果，这里补齐请求上下文字段再回包
+	auto callback = [session, avatar, md5, name, seq, total_size, trans_size, last, uid]
+		(const Json::Value& result) {
+		Json::Value response = result; //error 与文件线程产出的字段
+		response["md5"] = md5;
+		response["name"] = name;
+		response["seq"] = seq;
+		response["total_size"] = Json::Int64(total_size);
+		response["trans_size"] = Json::Int64(trans_size);
+		response["last"] = last;
+		response["uid"] = uid;
+		session->Send(response.toStyledString(),
+			avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
+
+		//成功收尾才清内存进度；失败保留记录，客户端重试仍可续传
+		if (result["error"].asInt() == ErrorCodes::Success && last == 1)
 			LogicSystem::GetInstance()->RemoveFileInfo(md5);
-		}
 	};
 
 	FileSystem::GetInstance()->PostUploadTask(std::make_shared<FileTask>(
@@ -210,8 +223,15 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	const int uid = root["uid"].asInt(); //请求者
 	const std::string token = root["token"].asString(); //重新校验身份
 
-	if (!IsMd5(md5) || !EnsureSessionUser(session, uid, token)) {
-		rtvalue["error"] = ErrorCodes::TokenInvalid; //md5非法或token不匹配
+	if (!IsMd5(md5)) {
+		rtvalue["error"] = ErrorCodes::FileDataInvalid; //续传键格式不对
+		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
+		return;
+	}
+
+	const int auth_error = EnsureSessionUser(session, uid, token);
+	if (auth_error != ErrorCodes::Success) {
+		rtvalue["error"] = auth_error; //uid没有令牌或与连接身份不符
 		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
 		return;
 	}
@@ -257,27 +277,20 @@ void resource::HandleDownload(std::shared_ptr<CSession> session, const std::stri
 		return;
 	}
 
-	if (!EnsureSessionUser(session, uid, token)) {
-		rtvalue["error"] = ErrorCodes::TokenInvalid; //未认证或换了uid
+	const int auth_error = EnsureSessionUser(session, uid, token);
+	if (auth_error != ErrorCodes::Success) {
+		rtvalue["error"] = auth_error; //未认证、uid无效或换了uid
 		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
 		return;
 	}
 
-	//头像目录按owner_uid分：下载好友头像时也能找到对方的文件
+	//上传与下载统一按归属用户分目录，owner_uid就是上传时的uid
 	auto path = ConfigMgr::Inst().GetStoragePath() / std::to_string(owner_uid) / name;
-	auto callback = [session, name, seq](int error, std::string file_data,
-		long long current_size, long long total_size, bool last) {
-		//错误时只回error/name/seq，成功才带数据和偏移，客户端据此决定是否继续请求
-		Json::Value response;
-		response["error"] = error;
-		response["name"] = name;
+	auto callback = [session, name, seq](const Json::Value& result) {
+		//错误时只有error，成功时带data/is_last/current_size/total_size
+		Json::Value response = result;
+		response["name"] = name; //客户端按资源名找回本次下载
 		response["seq"] = seq;
-		if (error == ErrorCodes::Success) {
-			response["data"] = std::move(file_data); //Base64分片
-			response["is_last"] = last; //最后一片
-			response["current_size"] = Json::Int64(current_size); //本片结束偏移
-			response["total_size"] = Json::Int64(total_size); //文件总大小
-		}
 		session->Send(response.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
 	};
 
