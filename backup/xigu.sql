@@ -1,21 +1,71 @@
 /*
  Navicat Premium Dump SQL
 
- Source Server         : mysql
+ Source Server         : xigu_server
  Source Server Type    : MySQL
- Source Server Version : 90704 (9.7.4)
+ Source Server Version : 80046 (8.0.46)
  Source Host           : localhost:3306
  Source Schema         : xigu
 
  Target Server Type    : MySQL
- Target Server Version : 90704 (9.7.4)
+ Target Server Version : 80046 (8.0.46)
  File Encoding         : 65001
 
- Date: 28/10/2026 18:57:31
+ Date: 06/11/2026 14:13:21
 */
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
+
+-- ----------------------------
+-- Table structure for chat_message
+-- ----------------------------
+DROP TABLE IF EXISTS `chat_message`;
+CREATE TABLE `chat_message` (
+  `message_id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `thread_id` bigint unsigned NOT NULL,
+  `sender_id` int NOT NULL,
+  `recv_id` int NOT NULL,
+  `client_msg_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `status` tinyint unsigned NOT NULL DEFAULT '0',
+  PRIMARY KEY (`message_id`),
+  UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
+  KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),
+  KEY `idx_chat_message_thread_time` (`thread_id`,`created_at`,`message_id`),
+  CONSTRAINT `fk_chat_message_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Records of chat_message
+-- ----------------------------
+BEGIN;
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (1, 1, 1003, 1004, 'friend-welcome-1003-1004', '你好，我是test1', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (2, 1, 1004, 1003, 'friend-welcome-1004-1003', 'We are friends now!', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (3, 1, 1004, 1003, '{393942e7-96a1-4120-8159-d5c98f0fc065}', '烟花易逝，人情长存', '2026-11-06 14:09:45', '2026-11-06 14:09:45', 0);
+COMMIT;
+
+-- ----------------------------
+-- Table structure for chat_thread
+-- ----------------------------
+DROP TABLE IF EXISTS `chat_thread`;
+CREATE TABLE `chat_thread` (
+  `thread_id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `thread_type` tinyint unsigned NOT NULL DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`thread_id`),
+  KEY `idx_chat_thread_updated` (`updated_at`,`thread_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Records of chat_thread
+-- ----------------------------
+BEGIN;
+INSERT INTO `chat_thread` (`thread_id`, `thread_type`, `created_at`, `updated_at`) VALUES (1, 1, '2026-11-06 14:09:17', '2026-11-06 14:09:45');
+COMMIT;
 
 -- ----------------------------
 -- Table structure for friend
@@ -28,18 +78,14 @@ CREATE TABLE `friend` (
   `back` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT '',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `self_friend` (`self_id`,`friend_id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- ----------------------------
 -- Records of friend
 -- ----------------------------
 BEGIN;
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (1, 1002, 1001, '西故');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (2, 1001, 1002, '霄宫');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (3, 1004, 1003, 'test1');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (4, 1003, 1004, 'test2');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (5, 1004, 1005, 'test3');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (6, 1005, 1004, 'test2');
+INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (1, 1004, 1003, '');
+INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (2, 1003, 1004, 'test2');
 COMMIT;
 
 -- ----------------------------
@@ -51,18 +97,78 @@ CREATE TABLE `friend_apply` (
   `from_uid` int NOT NULL,
   `to_uid` int NOT NULL,
   `status` smallint NOT NULL DEFAULT '0',
+  `descs` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `back_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `from_to_uid` (`from_uid`,`to_uid`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- ----------------------------
 -- Records of friend_apply
 -- ----------------------------
 BEGIN;
-INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`) VALUES (1, 1001, 1002, 1);
-INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`) VALUES (2, 1003, 1004, 1);
-INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`) VALUES (3, 1005, 1004, 1);
-INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`) VALUES (4, 1005, 1003, 0);
+INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`, `descs`, `back_name`) VALUES (1, 1003, 1004, 1, '你好，我是test1', 'test2');
+COMMIT;
+
+-- ----------------------------
+-- Table structure for group_chat
+-- ----------------------------
+DROP TABLE IF EXISTS `group_chat`;
+CREATE TABLE `group_chat` (
+  `thread_id` bigint unsigned NOT NULL,
+  `group_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `owner_id` int NOT NULL DEFAULT '0',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`thread_id`),
+  CONSTRAINT `fk_group_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Records of group_chat
+-- ----------------------------
+BEGIN;
+COMMIT;
+
+-- ----------------------------
+-- Table structure for group_chat_member
+-- ----------------------------
+DROP TABLE IF EXISTS `group_chat_member`;
+CREATE TABLE `group_chat_member` (
+  `thread_id` bigint unsigned NOT NULL,
+  `user_id` int NOT NULL,
+  `role` tinyint unsigned NOT NULL DEFAULT '0',
+  `joined_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`thread_id`,`user_id`),
+  KEY `idx_group_member_user` (`user_id`,`thread_id`),
+  CONSTRAINT `fk_group_member_thread` FOREIGN KEY (`thread_id`) REFERENCES `group_chat` (`thread_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Records of group_chat_member
+-- ----------------------------
+BEGIN;
+COMMIT;
+
+-- ----------------------------
+-- Table structure for private_chat
+-- ----------------------------
+DROP TABLE IF EXISTS `private_chat`;
+CREATE TABLE `private_chat` (
+  `thread_id` bigint unsigned NOT NULL,
+  `user1_id` int NOT NULL,
+  `user2_id` int NOT NULL,
+  PRIMARY KEY (`thread_id`),
+  UNIQUE KEY `uk_private_users` (`user1_id`,`user2_id`),
+  KEY `idx_private_user1` (`user1_id`,`thread_id`),
+  KEY `idx_private_user2` (`user2_id`,`thread_id`),
+  CONSTRAINT `fk_private_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Records of private_chat
+-- ----------------------------
+BEGIN;
+INSERT INTO `private_chat` (`thread_id`, `user1_id`, `user2_id`) VALUES (1, 1003, 1004);
 COMMIT;
 
 -- ----------------------------

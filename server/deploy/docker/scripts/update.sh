@@ -13,6 +13,7 @@ pkill -x GateServer   >/dev/null 2>&1
 pkill -x StatusServer >/dev/null 2>&1
 pkill -x ChatServer   >/dev/null 2>&1
 pkill -x VerifyServer >/dev/null 2>&1
+pkill -x ResourceServer >/dev/null 2>&1
 sleep 1
 
 # 后台启动：避免服务长驻导致 docker exec 卡住不返回

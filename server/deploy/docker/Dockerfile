@@ -116,7 +116,7 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
 COPY deploy/docker/scripts /opt/xiguchat/scripts
 COPY deploy/docker/config-templates /opt/xiguchat/config-templates
 RUN chmod +x /opt/xiguchat/scripts/*.sh \
- && mkdir -p /var/log/xigu /workspace /var/run/mysqld /var/lib/redis \
+ && mkdir -p /var/log/xigu /workspace /var/run/mysqld /var/lib/redis /var/lib/xiguchat/storage \
  && ccache -M 2G
 
 # ---------- 8. 编译校验 + 预热 ccache ----------
@@ -129,6 +129,6 @@ RUN cmake --preset linux-docker \
  && rm -rf /opt/xiguchat/src
 
 WORKDIR /workspace
-VOLUME ["/var/lib/mysql", "/workspace"]
-EXPOSE 8080 8090 8091
+VOLUME ["/var/lib/mysql", "/workspace", "/var/lib/xiguchat/storage"]
+EXPOSE 8080 8090 8091 9090
 CMD ["/opt/xiguchat/scripts/entrypoint.sh"]

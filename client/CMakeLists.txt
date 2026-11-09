@@ -103,6 +103,7 @@ set(CORE_SOURCES
     core/service/sessionservice.cpp
     core/service/chatservice.cpp
     core/service/friendservice.cpp
+    core/service/fileservice.cpp
 )
 
 set(CORE_HEADERS
@@ -114,15 +115,22 @@ set(CORE_HEADERS
     core/service/sessionservice.h
     core/service/chatservice.h
     core/service/friendservice.h
+    core/service/fileservice.h
 )
 
 set(NETWORK_SOURCES
     network/httpmgr.cpp
     network/tcpmgr.cpp
+    network/tcpthread.cpp
+    network/filetcpmgr.cpp
+    network/filetcpthread.cpp
 )
 set(NETWORK_HEADERS
     network/httpmgr.h
     network/tcpmgr.h
+    network/tcpthread.h
+    network/filetcpmgr.h
+    network/filetcpthread.h
 )
 
 add_library(xiguchat_core STATIC

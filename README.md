@@ -2,8 +2,8 @@
 
 > 全 C++ 的即时通讯系统：Qt 6 桌面客户端 + gRPC 微服务后端，Windows / macOS / Linux 三平台本地构建运行。
 
-XiguChat 是一个分布式即时通讯系统。客户端用 Qt 6 实现登录注册、好友管理与实时会话；后端拆成四个
-独立的 C++ 进程，分别负责 HTTP 网关、状态路由、长连接消息和验证码下发，服务之间用 gRPC 通信，
+XiguChat 是一个分布式即时通讯系统。客户端用 Qt 6 实现登录注册、好友管理与实时会话；后端拆成五个
+独立的 C++ 进程，分别负责 HTTP 网关、状态路由、长连接消息、验证码下发与资源传输，服务之间用 gRPC 通信，
 运行时状态放在 Redis，持久化数据放在 MySQL。
 
 前端与后端均为 C++（客户端 C++17，服务端 C++20），两端各自用 CMake + CMakePresets 驱动，
@@ -62,6 +62,10 @@ flowchart TB
         Chat2["ChatServer chatserver2<br/>TCP 8091 · gRPC 50056"]
     end
 
+    subgraph resource["资源层"]
+        Res["ResourceServer<br/>TCP 9090 · 断点续传"]
+    end
+
     Redis[("Redis 6380")]
     MySQL[("MySQL<br/>X Protocol 33060")]
     Mail["邮箱服务商<br/>SMTP 465 SSL"]
@@ -69,6 +73,7 @@ flowchart TB
     Client -->|"HTTP：注册 / 登录 / 改密 / 验证码"| Gate
     Client -->|"TCP 长连接：消息 / 好友申请"| Chat1
     Client -->|"TCP 长连接"| Chat2
+    Client -->|"TCP：头像 / 文件分片"| Res
 
     Gate -->|"gRPC GetVerifyCode"| Verify
     Gate -->|"gRPC GetChatServer"| Status
@@ -85,9 +90,11 @@ flowchart TB
     Chat1 --> Redis
     Chat2 --> MySQL
     Chat2 --> Redis
+    Res --> MySQL
+    Res --> Redis
 ```
 
-四个服务各司其职：
+五个服务各司其职：
 
 | 服务 | 职责 |
 | --- | --- |
@@ -95,6 +102,7 @@ flowchart TB
 | **VerifyServer** | 生成 4 位验证码，写入 Redis（`code_<email>`，TTL 600s），经 SMTP SSL 投递到用户邮箱 |
 | **StatusServer** | 登录时签发 UUID token 写入 Redis；按最小连接数挑一个 ChatServer，连 host/port/token 一起返回 |
 | **ChatServer** | 维护 TCP 会话、校验 token、处理好友申请与文本消息；本实例直投，跨实例走 gRPC 转发 |
+| **ResourceServer** | 独立 TCP 服务，按 2 字节 ID + 4 字节长度收发；分段上传/下载头像，进度写 Redis（`file_upload_<md5>`，TTL 1h），最后一片落盘后更新 `user.icon` |
 
 ---
 
@@ -129,7 +137,8 @@ xiguchat
 │       ├── StatusServer/       # 状态路由
 │       ├── ChatServer/         # 长连接消息服务（一套代码多实例）
 │       │   └── config/         # 每份 *.ini 对应一个运行实例
-│       └── VerifyServer/       # 验证码服务
+│       ├── VerifyServer/       # 验证码服务
+│       └── ResourceServer/     # 头像/文件断点续传（逻辑线程池 + 文件线程池）
 └── docs/                       # 深度技术文档（见下）
 ```
 
@@ -209,12 +218,13 @@ cd build/macos-clang/bin
 (cd StatusServer && ./StatusServer)
 (cd ChatServer && ./ChatServer)   # 实例 chatserver1
 (cd ChatServer2 && ./ChatServer)  # 实例 chatserver2
+(cd ResourceServer && ./ResourceServer)
 (cd GateServer && ./GateServer)
 ```
 
 上述服务分别在独立终端启动；Windows 多配置构建需再进入 Debug/Release 子目录。
 
-启动顺序建议：VerifyServer → StatusServer → ChatServer（各实例）→ GateServer。
+启动顺序建议：VerifyServer → StatusServer → ChatServer（各实例）→ ResourceServer → GateServer。
 
 ### 5. 配置邮件（可选但推荐）
 
@@ -233,6 +243,7 @@ cd build/macos-clang/bin
 | StatusServer | gRPC | 50052 | 状态路由 / 令牌校验 |
 | ChatServer `chatserver1` | TCP + gRPC | 8090 / 50055 | TCP 面向客户端，gRPC 面向服务间 |
 | ChatServer `chatserver2` | TCP + gRPC | 8091 / 50056 | 同上 |
+| ResourceServer | TCP | 9090 | 头像/文件分段上传与下载 |
 | MySQL | 经典 / X 协议 | 3306 / 33060 | 后端使用 **X 协议 33060** |
 | Redis | RESP | 6380 | 密码 123456 |
 
@@ -265,6 +276,7 @@ cd build/macos-clang/bin
 | [09-ChatServer](docs/09-chat-server.md) | 长连接服务、会话管理、跨实例转发 |
 | [10-VerifyServer](docs/10-verify-server.md) | 验证码服务与 SMTP 发信 |
 | [11-已知限制](docs/11-known-limitations.md) | 技术债与改进方向 |
+| [13-ResourceServer](docs/13-resource-server.md) | 资源服务器协议、线程模型、断点续传与头像同步 |
 
 ---
 

@@ -285,6 +285,8 @@ LogicSystem::LogicSystem() {
         root["token"] = reply.token();
         root["host"] = reply.host();
 		root["port"] = reply.port();
+		root["res_host"] = reply.res_host();
+		root["res_port"] = reply.res_port();
 		//将JSON数据转换为字符串, 并写入响应内容中
         std::string jsonstr = root.toStyledString();
         beast::ostream(connection->_response.body()) << jsonstr;

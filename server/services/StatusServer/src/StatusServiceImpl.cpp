@@ -7,6 +7,10 @@
 StatusServiceImpl::StatusServiceImpl()
 {
 	auto& cfg = ConfigMgr::Inst(); //获取配置管理器实例
+	//资源服务器地址与聊天实例一起下发，客户端登录后用它上传头像、拉取缺失资源
+	_res_host = cfg["ResourceServer"]["Host"];
+	_res_port = cfg["ResourceServer"]["Port"];
+
 	//从配置文件中读取聊天服务器的信息, 初始化服务器列表
 	auto server_list = cfg["chatservers"]["Name"];
 
@@ -60,6 +64,8 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context,
     reply->set_host(server.host);
     reply->set_port(server.port);
     reply->set_token(token);
+    reply->set_res_host(_res_host);
+    reply->set_res_port(_res_port);
     reply->set_error(ErrorCodes::Success);
     return Status::OK;
 }

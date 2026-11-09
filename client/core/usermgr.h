@@ -8,6 +8,7 @@
 #include "userdata.h"
 #include <vector>
 #include <QMap>
+#include <mutex>
 /******************************************************************************
  *
  * @file       usermgr.h
@@ -30,9 +31,23 @@ public:
     void SetUserInfo(std::shared_ptr<UserInfo> user_info); //设置用户信息
     std::shared_ptr<UserInfo> GetUserInfo();
     int GetUid(); //获取用户ID
+    void SetToken(const QString &token); //资源服务器用同一个会话令牌校验身份
+    QString GetToken() const;
     static QString LocalAvatarPath(); //当前网关与账号对应的头像文件
+    static QString ResourceCachePath(int ownerUid, const QString &name); //好友头像缓存
     QString GetIcon() const;
     bool SetLocalAvatar(const QByteArray &png); //发布已落盘的头像，不修改服务器头像字段
+
+    //上传/下载状态由网络线程读写，和好友数据共用同一把递归锁
+    void AddUploadFile(std::shared_ptr<UploadFileInfo> info);
+    std::shared_ptr<UploadFileInfo> GetUploadFile(const QString &md5);
+    void RemoveUploadFile(const QString &md5);
+    void SetUploadPaused(bool paused);
+    bool UploadPaused() const;
+    void AddDownloadFile(std::shared_ptr<DownloadFileInfo> info);
+    std::shared_ptr<DownloadFileInfo> GetDownloadFile(const QString &name);
+    void RemoveDownloadFile(const QString &name);
+    void SetFriendIcon(int uid, const QString &icon); //下载完成后替换为本地缓存路径
 
     void AppendApplyList(QJsonArray array);
     void AppendFriendList(QJsonArray array);
@@ -76,16 +91,22 @@ signals:
     void FriendListChanged();        // 登录拿到好友列表、通过好友申请
     void ApplyListChanged();         // 好友申请列表变化
     void FriendChatChanged(int uid); // 某个好友的消息变化
+    void FriendIconChanged(int uid); // 好友头像下载完成，只刷新对应行
 
 private:
     UserMgr();
 
+    mutable std::recursive_mutex _mtx; //数据被主线程与网络线程共同访问
     std::shared_ptr<UserInfo> _user_info;
+    QString _token;
     QString _localIcon; //本机头像 data URL, 为空时回落到服务端 icon
     std::vector<std::shared_ptr<ApplyInfo>> _apply_list; //好友申请列表
     std::vector<std::shared_ptr<FriendInfo>> _friend_list; //列表模型按行读取的顺序容器
     QMap<int, std::shared_ptr<FriendInfo>> _friend_map; //uid 索引, 与列表指向同一对象
     QMap<int, bool> _pending_private_chats; //正在等待建会话回包的好友, 防止重复请求
+    QMap<QString, std::shared_ptr<UploadFileInfo>> _uploads; //按md5索引
+    QMap<QString, std::shared_ptr<DownloadFileInfo>> _downloads; //按资源名索引
+    bool _upload_paused = false;
 };
 
 #endif // USERMGR_H

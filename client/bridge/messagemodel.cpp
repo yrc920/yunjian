@@ -32,6 +32,19 @@ MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
                 emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
         }
     });
+    // 好友头像换成本地缓存后，刷新对方消息行的头像
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendIconChanged, this,
+            [this](int uid) {
+        auto *mgr = UserMgr::GetInstance().get();
+        const auto info = mgr->GetFriendById(_uid);
+        if (!info)
+            return;
+        const int count = qMin(_cachedCount, static_cast<int>(info->_chat_thread->_chat_msgs.size()));
+        for (int row = 0; row < count; ++row) {
+            if (info->_chat_thread->_chat_msgs.at(row)->_from_uid == uid)
+                emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
+        }
+    });
 }
 
 // 切换当前会话；uid 为 0 时清空列表

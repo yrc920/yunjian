@@ -67,12 +67,13 @@ start_service() {
 
 start_service StatusServer  StatusServer  StatusServer/config.ini.example
 start_service VerifyServer  VerifyServer  VerifyServer/config.ini.example
+start_service ResourceServer ResourceServer ResourceServer/config.ini.example
 start_service ChatServer    ChatServer    ChatServer/config.ini.example
 start_service ChatServer2   ChatServer    ChatServer2/config.ini.example
 start_service GateServer    GateServer    GateServer/config.ini.example
 
 echo "[start] 监听端口："
-ss -lntp 2>/dev/null | grep -E '8080|8090|8091|50051|50052|50055|50056' || true
+ss -lntp 2>/dev/null | grep -E '8080|8090|8091|9090|50051|50052|50055|50056' || true
 echo "[start] 服务日志：${LOG}"
 
 wait

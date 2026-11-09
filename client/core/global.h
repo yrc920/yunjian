@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <QString>
+#include <QMetaType>
 /******************************************************************************
  *
  * @file       global.h
@@ -44,6 +45,15 @@ enum ReqId{
     ID_LOAD_CHAT_THREAD_RSP = 1028, //会话列表与 load_more
     ID_LOAD_CHAT_MSG_REQ = 1029, //拉会话历史消息
     ID_LOAD_CHAT_MSG_RSP = 1030, //历史消息与 load_more
+    // 资源服务器使用独立的消息空间：帧头为 2 字节 ID + 4 字节长度
+    ID_UPLOAD_FILE_REQ = 2001, //通用文件分段上传
+    ID_UPLOAD_FILE_RSP = 2002,
+    ID_SYNC_FILE_REQ = 2003, //续传前同步服务器进度
+    ID_SYNC_FILE_RSP = 2004,
+    ID_DOWN_LOAD_FILE_REQ = 2005, //断点下载
+    ID_DOWN_LOAD_FILE_RSP = 2006,
+    ID_UPLOAD_HEAD_ICON_REQ = 2007, //头像分段上传
+    ID_UPLOAD_HEAD_ICON_RSP = 2008,
 };
 
 //模块
@@ -64,10 +74,17 @@ extern QString gate_url_prefix; //网关服务器的URL前缀,从配置文件中
 
 //服务器信息结构体
 struct ServerInfo{
+    //跨线程投递要求默认构造与可拷贝
+    ServerInfo() = default;
     QString Host; //服务器地址
     QString Port; //服务器端口
     QString Token; //用户令牌
-    int Uid; //用户ID
+    int Uid = 0; //用户ID
+    QString ResHost; //资源服务器地址，未配置时为空
+    QString ResPort; //资源服务器端口
 };
+
+Q_DECLARE_METATYPE(ServerInfo)
+Q_DECLARE_METATYPE(ReqId)
 
 #endif // GLOBAL_H

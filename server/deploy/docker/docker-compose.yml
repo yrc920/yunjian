@@ -13,6 +13,7 @@ services:
       - "8080:8080"   # GateServer HTTP 接口
       - "8090:8090"   # chatserver1 TCP
       - "8091:8091"   # chatserver2 TCP
+      - "9090:9090"   # ResourceServer 头像/文件传输
       # 数据库只绑回环地址，公网访问不到。异地连接走 SSH 隧道：
       #   ssh -N -L 3306:127.0.0.1:3306 ubuntu@<服务器IP>
       # 之后本机连 127.0.0.1:3306 即等同连到容器内的 MySQL
@@ -29,8 +30,10 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - workspace:/workspace
+      - resource-data:/var/lib/xiguchat/storage
     restart: unless-stopped
 
 volumes:
   mysql-data:
   workspace:
+  resource-data:

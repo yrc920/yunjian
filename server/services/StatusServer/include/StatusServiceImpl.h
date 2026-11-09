@@ -43,5 +43,7 @@ private:
 
 	std::unordered_map<std::string, ChatServer> _servers; //服务器列表, key为服务器名称, value为服务器信息
 	std::mutex _server_mtx; //服务器列表的互斥锁, 保护_servers的线程安全
+	std::string _res_host; //资源服务器地址，随登录路由一起下发
+	std::string _res_port; //资源服务器TCP端口
 
 };

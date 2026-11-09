@@ -5,6 +5,7 @@
 #include "chatservice.h"
 #include "sessionservice.h"
 #include "friendservice.h"
+#include "fileservice.h"
 #include "usermgr.h"
 #include "userdata.h"
 
@@ -15,6 +16,9 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     _messages = new MessageModel(this);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
             this, &ChatBridge::myProfileChanged);
+    //头像同步只影响个人资料页的一小块状态，不复用聊天列表的刷新信号
+    connect(FileService::GetInstance().get(), &FileService::uploadStateChanged,
+            this, &ChatBridge::avatarSyncChanged);
 
     auto *friendService = FriendService::GetInstance().get();
     connect(friendService, &FriendService::userFound, this,
@@ -300,6 +304,31 @@ void ChatBridge::authApply(int uid, const QString &remark)
 QString ChatBridge::myIcon() const
 {
     return UserMgr::GetInstance()->GetIcon();
+}
+
+bool ChatBridge::avatarUploading() const
+{
+    return FileService::GetInstance()->IsUploading();
+}
+
+bool ChatBridge::avatarUploadPaused() const
+{
+    return FileService::GetInstance()->IsPaused();
+}
+
+int ChatBridge::avatarProgress() const
+{
+    return FileService::GetInstance()->Progress();
+}
+
+QString ChatBridge::avatarMessage() const
+{
+    return FileService::GetInstance()->Message();
+}
+
+void ChatBridge::toggleAvatarUpload()
+{
+    FileService::GetInstance()->ToggleUploadPaused();
 }
 
 QVariantMap ChatBridge::myProfile() const

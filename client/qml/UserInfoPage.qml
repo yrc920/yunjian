@@ -109,6 +109,39 @@ Item {
                 Accessible.name: text
             }
 
+            // 同步状态：上传中显示进度条与暂停按钮，完成后只留一行结果
+            Text {
+                width: parent.width
+                topPadding: 6
+                text: root.controller ? root.controller.avatarMessage : ""
+                visible: text.length > 0
+                color: root.controller && root.controller.avatarUploading
+                       ? Theme.textSecondary : Theme.success
+                font.pixelSize: Theme.fontSmall
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                width: parent.width
+                height: 4
+                radius: 2
+                color: Theme.line
+                visible: root.controller ? root.controller.avatarUploading : false
+                Rectangle {
+                    width: parent.width * (root.controller ? root.controller.avatarProgress / 100 : 0)
+                    height: parent.height
+                    radius: parent.radius
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: 120 } }
+                }
+            }
+            AppButton {
+                width: 112
+                height: 36
+                visible: root.controller ? root.controller.avatarUploading : false
+                text: root.controller && root.controller.avatarUploadPaused ? "继续同步" : "暂停同步"
+                onClicked: if (root.controller) root.controller.toggleAvatarUpload()
+            }
+
             Spacer { gap: 30 }
             Rectangle {
                 width: parent.width

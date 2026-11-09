@@ -104,20 +104,39 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 
 ### `TcpMgr`（TCP 长连接）
 
+- 运行在独立网络线程：`main.cpp` 先构造 `TcpThread`，它创建 `QThread`，调用
+  `TcpMgr::MoveToThread()`；该函数同时把成员 `_socket` 单独迁移到同一线程
+  （`moveToThread` 不会带走没有父子关系的成员对象）；
 - 构造函数中连接 `connected` / `readyRead` / `disconnected` / `errorOccurred`，并调用
   `initHandlers()` 注册 `QMap<ReqId, std::function<...>>` 分发表；
+- **元对象注册**：`registerMetaType()` 注册 `ServerInfo`、`ReqId` 与所有 `std::shared_ptr`
+  形式的用户数据。跨线程是队列连接，参数要运行时打包，缺少注册时槽函数不会触发；
 - **粘包/半包处理**：`readyRead` 累积到 `_buffer`，用 `_b_recv_pending` 标记"头部已解析、等待完整包体"，
   循环拆帧；
 - **发送**：`QDataStream` 设为 `BigEndian`，写 `quint16 id` + `quint16 len`，再 append JSON；
+  数据进入 `_send_queue`，由 `bytesWritten` 在当前块写完后继续取队首，避免发送缓冲区满时丢包；
+- **线程边界**：连接、关闭、发送分别通过 `sig_connect_tcp` / `sig_close_connection` /
+  `sig_send_data` 投递到网络线程，外部不直接碰 socket；
 - 对外信号：`sig_con_success` / `sig_con_failed` / `sig_login_failed` / `sig_login_success` /
   `sig_user_search` / `sig_friend_apply` / `sig_add_auth_friend` / `sig_auth_rsp` / `sig_text_chat_msg` /
   `sig_notify_offline` / `sig_connection_closed`。
 
-> `sig_send_data` → `slot_send_data` 是自身信号到自身槽的连接，
-> 目的是让 UI 线程之外的调用也能安全地触发发送（Qt 信号跨线程排队）。
->
 > `sig_con_failed` 挂在 `QAbstractSocket::errorOccurred` 上（排除 `RemoteHostClosedError`），
-> 让"连不上"在 1 秒内就能提示，而不是等超时。
+> 让"连不上"在 1 秒内就能提示，而不是等超时。主动重连时 `_manual_close` 会抑制一次
+> `disconnected`，避免旧连接关闭被当成新登录失败。
+
+### `FileTcpMgr`（资源服务器）
+
+- 同样运行在 `FileTcpThread` 中，与聊天网络线程分开；
+- 帧头是 `quint16 id` + `quint32 len`，包体上限 16KB；
+- 处理 `2001/2003/2005/2007` 四组消息：通用上传、进度同步、断点下载、头像上传；
+- 上传状态保存在 `UserMgr::UploadFileInfo`，收到回包后按 `trans_size` 读取下一片；
+- 下载状态保存在 `DownloadFileInfo`，`seq == 1` 覆盖写、其余追加，`is_last` 为真时结束；
+- 暂停只停止发送下一片，继续前由 `FileService` 发 `ID_SYNC_FILE_REQ` 对齐服务器进度。
+
+`FileService`（`core/service/fileservice.cpp`）负责业务编排：头像保存后上传、登录后拉取
+本机/好友缺失头像、进度与暂停状态、下载结果的本地缓存。详细协议见
+[13-ResourceServer](13-resource-server.md)。
 
 ### 登录的两阶段握手
 

@@ -52,6 +52,10 @@ class ChatBridge : public QObject
     Q_PROPERTY(QVariantList friendMatches READ friendMatches NOTIFY friendMatchesChanged)
     Q_PROPERTY(int applyState READ applyState NOTIFY applyStateChanged)
     Q_PROPERTY(QString applyMessage READ applyMessage NOTIFY applyStateChanged)
+    Q_PROPERTY(bool avatarUploading READ avatarUploading NOTIFY avatarSyncChanged)
+    Q_PROPERTY(bool avatarUploadPaused READ avatarUploadPaused NOTIFY avatarSyncChanged)
+    Q_PROPERTY(int avatarProgress READ avatarProgress NOTIFY avatarSyncChanged)
+    Q_PROPERTY(QString avatarMessage READ avatarMessage NOTIFY avatarSyncChanged)
 
 public:
     //左侧栏目：会话 / 联系人 / 设置
@@ -112,6 +116,13 @@ public:
     QString applyMessage() const { return _applyMessage; }
     Q_INVOKABLE void retryApply();
 
+    //头像同步：上传进度与暂停/继续
+    bool avatarUploading() const;
+    bool avatarUploadPaused() const;
+    int avatarProgress() const;
+    QString avatarMessage() const;
+    Q_INVOKABLE void toggleAvatarUpload();
+
     //侧栏导航
     Q_INVOKABLE void showChatMode();
     Q_INVOKABLE void showContactMode();
@@ -144,6 +155,7 @@ signals:
     void friendQueryChanged();
     void friendMatchesChanged();
     void applyStateChanged();
+    void avatarSyncChanged();
 
 private:
     void setMode(int mode);

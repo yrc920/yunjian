@@ -97,7 +97,8 @@ flowchart TB
    先按 email 取出存储的 Argon2id 哈希串，再用 `PasswordHash::Verify` 常量时间比对，
    失败 → `1009`；
 3. `StatusGrpcClient::GetChatServer(uid)` → 失败 `1002`；
-4. 成功 → `{"error":0, "uid", "token", "host", "port"}`，客户端据此建立 TCP 长连接。
+4. 成功 → `{"error":0, "uid", "token", "host", "port", "res_host", "res_port"}`，
+   客户端据此建立聊天长连接与资源服务器连接。
 
 ## 7.5 口令哈希（`PasswordHash`）
 

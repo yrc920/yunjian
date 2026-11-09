@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "usermgr.h"
+#include "fileservice.h"
 
 namespace {
 constexpr qint64 MaximumFileBytes = 16 * 1024 * 1024;
@@ -446,6 +447,8 @@ bool ImageCropper::saveAvatar()
         setError(tr("账号状态已变化，请重新打开头像编辑"));
         return false;
     }
+    //本机头像已经落盘，上传失败也不回滚；同步进度由个人资料页展示
+    FileService::GetInstance()->UploadAvatar(path);
     emit saved();
     return true;
 }

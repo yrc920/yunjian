@@ -56,7 +56,7 @@ cp .env.example .env
 
 | 变量 | 说明 |
 |---|---|
-| `PUBLIC_HOST` | **必须填对**。客户端实际用来访问服务器的地址：本机测试用 `127.0.0.1`，公网部署填服务器公网 IP。`StatusServer` 会把这个地址原样下发给客户端去连聊天服务 |
+| `PUBLIC_HOST` | **必须填对**。客户端实际用来访问服务器的地址：本机测试用 `127.0.0.1`，公网部署填服务器公网 IP。`StatusServer` 会把这个地址原样下发给客户端去连聊天与资源服务 |
 | `EMAIL_HOST` / `EMAIL_PORT` | SMTP 服务器，默认 `smtp.qq.com` / `465` |
 | `EMAIL_USER` / `EMAIL_PASS` | 发信账号与授权码（QQ 邮箱在「设置 → 账号 → POP3/SMTP 服务」生成） |
 | `EMAIL_FROM` | 发件人显示地址，通常与 `EMAIL_USER` 相同 |
@@ -72,8 +72,8 @@ docker compose logs -f        # 看日志，Ctrl+C 退出
 docker compose down           # 停止并移除容器（数据卷保留）
 ```
 
-首次启动容器内依次完成：拉代码 → 初始化 MySQL 并导入 `backup/xigu.sql` → 编译 → 启动五个服务。
-看到日志里列出 8080 / 8090 / 8091 等端口在监听，即启动成功。
+首次启动容器内依次完成：拉代码 → 初始化 MySQL 并导入 `backup/xigu.sql` → 编译 → 启动六个服务。
+看到日志里列出 8080 / 8090 / 8091 / 9090 等端口在监听，即启动成功。
 
 验证服务活着：
 
@@ -102,7 +102,7 @@ mkdir -p xiguchat && cd xiguchat
 docker compose up -d
 ```
 
-云服务器的安全组 / 防火墙要放行 **8080、8090、8091**，否则外面连不上。
+云服务器的安全组 / 防火墙要放行 **8080、8090、8091、9090**，否则外面连不上。
 
 ---
 
@@ -125,6 +125,7 @@ docker exec xiguchat /opt/xiguchat/scripts/update.sh
 |---|---|---|
 | 8080 | GateServer HTTP 接口 | 是 |
 | 8090 / 8091 | 两个聊天实例的 TCP 长连接 | 是 |
+| 9090 | ResourceServer 头像/文件传输 | 是 |
 | 50051 / 50052 / 50055 / 50056 | 服务间 gRPC | 否，仅容器内部 |
 | 3306 | MySQL 传统协议（图形客户端用） | 否，只绑服务器本机回环 |
 | 33060 | MySQL X 协议（项目自身用） | 否，只绑服务器本机回环 |

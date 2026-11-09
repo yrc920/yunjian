@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -37,8 +38,9 @@ UserMgr::~UserMgr() {}
 //登录后先恢复本机头像；服务端 icon 仍保留，换设备时作为兜底
 void UserMgr::SetUserInfo(std::shared_ptr<UserInfo> user_info)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     const QString previousIcon = GetIcon();
-    _user_info = user_info;
+    _user_info = std::move(user_info);
     _localIcon.clear();
     const QString path = LocalAvatarPath();
     if (!path.isEmpty()) {
@@ -55,18 +57,34 @@ void UserMgr::SetUserInfo(std::shared_ptr<UserInfo> user_info)
 
 std::shared_ptr<UserInfo> UserMgr::GetUserInfo()
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     return _user_info;
 }
 
 int UserMgr::GetUid()
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     return _user_info ? _user_info->_uid : 0;
+}
+
+void UserMgr::SetToken(const QString &token)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _token = token;
+}
+
+QString UserMgr::GetToken() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _token;
 }
 
 //头像按「网关地址 + uid」分目录：换服务器或换账号都不会读到别人的文件
 QString UserMgr::LocalAvatarPath()
 {
-    const int uid = GetInstance()->GetUid();
+    auto mgr = GetInstance();
+    std::lock_guard<std::recursive_mutex> lock(mgr->_mtx);
+    const int uid = mgr->_user_info ? mgr->_user_info->_uid : 0;
     if (uid <= 0)
         return {};
 
@@ -82,8 +100,33 @@ QString UserMgr::LocalAvatarPath()
     return QDir(root).filePath(QStringLiteral("avatars/%1/%2/head.png").arg(scope).arg(uid));
 }
 
+//好友头像缓存在账号无关目录，同一资源只下载一次
+QString UserMgr::ResourceCachePath(int ownerUid, const QString &name)
+{
+    if (ownerUid <= 0 || name.isEmpty())
+        return {};
+
+    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty())
+        return {};
+
+    //与 LocalAvatarPath 一样带网关作用域，避免不同服务器上相同 uid 共用缓存
+    const QUrl gateway(gate_url_prefix);
+    const QString endpoint = gateway.host().toLower() + QLatin1Char(':')
+        + QString::number(gateway.port(gateway.scheme() == QStringLiteral("https") ? 443 : 80));
+    const QString scope = QString::fromLatin1(
+        QCryptographicHash::hash(endpoint.toUtf8(), QCryptographicHash::Sha256).toHex());
+
+    const QString safeName = QFileInfo(name).fileName();
+    if (safeName.isEmpty())
+        return {};
+    return QDir(root).filePath(QStringLiteral("avatars/cache/%1/%2/%3")
+        .arg(scope).arg(ownerUid).arg(safeName));
+}
+
 QString UserMgr::GetIcon() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (!_user_info)
         return {};
     return _localIcon.isEmpty() ? _user_info->_icon : _localIcon;
@@ -92,6 +135,7 @@ QString UserMgr::GetIcon() const
 //只更新内存中的显示头像；写盘由裁剪器完成，失败时不发布变更
 bool UserMgr::SetLocalAvatar(const QByteArray &png)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (GetUid() <= 0 || !isAvatarPng(png))
         return false;
 
@@ -103,12 +147,75 @@ bool UserMgr::SetLocalAvatar(const QByteArray &png)
     return true;
 }
 
+void UserMgr::AddUploadFile(std::shared_ptr<UploadFileInfo> info)
+{
+    if (!info || info->_md5.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _uploads[info->_md5] = std::move(info);
+}
+
+std::shared_ptr<UploadFileInfo> UserMgr::GetUploadFile(const QString &md5)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _uploads.value(md5);
+}
+
+void UserMgr::RemoveUploadFile(const QString &md5)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _uploads.remove(md5);
+    if (_uploads.isEmpty())
+        _upload_paused = false;
+}
+
+void UserMgr::SetUploadPaused(bool paused)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _upload_paused = paused;
+}
+
+bool UserMgr::UploadPaused() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _upload_paused;
+}
+
+void UserMgr::AddDownloadFile(std::shared_ptr<DownloadFileInfo> info)
+{
+    if (!info || info->_name.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _downloads[info->_name] = std::move(info);
+}
+
+std::shared_ptr<DownloadFileInfo> UserMgr::GetDownloadFile(const QString &name)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _downloads.value(name);
+}
+
+void UserMgr::RemoveDownloadFile(const QString &name)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    _downloads.remove(name);
+}
+
+void UserMgr::SetFriendIcon(int uid, const QString &icon)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto iter = _friend_map.find(uid);
+    if (iter == _friend_map.end() || iter.value()->_icon == icon)
+        return;
+    iter.value()->_icon = icon;
+    emit FriendIconChanged(uid);
+}
+
 void UserMgr::AppendApplyList(QJsonArray array)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit ApplyListAboutToChange();
-    // 遍历 QJsonArray 并输出每个元素
     for (const QJsonValue &value : array) {
-        //从JSON对象中提取好友申请信息
         auto name = value["name"].toString();
         auto desc = value["desc"].toString();
         auto icon = value["icon"].toString();
@@ -117,17 +224,16 @@ void UserMgr::AppendApplyList(QJsonArray array)
         auto uid = value["uid"].toInt();
         auto status = value["status"].toInt();
         auto direction = value["direction"].toInt();
-        //将好友申请信息封装成ApplyInfo对象的智能指针
         auto info = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status, direction);
-        _apply_list.push_back(info); //将好友申请信息添加到申请列表中
+        _apply_list.push_back(info);
     }
 
     emit ApplyListChanged();
 }
 
 void UserMgr::AppendFriendList(QJsonArray array) {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit FriendListAboutToChange();
-    // 遍历 QJsonArray 并输出每个元素
     for (const QJsonValue& value : array) {
         auto name = value["name"].toString();
         auto desc = value["desc"].toString();
@@ -147,6 +253,7 @@ void UserMgr::AppendFriendList(QJsonArray array) {
 
 bool UserMgr::AlreadyApply(int uid)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for(auto& apply: _apply_list){
         //只统计别人申请我的方向；我发出去的申请不能拦住对方的新申请
         if(apply->_uid == uid && apply->_direction == 0){
@@ -158,6 +265,7 @@ bool UserMgr::AlreadyApply(int uid)
 
 bool UserMgr::AlreadySentApply(int uid)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (auto &apply : _apply_list) {
         if (apply->_uid == uid && apply->_direction == 1 && apply->_status == 0)
             return true;
@@ -167,8 +275,9 @@ bool UserMgr::AlreadySentApply(int uid)
 
 void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit ApplyListAboutToChange();
-    _apply_list.push_back(app);
+    _apply_list.push_back(std::move(app));
     emit ApplyListChanged();
 }
 
@@ -176,6 +285,7 @@ void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
 void UserMgr::AddSentApply(int uid, const QString &name, const QString &nick,
                            const QString &icon, const QString &desc)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (auto &apply : _apply_list) {
         if (apply->_uid != uid || apply->_direction != 1)
             continue;
@@ -196,6 +306,7 @@ void UserMgr::AddSentApply(int uid, const QString &name, const QString &nick,
 
 void UserMgr::SetApplyStatus(int uid, int status, int direction)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (auto &apply : _apply_list) {
         if (apply->_uid != uid || apply->_direction != direction || apply->_status == status)
             continue;
@@ -208,15 +319,13 @@ void UserMgr::SetApplyStatus(int uid, int status, int direction)
 
 bool UserMgr::CheckFriendById(int uid)
 {
-    auto iter = _friend_map.find(uid);
-    if(iter == _friend_map.end()){
-        return false;
-    }
-    return true;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _friend_map.contains(uid);
 }
 
 void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto friend_info = std::make_shared<FriendInfo>(auth_rsp);
     if (_friend_map.contains(friend_info->_uid))
         return;
@@ -228,6 +337,7 @@ void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
 
 void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto friend_info = std::make_shared<FriendInfo>(auth_info);
     if (_friend_map.contains(friend_info->_uid))
         return;
@@ -239,6 +349,7 @@ void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
 
 void UserMgr::AppendFriendChatMsg(int friend_id, std::vector<std::shared_ptr<TextChatData>> msgs)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto find_iter = _friend_map.find(friend_id);
     if(find_iter == _friend_map.end()){
         qDebug()<<"append friend uid  " << friend_id << " not found";
@@ -252,6 +363,7 @@ void UserMgr::AppendFriendChatMsg(int friend_id, std::vector<std::shared_ptr<Tex
 //登录返回的会话列表是当前账号的完整结果，先清空旧映射再逐条写入
 void UserMgr::SetChatThreads(const QJsonArray &threads)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit FriendListAboutToChange();
     for (auto &friend_info : _friend_list)
         friend_info->_chat_thread->_thread_id = 0;
@@ -262,6 +374,7 @@ void UserMgr::SetChatThreads(const QJsonArray &threads)
 //只补 thread_id：会话里的消息由 1029 单独拉取
 void UserMgr::AppendChatThreads(const QJsonArray &threads)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &value : threads) {
         const QJsonObject item = value.toObject();
         const int uid = item.value("uid").toInt();
@@ -274,6 +387,7 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
 
 void UserMgr::RefreshFriendList()
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit FriendListAboutToChange();
     emit FriendListChanged();
 }
@@ -281,6 +395,7 @@ void UserMgr::RefreshFriendList()
 //无论创建成功还是失败都要清掉 pending，否则该好友之后不会再重试建会话
 void UserMgr::SetThreadId(int friend_id, qint64 thread_id)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto info = GetFriendById(friend_id);
     _pending_private_chats.remove(friend_id);
     if (thread_id <= 0 || !info || info->_chat_thread->_thread_id == thread_id)
@@ -292,11 +407,13 @@ void UserMgr::SetThreadId(int friend_id, qint64 thread_id)
 
 bool UserMgr::HasPendingPrivateChat(int friend_id) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     return _pending_private_chats.value(friend_id, false);
 }
 
 void UserMgr::MarkPrivateChatPending(int friend_id, bool pending)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (pending)
         _pending_private_chats[friend_id] = true;
     else
@@ -308,6 +425,7 @@ void UserMgr::MarkPrivateChatPending(int friend_id, bool pending)
 void UserMgr::UpdateChatMessage(int friend_id, const QString &msg_id, qint64 message_id,
                                 ChatMessageStatus status)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto info = GetFriendById(friend_id);
     if (!info)
         return;
@@ -326,6 +444,7 @@ void UserMgr::UpdateChatMessage(int friend_id, const QString &msg_id, qint64 mes
 //断线时把所有还在「发送中」的消息标失败，避免界面一直转圈
 void UserMgr::FailPendingMessages()
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
         bool changed = false;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
@@ -342,12 +461,14 @@ void UserMgr::FailPendingMessages()
 //会话与好友是 1:1 映射，两个方向互相查找；都只在已加好友范围内有效
 qint64 UserMgr::ThreadId(int friend_id) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto it = _friend_map.constFind(friend_id);
     return it == _friend_map.cend() ? 0 : it.value()->_chat_thread->_thread_id;
 }
 
 int UserMgr::FriendIdByThread(qint64 thread_id) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list)
         if (info->_chat_thread->_thread_id == thread_id)
             return info->_uid;
@@ -357,6 +478,7 @@ int UserMgr::FriendIdByThread(qint64 thread_id) const
 //历史消息按最大 message_id 继续翻页；待确认消息 ID 为 0，不参与游标
 qint64 UserMgr::LastMessageId(int friend_id) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto it = _friend_map.constFind(friend_id);
     if (it == _friend_map.cend() || it.value()->_chat_thread->_chat_msgs.empty())
         return 0;
@@ -368,11 +490,13 @@ qint64 UserMgr::LastMessageId(int friend_id) const
 
 int UserMgr::FriendCount() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     return static_cast<int>(_friend_list.size());
 }
 
 std::shared_ptr<FriendInfo> UserMgr::FriendAt(int index) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (index < 0 || index >= static_cast<int>(_friend_list.size()))
         return nullptr;
     return _friend_list[index];
@@ -380,6 +504,7 @@ std::shared_ptr<FriendInfo> UserMgr::FriendAt(int index) const
 
 std::shared_ptr<FriendInfo> UserMgr::GetFriendById(int uid)
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     auto find_it = _friend_map.find(uid);
     if(find_it == _friend_map.end()){
         return nullptr;
@@ -390,11 +515,13 @@ std::shared_ptr<FriendInfo> UserMgr::GetFriendById(int uid)
 
 int UserMgr::ApplyCount() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     return static_cast<int>(_apply_list.size());
 }
 
 std::shared_ptr<ApplyInfo> UserMgr::ApplyAt(int index) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     if (index < 0 || index >= static_cast<int>(_apply_list.size()))
         return nullptr;
     return _apply_list[index];
@@ -403,15 +530,20 @@ std::shared_ptr<ApplyInfo> UserMgr::ApplyAt(int index) const
 //换账号或返回登录时清空全部会话数据；模型通过成对的 AboutToChange/Changed 重建
 void UserMgr::ClearSession()
 {
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     const bool hadIcon = !GetIcon().isEmpty();
     emit ApplyListAboutToChange();
     emit FriendListAboutToChange();
     _user_info.reset();
+    _token.clear();
     _localIcon.clear();
     _apply_list.clear();
     _friend_list.clear();
     _friend_map.clear();
     _pending_private_chats.clear();
+    _uploads.clear();
+    _downloads.clear();
+    _upload_paused = false;
 
     emit ApplyListChanged();
     emit FriendListChanged();

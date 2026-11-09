@@ -6,6 +6,7 @@
 | --- | --- | --- | --- |
 | HTTP/1.1 | Client ↔ GateServer | 注册、登录、改密、获取验证码 | JSON（`text/json`） |
 | TCP 自定义帧 | Client ↔ ChatServer | 长连接实时消息与通知 | 4 字节头 + JSON 体 |
+| TCP 自定义帧 | Client ↔ ResourceServer | 头像/文件分段传输 | 6 字节头 + JSON 体 |
 | gRPC | 服务之间 | 验证码、状态路由、跨实例消息转发 | protobuf（`server/proto/message.proto`） |
 
 ---
@@ -165,6 +166,39 @@
 
 ---
 
+### 资源服务器私有协议（Client ↔ ResourceServer）
+
+资源服务器使用同一套「ID + 长度 + JSON」思路，但长度字段扩为 4 字节，容纳文件分片：
+
+```
+ 0        1        2        3        4        5        6 ...
++--------+--------+--------+--------+--------+--------+------------------+
+|     msg_id      |              msg_len             |      payload      |
+|  (2 bytes, BE)  |          (4 bytes, BE)           |  (msg_len bytes)  |
++--------+--------+--------+--------+--------+--------+-------------------+
+|<-------------- HEAD_TOTAL_LEN = 6 ---------------->|
+```
+
+| 常量 | 值 | 说明 |
+| --- | --- | --- |
+| `HEAD_TOTAL_LEN` | 6 | 2 字节 ID + 4 字节长度 |
+| `MAX_FILE_LEN` | 2048 | 每个分片的原始字节数，两端一致 |
+| `MAX_MESSAGE_LEN` | 16384 | 单帧包体上限 |
+| `MAX_FILE_SIZE` | 4GB | 单文件上限 |
+
+| ID | 名称 | 方向 | 说明 |
+| --- | --- | --- | --- |
+| 2001 / 2002 | `ID_UPLOAD_FILE_REQ/RSP` | C ↔ S | 通用文件分段上传 |
+| 2003 / 2004 | `ID_SYNC_FILE_REQ/RSP` | C ↔ S | 续传前同步服务器进度 |
+| 2005 / 2006 | `ID_DOWN_LOAD_FILE_REQ/RSP` | C ↔ S | 断点下载 |
+| 2007 / 2008 | `ID_UPLOAD_HEAD_ICON_REQ/RSP` | C ↔ S | 头像分段上传 |
+
+上传首个分片必须携带 `uid`、`token`，服务端比对 Redis `utoken_<uid>` 后把 uid 绑定到连接；
+后续分片只校验连接身份。字段、校验规则与断点续传流程见
+[13-ResourceServer](13-resource-server.md)。
+
+---
+
 ## 3.2 HTTP 接口（Client ↔ GateServer）
 
 Base URL 由客户端 `config.ini` 的 `[GateServer] host/port` 拼成 `http://<host>:<port>`。
@@ -295,7 +329,7 @@ rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
 
 ## 3.4 错误码总表
 
-### 服务端错误码（`GateServer/include/const.h`、`ChatServer/include/const.h`）
+### 服务端错误码（`GateServer/include/const.h`、`ChatServer/include/const.h`、`ResourceServer/include/const.h`）
 
 | 值 | 名称 | 含义 | 出现位置 |
 | --- | --- | --- | --- |
@@ -311,10 +345,17 @@ rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
 | 1009 | `PasswdInvalid` | 邮箱或密码错误 | 登录 |
 | 1010 | `TokenInvalid` | Token 不匹配 | 长连接登录、StatusServer::Login |
 | 1011 | `UidInvalid` | uid 无效（Redis 无 token / 用户不存在） | 长连接登录、通知类消息 |
+| 1012 | `FileNotExists` | 服务器没有这次传输的记录 | 资源续传同步 |
+| 1013 | `FileSaveRedisFailed` | 续传进度写入 Redis 失败 | 资源上传 |
+| 1014 | `FileWritePermissionFailed` | 目标文件无法创建或写入 | 资源上传/下载 |
+| 1015 | `FileDataInvalid` | 分片数据与声明偏移不一致 | 资源上传/下载 |
+| 1016 | `FileNameInvalid` | 文件名含路径分隔符或超长 | 资源上传/下载 |
+| 1017 | `FileTooLarge` | 文件超过 4GB 上限 | 资源上传 |
+| 1018 | `FileSeqInvalid` | 分片序号不连续 | 资源上传 |
 
 > `ChatServer/include/const.h` 在 1001–1009 的基础上追加了 1010/1011；
-> StatusServer 复用同一份定义。三处 `ErrorCodes` 目前是**各自独立复制**的枚举，
-> 修改时需同步。
+> `ResourceServer/include/const.h` 追加了 1012–1018；StatusServer 复用同一份 1010/1011 定义。
+> 各处 `ErrorCodes` 目前是**各自独立复制**的枚举，修改时需同步。
 
 ### 验证码服务错误码（`VerifyServer/include/const.h`，`VerifyCodes`）
 

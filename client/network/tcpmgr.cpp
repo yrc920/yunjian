@@ -6,9 +6,12 @@
 
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0)
 {
+    registerMetaType();
+
     //处理连接成功, 相当于异步等待连接成功的事件
-    QObject::connect(&_socket, &QTcpSocket::connected, [&]() {
+    QObject::connect(&_socket, &QTcpSocket::connected, this, [this]() {
         qDebug() << "Connected to server!";
+        _manual_close = false;
         emit sig_con_success(true); //连接成功后发出信号通知界面更新状态
     });
 
@@ -22,7 +25,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
             emit sig_con_failed(_socket.errorString());
         });
 
-    QObject::connect(&_socket, &QTcpSocket::readyRead, [&]() {
+    QObject::connect(&_socket, &QTcpSocket::readyRead, this, [this]() {
         //当有数据可读时，读取所有数据并追加到缓冲区
         _buffer.append(_socket.readAll());
 
@@ -58,32 +61,92 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
 
     });
 
-    //处理连接错误
-    QObject::connect(&_socket,
-        QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
-            [&](QAbstractSocket::SocketError socketError) {
-                Q_UNUSED(socketError)
-                qDebug() << "Error:" << _socket.errorString();
-                });
-
     //处理连接断开
-    QObject::connect(&_socket, &QTcpSocket::disconnected, [&]() {
+    QObject::connect(&_socket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "Disconnected from server.";
+        _send_queue.clear();
+        _current_block.clear();
+        _bytes_sent = 0;
+        _pending = false;
+        if (_manual_close) {
+            _manual_close = false;
+            return;
+        }
         emit sig_connection_closed(); //并且发送通知到界面
         });
 
     //连接发送信号用来发送数据
     QObject::connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
+    //连接请求与关闭请求也交给本对象所在线程执行
+    QObject::connect(this, &TcpMgr::sig_connect_tcp, this, &TcpMgr::slot_tcp_connect);
+    QObject::connect(this, &TcpMgr::sig_close_connection, this, &TcpMgr::CloseConnection);
+
+    //Qt的socket非阻塞，缓冲区满时write只写出一部分；由bytesWritten续写剩余部分
+    QObject::connect(&_socket, &QTcpSocket::bytesWritten, this, [this](qint64 bytes) {
+        _bytes_sent += bytes;
+        if (_bytes_sent < _current_block.size()) {
+            _socket.write(_current_block.mid(_bytes_sent));
+            return;
+        }
+
+        if (_send_queue.isEmpty()) {
+            _current_block.clear();
+            _bytes_sent = 0;
+            _pending = false;
+            return;
+        }
+
+        _current_block = _send_queue.dequeue();
+        _bytes_sent = 0;
+        _pending = true;
+        _socket.write(_current_block);
+    });
 
     initHandlers(); //注册消息
 }
 
+void TcpMgr::registerMetaType()
+{
+    //跨线程队列连接需要运行时打包/解包参数，自定义类型必须注册
+    qRegisterMetaType<ServerInfo>("ServerInfo");
+    qRegisterMetaType<ReqId>("ReqId");
+    qRegisterMetaType<std::shared_ptr<SearchInfo>>("std::shared_ptr<SearchInfo>");
+    qRegisterMetaType<std::shared_ptr<AddFriendApply>>("std::shared_ptr<AddFriendApply>");
+    qRegisterMetaType<std::shared_ptr<AuthInfo>>("std::shared_ptr<AuthInfo>");
+    qRegisterMetaType<std::shared_ptr<AuthRsp>>("std::shared_ptr<AuthRsp>");
+    qRegisterMetaType<std::shared_ptr<TextChatMsg>>("std::shared_ptr<TextChatMsg>");
+}
+
+void TcpMgr::MoveToThread(QThread *thread)
+{
+    if (!thread)
+        return;
+    //moveToThread不会带走没有父子关系的成员socket，必须单独迁移，否则socket仍在主线程
+    moveToThread(thread);
+    _socket.moveToThread(thread);
+}
+
+void TcpMgr::ConnectToServer(const ServerInfo &info)
+{
+    emit sig_connect_tcp(info);
+}
+
+void TcpMgr::CloseConnectionAsync()
+{
+    emit sig_close_connection();
+}
+
 void TcpMgr::CloseConnection(){
+    _manual_close = true;
     _socket.abort();
     _buffer.clear();
     _b_recv_pending = false;
     _message_id = 0;
     _message_len = 0;
+    _send_queue.clear();
+    _current_block.clear();
+    _bytes_sent = 0;
+    _pending = false;
 }
 
 TcpMgr::~TcpMgr(){
@@ -482,15 +545,15 @@ void TcpMgr::handleMsg(ReqId id, int len, QByteArray data)
     find_iter.value()(id, len, data); //调用找到的处理函数，传入消息ID、消息长度和消息数据
 }
 
-void TcpMgr::slot_tcp_connect(ServerInfo si)
+void TcpMgr::slot_tcp_connect(ServerInfo info)
 {
     qDebug()<< "receive tcp connect signal";
     //尝试连接到服务器
     qDebug() << "Connecting to server...";
-    _host = si.Host; //服务器地址
-    _port = static_cast<uint16_t>(si.Port.toUInt()); //服务器端口
+    _host = info.Host; //服务器地址
+    _port = static_cast<uint16_t>(info.Port.toUInt()); //服务器端口
     CloseConnection();
-    _socket.connectToHost(si.Host, _port); //连接到服务器(异步)
+    _socket.connectToHost(_host, _port); //连接到服务器(异步)
 }
 
 void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
@@ -511,5 +574,15 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     out.setByteOrder(QDataStream::BigEndian);
     out << id << len; //写入ID和长度
     block.append(dataBytes); //添加字符串数据
-    _socket.write(block); //发送数据
+
+    //已有数据在发送时先入队，等bytesWritten把当前块发完再取
+    if (_pending) {
+        _send_queue.enqueue(block);
+        return;
+    }
+
+    _current_block = block;
+    _bytes_sent = 0;
+    _pending = true;
+    _socket.write(_current_block);
 }

@@ -2,6 +2,10 @@
 [StatusServer]
 Host = 127.0.0.1
 Port = 50052
+# 资源服务器地址随登录路由下发给客户端，必须是客户端可访问的地址
+[ResourceServer]
+Host = 127.0.0.1
+Port = 9090
 [Mysql]
 Host = 127.0.0.1
 XPort = 33060

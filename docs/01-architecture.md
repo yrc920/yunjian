@@ -4,7 +4,7 @@
 
 要用 C++ 做出一套能横向扩展的即时通讯后端，下面三个决定基本框定了后面的所有实现。
 
-**按职责切分服务，而不是按数据切分。** 四个进程各自拥有一份配置、线程池与连接池，
+**按职责切分服务，而不是按数据切分。** 五个进程各自拥有一份配置、线程池与连接池，
 任一进程崩溃只影响它的直接依赖方，不会连带其他服务已经建立的连接。
 
 **无状态网关 + 有状态聊天节点。** GateServer 不保存会话，只做协议转换与 RPC 编排；
@@ -38,17 +38,23 @@ flowchart TB
         Chat["CServer → CSession → LogicSystem（单线程逻辑队列）<br/>ChatServiceImpl（gRPC 服务端）<br/>ChatGrpcClient（gRPC 客户端）<br/>UserMgr（uid → session）"]
     end
 
+    subgraph res["资源层 · ResourceServer"]
+        Res["CServer → CSession（2+4 字节帧）<br/>LogicWorker 池（按会话）<br/>FileWorker / DownloadWorker 池（按文件名）"]
+    end
+
     Store[("MySQL X DevAPI<br/>+ Redis hiredis")]
     Mail["邮箱服务商"]
 
     CMgr -->|"HTTP / JSON"| Gate
     CMgr -->|"TCP / 自定义二进制帧"| Chat
+    CMgr -->|"TCP / 文件分片"| Res
     Gate -->|"gRPC GetVerifyCode"| Verify
     Gate -->|"gRPC GetChatServer"| Status
     Gate --> Store
     Verify -->|"SMTP 465 SSL"| Mail
     Status -->|"HGET logincount"| Store
     Chat --> Store
+    Res --> Store
 ```
 
 ## 1.3 进程与线程模型
@@ -77,6 +83,20 @@ RPC 调用与数据库访问，会阻塞该 IO 线程。这是当前实现的吞
 **关键设计：逻辑单线程。** 所有 TCP 消息的处理函数在同一个线程内串行执行，
 `UserMgr` 还会被 IO 和 gRPC 线程访问，因此映射由互斥锁保护。
 `CSession::Send()` 将发送操作投递到 socket 所属 IO 线程，与读取、关闭串行执行。
+
+### ResourceServer
+
+| 线程 | 数量 | 职责 |
+| --- | --- | --- |
+| 主线程 | 1 | 运行 `io_context`（acceptor + 信号） |
+| IOContextPool 线程 | CPU 核心数 | 承载 `CSession` 的异步收发 |
+| LogicWorker | 4 | 按会话 UUID 分派，解析 JSON、校验 token、维护续传进度、投递文件任务 |
+| FileWorker | 4 | 按文件名分派，分片落盘，最后一片更新头像 |
+| DownloadWorker | 2 | 按文件名分派，按 seq 读取分片并编码 |
+
+资源服务没有 ChatServer 那样的单消费者队列，而是两级分派：同一连接固定到一个 LogicWorker，
+同一文件固定到一个 FileWorker，既保证分片顺序，又让不同文件并行。详见
+[13-ResourceServer](13-resource-server.md)。
 
 ### StatusServer / VerifyServer
 

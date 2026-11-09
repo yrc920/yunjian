@@ -95,7 +95,7 @@ cmake --build --preset macos-clang
 ### proto 代码生成（`server/proto/`）
 
 `proto/` 是**共享 proto 的单一源**，构建期生成代码并打包成静态库 `xigu_proto`，
-四个服务统一链接，避免各服务重复维护 proto 与生成步骤。
+需要 RPC 的服务统一链接；ResourceServer 是独立 TCP 服务，不依赖 gRPC/proto。
 
 ```mermaid
 flowchart LR
@@ -127,12 +127,12 @@ flowchart LR
 | `hiredis::hiredis` | Redis 客户端 |
 | `JsonCpp::JsonCpp` | JSON 序列化 |
 | `unofficial-sodium::sodium` | Argon2id 口令哈希（仅 GateServer） |
-| `unofficial::mysql-connector-cpp::connector` | MySQL X DevAPI（除 VerifyServer） |
+| `unofficial::mysql-connector-cpp::connector` | MySQL X DevAPI（GateServer / StatusServer / ChatServer / ResourceServer） |
 | `Poco::NetSSL` / `Poco::Net` | SMTP over SSL（仅 VerifyServer） |
 | `Threads::Threads` | 线程支持 |
 | `ws2_32` | Windows Winsock（仅 WIN32） |
 
-顶层 `CMakeLists.txt` 末尾对 GateServer / StatusServer / ChatServer 统一补链接
+顶层 `CMakeLists.txt` 末尾对 GateServer / StatusServer / ChatServer / ResourceServer 统一补链接
 `zstd::libzstd` 与 `LZ4::lz4`：mysql-connector-cpp 的 X DevAPI 压缩功能引用这两个库的符号，
 而 vcpkg 的 `unofficial` 配置不会自动传递该依赖，需显式补齐（顺序必须在 mysql 之后）。
 
@@ -206,7 +206,7 @@ endif()
 
 ## 2.5 部署规则（`cmake/XiguChatCommon.cmake`）
 
-`xiguchat_deploy(<target>)` 为 GateServer / StatusServer / VerifyServer 提供统一部署：
+`xiguchat_deploy(<target>)` 为 GateServer / StatusServer / VerifyServer / ResourceServer 提供统一部署：
 
 1. 拷贝 `config.ini` 到可执行文件目录（三平台通用——服务按 cwd 读取配置）；
 2. 拷贝运行时 DLL（仅 Windows）。
@@ -284,6 +284,7 @@ QML 使用 `QtQuick.Effects` 绘制头像遮罩，使用 `QtCore.Settings` 保�
 | `VerifyServer/` | `VerifyServer(.exe)` + `config.ini` + [Windows] `*.dll` |
 | `ChatServer/` | `ChatServer(.exe)` + `config.ini`（实例 `chatserver1`） |
 | `ChatServer2/` | `ChatServer(.exe)` + `config.ini`（实例 `chatserver2`） |
+| `ResourceServer/` | `ResourceServer(.exe)` + `config.ini` + [运行时] `storage/` |
 
 Windows 用多配置生成器，路径再多一层：`bin/<服务名>/<Debug|Release>/`。
 
@@ -298,6 +299,7 @@ cd build/macos-clang/bin
 ./StatusServer/StatusServer
 ./ChatServer/ChatServer
 ./ChatServer2/ChatServer
+./ResourceServer/ResourceServer
 ./GateServer/GateServer
 ```
 

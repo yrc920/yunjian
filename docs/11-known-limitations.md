@@ -27,7 +27,7 @@
 | R5 | 跨实例 RPC 失败即丢弃 | 对端实例不可达时消息静默丢失 | 失败重试 + 降级为离线消息 |
 | R6 | 无服务探活 | StatusServer 无法感知实例已崩溃，仍可能分配 | 心跳上报 + 过期剔除（`logincount` 加时间戳） |
 | R7 | 断连清理依赖 Redis 锁与连接可用性；失败后缺少补偿 | `uip_` / `usession_` 可能残留 | 给在线状态加 TTL，并按 session 标识进行原子续期与删除 |
-| R8 | 用户资料缓存无失效 | 修改昵称/头像/密码后缓存不更新 | 更新时同步删除 `ubaseinfo_<uid>` / `nameinfo_<name>`，或加 TTL |
+| R8 | 用户资料缓存无失效 | 修改昵称/密码后缓存不更新；头像上传已同步刷新 `ubaseinfo_` / `nameinfo_`，其余字段仍缺 | 更新时同步删除 `ubaseinfo_<uid>` / `nameinfo_<name>`，或加 TTL |
 | R9 | Redis/MySQL 连接池缺少完整的连接超时、失效剔除和重连策略 | 初始化无可用连接或运行中断网时，调用可能长时间阻塞；gRPC deadline 不能代替数据库超时 | 增加有界等待、健康检测与重连退避 |
 | R10 | 同步好友/踢人 RPC 失败后缺少完整补偿 | 跨实例操作可能只完成一部分 | 检查每一步返回值，按 session 版本或消息 ID 做幂等补偿 |
 
@@ -47,7 +47,7 @@
 | --- | --- | --- | --- |
 | C1 | `GetBaseInfo` 逻辑在 **三处重复** | `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient`（ChatServer） | 收敛到 `UserMgr` 或独立的 `UserCache` 组件 |
 | C2 | `ErrorCodes` 枚举在 GateServer / StatusServer / ChatServer **各自复制一份**（1001–1009，ChatServer 多 1010/1011） | 三处 `include/const.h` | 抽到公共头，避免漏改导致语义漂移 |
-| C3 | `IOContextPool` / `ConfigMgr` / `RedisMgr` / `MysqlMgr` / `MysqlDao` / `Singleton` 在四个服务中**逐份复制** | `services/*/` | 抽取为公共静态库，各服务链接；代价是服务间的独立性下降，需权衡 |
+| C3 | `IOContextPool` / `ConfigMgr` / `RedisMgr` / `MysqlMgr` / `MysqlDao` / `Singleton` 在五个服务中**逐份复制** | `services/*/` | 抽取为公共静态库，各服务链接；代价是服务间的独立性下降，需权衡 |
 | C4 | `StatusServer::ChatGrpcClient` 为**死代码**，且构造用的是 TCP 端口而非 RPC 端口 | `services/StatusServer/` | 删除，或修正端口语义后在需要时启用 |
 | C5 | `ChatServer::StatusGrpcClient` 已链接但**未被调用**；`StatusService::Login` 与 ChatServer 自行读 Redis 校验 token 逻辑重复 | `services/ChatServer/`、`services/StatusServer/` | 统一为"ChatServer 调 StatusServer::Login"，收敛校验入口 |
 | C6 | proto 中 `RplyAddFriend`、`SendChatMsg` 已定义但无实现/无调用 | `proto/message.proto` | 实现或删除 |
@@ -59,11 +59,11 @@
 | # | 缺失 | 说明 |
 | --- | --- | --- |
 | F1 | 群聊 | 只有单聊，好友列表无分组 |
-| F2 | 图片 / 文件消息 | 客户端支持图片拖入/粘贴和本地预览，服务端只处理文本，图片与文件尚不能发给对方 |
+| F2 | 聊天图片 / 文件消息 | 头像已走 ResourceServer 上传下载；聊天图片/文件消息仍未接入协议，客户端只能本地预览 |
 | F3 | 客户端本地消息缓存 | 服务端 `chat_message` 已持久化；客户端仍只存内存，重启或换设备后需从服务端全量拉取；后续接入 SQLite 与本地增量游标 |
 | F4 | 多端登录 | `uip_<uid>` 只保留最后一个登录位置；多端会互相踢掉（后登录覆盖） |
 | F5 | 好友删除 / 黑名单 | 只有添加与同意 |
-| F6 | 头像上传 | `icon` 只能是资源路径，无上传与存储 |
+| F6 | 资源服务器扩展 | 只有单实例；上传串行等待每片回包，没有拥塞窗口；进度只保留 1 小时；下载断线后按本地文件大小重发 |
 | F8 | 国际化 | 客户端界面文案只有中文，`tr()` 未全面覆盖 |
 
 ## 11.6 改进优先级建议

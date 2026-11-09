@@ -2,6 +2,8 @@
 #define TCPMGR_H
 
 #include <QTcpSocket>
+#include <QQueue>
+#include <QThread>
 #include "singleton.h"
 #include "global.h"
 #include <QObject>
@@ -9,7 +11,7 @@
 /******************************************************************************
  *
  * @file       tcpmgr.h
- * @brief      tcp管理者
+ * @brief      聊天服务器 TCP 管理者，运行在独立网络线程
  *
  * @author     西故
  * @date       2026/04/29
@@ -23,15 +25,21 @@ class TcpMgr : public QObject, public Singleton<TcpMgr>,
 
 public:
     ~TcpMgr(); //使基类析构时可以访问派生类的析构函数
-    void CloseConnection();
+    //由TcpThread在线程启动后调用：QObject与成员socket都要跟随到网络线程
+    void MoveToThread(QThread *thread);
+
+    //socket 是私有成员，不能跨线程直接操作；连接与关闭统一走信号
+    void ConnectToServer(const ServerInfo &info);
+    void CloseConnectionAsync();
 
 private:
     friend class Singleton<TcpMgr>; //使基类创建实例时可以访问私有构造函数
     TcpMgr();
     void initHandlers(); //初始化消息处理函数
     void handleMsg(ReqId id, int len, QByteArray data); //处理消息的函数
+    void registerMetaType(); //注册跨线程信号携带的自定义类型
 
-    QTcpSocket _socket; //TCP套接字对象
+    QTcpSocket _socket; //TCP套接字对象，必须与TcpMgr在同一线程
     QString _host; //服务器地址
     uint16_t _port; //服务器端口
     QByteArray _buffer; //接收数据的缓冲区
@@ -41,11 +49,22 @@ private:
     //消息ID到处理函数的映射
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
 
+    //发送队列：socket.write可能因缓冲区满返回-1，统一由bytesWritten续写
+    QQueue<QByteArray> _send_queue;
+    QByteArray _current_block;
+    qint64 _bytes_sent = 0;
+    bool _pending = false;
+    //区分主动重连与对端断开：主动close不应被会话层当成登录失败
+    bool _manual_close = false;
+
 public slots:
-    void slot_tcp_connect(ServerInfo); //连接服务器的槽函数
+    void slot_tcp_connect(ServerInfo info); //连接服务器的槽函数
     void slot_send_data(ReqId reqId, QByteArray data); //发送数据的槽函数
+    void CloseConnection(); //实际关闭socket，只在网络线程执行
 
 signals:
+    void sig_connect_tcp(ServerInfo info); //请求连接，跨线程投递
+    void sig_close_connection(); //请求关闭
     void sig_con_success(bool bsuccess); //连接成功的信号
     void sig_con_failed(const QString &message); //连接失败（DNS/拒绝/超时），带可展示的原因
     void sig_send_data(ReqId reqId, QByteArray data); //发送数据的信号

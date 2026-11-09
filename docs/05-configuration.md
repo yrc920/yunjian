@@ -71,6 +71,11 @@ Passwd = 123456
 Host = 127.0.0.1
 Port = 50052             # gRPC 监听地址（Host 填 0.0.0.0 可对外）
 
+# 资源服务器地址随 GetChatServer 下发；必须是客户端能访问到的地址
+[ResourceServer]
+Host = 127.0.0.1
+Port = 9090
+
 [Mysql]  ...同 GateServer...
 [Redis]  ...同 GateServer...
 
@@ -92,6 +97,7 @@ Port = 8091
 | --- | --- |
 | `[chatservers] Name` | 参与调度的实例名清单。新增实例必须在此登记，否则不会被分配 |
 | `[<实例名>] Name/Host/Port` | 返回给客户端的连接地址。`Port` 是**客户端 TCP 端口** |
+| `[ResourceServer] Host/Port` | 资源服务器地址，写入 `GetChatServerRsp.res_host/res_port`；留空时客户端只保存本机头像 |
 
 调度算法（`StatusServiceImpl::getChatServer`）：遍历清单，逐个 `HGET logincount <name>`；
 取不到的实例按 `INT_MAX` 处理（即视为"无连接数记录"），最终返回连接数最小的实例。
@@ -183,11 +189,33 @@ CA =                     # CA 证书包路径；留空按平台自动探测
 
 ---
 
-## 5.6 常见变更场景
+## 5.6 ResourceServer `server/services/ResourceServer/config.ini`
+
+```ini
+[SelfServer]
+Port = 9090                 # 面向客户端的 TCP 端口
+
+[Storage]
+Path = storage              # 相对服务工作目录；头像存 <Path>/<uid>/<name>
+
+[Mysql]  ...同 GateServer...
+[Redis]  ...同 GateServer...
+```
+
+| 段/字段 | 说明 |
+| --- | --- |
+| `[SelfServer] Port` | 分段上传/下载监听端口 |
+| `[Storage] Path` | 落盘根目录；Docker 部署挂到 `/var/lib/xiguchat/storage` |
+| `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存 |
+| `[Redis]` | token 校验与 `file_upload_<md5>` 续传进度（TTL 3600s） |
+
+---
+
+## 5.7 常见变更场景
 
 | 场景 | 需要改动的位置 |
 | --- | --- |
-| 改 MySQL / Redis 地址或密码 | GateServer、StatusServer、ChatServer（每份实例 ini）、VerifyServer 各自的 `config.ini` |
+| 改 MySQL / Redis 地址或密码 | GateServer、StatusServer、ChatServer（每份实例 ini）、VerifyServer、ResourceServer 各自的 `config.ini` |
 | 改网关端口 | GateServer `[GateServer] Port` + 客户端 `config.ini` |
 | 新增 ChatServer 实例 | 新建 `ChatServer/config/<Name>.ini`；已存在实例的 `[PeerServer]` 与对端段互相登记；`StatusServer` 的 `[chatservers] Name` 与 `[<Name>]` 段 |
 | 改实例端口 | 该实例 ini 的 `[SelfServer]`；对端 ini 的对端段；`StatusServer` 的 `[<实例名>].Port` |

@@ -7,6 +7,8 @@
 #include <QUrl>
 
 #include "global.h"
+#include "filetcpthread.h"
+#include "tcpthread.h"
 
 int main(int argc, char *argv[])
 {
@@ -36,6 +38,10 @@ int main(int argc, char *argv[])
                       + settings.value(QStringLiteral("GateServer/host")).toString()
                       + QLatin1Char(':')
                       + settings.value(QStringLiteral("GateServer/port")).toString();
+
+    //聊天与资源各用一个网络线程：文件分片不能挤占聊天消息的发送与解析
+    TcpThread tcp_thread;
+    FileTcpThread file_tcp_thread;
 
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/XiguChat/qml/Main.qml")));

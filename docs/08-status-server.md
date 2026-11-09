@@ -26,6 +26,7 @@
 | --- | --- |
 | `[chatserver1]` | `{name=chatserver1, host=127.0.0.1, port=8090}` |
 | `[chatserver2]` | `{name=chatserver2, host=127.0.0.1, port=8091}` |
+| `[ResourceServer]` | `{host=127.0.0.1, port=9090}`，原样写入 `res_host/res_port`；留空时客户端跳过资源连接 |
 
 这里的 `Port` 是**客户端连接的 TCP 端口**，会被原样返回给客户端，不要和 ChatServer
 `[PeerServer]` 里的 RPC 端口混淆。
@@ -42,7 +43,7 @@ Status GetChatServer(ServerContext*, const GetChatServerReq* req, GetChatServerR
 2. uid 非法或无可用候选时返回 `RPCFailed`；
 3. `generate_unique_string()` 生成 UUID 作为 token；
 4. `insertToken(uid, token)` → `Redis SET utoken_<uid> <token>`；
-5. 写入成功才返回 `{host, port, token, error=0}`，写入失败返回 `RPCFailed`。
+5. 写入成功才返回 `{host, port, token, res_host, res_port, error=0}`，写入失败返回 `RPCFailed`。
 
 ### 最小连接数选路（`getChatServer`）
 

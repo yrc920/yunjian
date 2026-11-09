@@ -25,7 +25,7 @@
 | `nick` | varchar(255) | 昵称 |
 | `desc` | varchar(255) | 个性签名（SQL 中需反引号转义：`` `desc` ``） |
 | `sex` | int | 性别：0 未知 / 1 女 / 2 男（客户端以 1 显示女性图标） |
-| `icon` | varchar(255) | 头像，存 Qt 资源路径（如 `:/res/head_1.jpg`） |
+| `icon` | varchar(255) | 头像：默认值为 Qt 资源路径（如 `:/res/head_1.jpg`）；上传后保存资源文件名（`<md5>.png`），由 ResourceServer 写入 |
 
 ### 表 `friend`
 
@@ -108,9 +108,10 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 | `code_<email>` | String | VerifyServer | GateServer | 600s | 验证码，`SETEX` 写入 |
 | `utoken_<uid>` | String | StatusServer | ChatServer | 无 | 登录令牌（UUID） |
 | `uip_<uid>` | String | ChatServer | ChatServer | 无 | 该用户当前所在实例名 |
-| `ubaseinfo_<uid>` | String(JSON) | ChatServer | ChatServer | 无 | 按 uid 缓存的用户资料 |
-| `nameinfo_<name>` | String(JSON) | ChatServer | ChatServer | 无 | 按用户名缓存的用户资料 |
+| `ubaseinfo_<uid>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按 uid 缓存的用户资料；头像上传后由资源服务器刷新 |
+| `nameinfo_<name>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按用户名缓存的用户资料；头像上传后由资源服务器刷新 |
 | `logincount` | Hash | ChatServer | StatusServer | 无 | field=实例名，value=在线连接数 |
+| `file_upload_<md5>` | String(JSON) | ResourceServer | ResourceServer | 3600s | 分段上传进度：路径、文件名、uid、seq、总大小、已落盘大小、是否头像 |
 
 未使用的历史前缀：`ipcount_`（`IPCOUNTPREFIX`），当前代码中无引用。
 

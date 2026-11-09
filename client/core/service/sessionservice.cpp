@@ -6,6 +6,7 @@
 
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "fileservice.h"
 
 namespace {
 constexpr int kSessionTimeoutMs = 12000; // 连接 + 登录帧回包的整体上限
@@ -156,6 +157,7 @@ SessionService::SessionService() : _ready(false)
             _ready = false;
             _heartbeat.stop();
             UserMgr::GetInstance()->FailPendingMessages();
+            FileService::GetInstance()->CloseResource();
         }
     });
     connect(tcp, &TcpMgr::sig_notify_offline, this, [this] {
@@ -165,6 +167,7 @@ SessionService::SessionService() : _ready(false)
         }
         _ready = false;
         _heartbeat.stop();
+        FileService::GetInstance()->CloseResource();
     });
 }
 
@@ -175,20 +178,22 @@ SessionService::~SessionService()
 // 建立会话：清掉上一个账号的数据，连 TCP 并发登录帧，整体超时兜底
 void SessionService::connectToChat(const ServerInfo &info)
 {
-    closeSession();
-    // 每次登录都从空的用户数据开始
+    //不复用closeSession：它会把旧连接的关闭信号当成新登录过程中的断线
+    _timeout.stop();
+    _heartbeat.stop();
+    _ready = false;
+    _current = {};
     UserMgr::GetInstance()->ClearSession();
 
     _pending = info;
     _connecting = true;
-    _ready = false;
     _timeout.start();
 
     emit connecting();
 
-    // 同线程直接调用 TcpMgr 的槽：它的 socket 是私有的，
-    // 这里只表达“请连到这台服务器”，不参与 socket 生命周期
-    TcpMgr::GetInstance()->slot_tcp_connect(info);
+    //聊天连接与资源连接并行建立；资源服务器不可用不应阻塞聊天登录
+    TcpMgr::GetInstance()->ConnectToServer(info);
+    FileService::GetInstance()->ConnectToResource(info);
 }
 
 // 主动结束会话：停心跳、停超时、断开连接
@@ -200,7 +205,8 @@ void SessionService::closeSession()
     _connecting = false;
     _current = {};
     _pending = {};
-    TcpMgr::GetInstance()->CloseConnection();
+    TcpMgr::GetInstance()->CloseConnectionAsync();
+    FileService::GetInstance()->CloseResource();
 }
 
 // TCP 连上之后发 ID_CHAT_LOGIN 帧，把 uid 与 token 交给聊天服务器
@@ -242,6 +248,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
         return;
     }
     auto *mgr = UserMgr::GetInstance().get();
+    mgr->SetToken(_pending.Token);
     mgr->SetUserInfo(std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
         data["nick"].toString(), data["icon"].toString(), data["sex"].toInt()));
     mgr->AppendApplyList(data["apply_list"].toArray());
@@ -258,6 +265,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     _ready = true;
     _current = _pending;
     _heartbeat.start();
+    FileService::GetInstance()->OnSessionReady();
     emit sessionReady();
 }
 

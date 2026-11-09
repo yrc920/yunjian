@@ -17,6 +17,14 @@ FriendListModel::FriendListModel(QObject *parent) : QAbstractListModel(parent)
         const QModelIndex idx = index(row, 0);
         emit dataChanged(idx, idx, {LastTextRole});
     });
+    // 头像下载完成只影响这一行，避免整表重置
+    connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
+        const int row = indexOfUid(uid);
+        if (row < 0)
+            return;
+        const QModelIndex idx = index(row, 0);
+        emit dataChanged(idx, idx, {IconRole});
+    });
 }
 
 // 行数直接取 UserMgr 的好友数量，模型自己不存副本

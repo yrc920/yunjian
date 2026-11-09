@@ -140,9 +140,12 @@ void AuthService::onLoginResponse(ReqId id, QString res, ErrorCodes err)
     info.Host = obj["host"].toString();
     info.Port = obj["port"].toString();
     info.Token = obj["token"].toString();
+    info.ResHost = obj["res_host"].toString();
+    info.ResPort = obj["res_port"].toString();
 
     qDebug() << "[auth] login ok, uid =" << info.Uid
-             << "host =" << info.Host << "port =" << info.Port;
+             << "host =" << info.Host << "port =" << info.Port
+             << "resource =" << info.ResHost << info.ResPort;
 
     emit loginSucceeded(info, obj["email"].toString());
 }

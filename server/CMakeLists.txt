@@ -6,8 +6,8 @@
 #          + libsodium + Poco Net/NetSSL
 #  依赖:   vcpkg manifest（server/vcpkg.json），由 vcpkg
 #          toolchain 自动安装，版本由 vcpkg baseline 锁定
-#  目标:   GateServer / StatusServer / ChatServer / VerifyServer
-#          四个相互独立的可执行程序（微服务）
+#  目标:   GateServer / StatusServer / ChatServer / VerifyServer / ResourceServer
+#          五个相互独立的可执行程序（微服务）
 #          ChatServer 为一套代码多实例部署，实例由 config/*.ini 决定
 #  构建:   三平台预设（windows-msvc / macos-clang / linux-gcc），
 #          macOS/Linux：configure 与 build 均用 <平台预设>[-release]
@@ -103,6 +103,7 @@ add_subdirectory(services/GateServer)
 add_subdirectory(services/StatusServer)
 add_subdirectory(services/ChatServer)
 add_subdirectory(services/VerifyServer)
+add_subdirectory(services/ResourceServer)
 
 # ---------- 统一补链接 ----------
 # 除 VerifyServer 外的服务都链接 mysql-connector-cpp（X DevAPI），
@@ -112,7 +113,7 @@ add_subdirectory(services/VerifyServer)
 #               Linux 的当前连接器构建需要显式链接 libresolv；
 #               macOS SDK 也提供 libresolv，但当前构建无需此补链；
 #               Windows 的解析依赖由连接器的平台配置提供。
-foreach(server IN ITEMS GateServer StatusServer ChatServer)
+foreach(server IN ITEMS GateServer StatusServer ChatServer ResourceServer)
     target_link_libraries(${server} PRIVATE zstd::libzstd LZ4::lz4)
     if(UNIX AND NOT APPLE)
         target_link_libraries(${server} PRIVATE resolv)

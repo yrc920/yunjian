@@ -49,6 +49,10 @@ message GetChatServerRsp {
   string port = 3;
   // 本次会话令牌，由 StatusServer 生成并写入 Redis 的 utoken_<uid>，客户端拿它向 ChatServer 证明身份
   string token = 4;
+  // 资源服务器地址，客户端据此上传头像、下载缺失资源；未配置资源服务器时为空
+  string res_host = 5;
+  // 资源服务器 TCP 端口，与 res_host 配对
+  string res_port = 6;
 }
 
 // 校验登录态的请求

@@ -7,6 +7,8 @@
 #include <vector>
 #include <QJsonObject>
 #include <utility>
+#include <QMetaType>
+#include "global.h"
 /******************************************************************************
  *
  * @file       userdata.h
@@ -234,5 +236,33 @@ struct TextChatMsg{
     qint64 _thread_id = 0;
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
 };
+
+//一次在途的头像/文件上传：FileTcpMgr 收到回包后按这里的偏移继续读下一片
+struct UploadFileInfo {
+    QString _md5;
+    QString _name;
+    QString _path;
+    qint64 _total_size = 0;
+    qint64 _trans_size = 0;
+    int _seq = 0;
+    int _uid = 0;
+    ReqId _req_id = ID_UPLOAD_HEAD_ICON_REQ;
+};
+
+//一次断点下载：seq 从 1 开始，写完后由 FileTcpMgr 继续请求下一片
+struct DownloadFileInfo {
+    QString _name;
+    QString _client_path;
+    int _owner_uid = 0;
+    int _seq = 1;
+    qint64 _total_size = 0;
+    qint64 _current_size = 0;
+};
+
+Q_DECLARE_METATYPE(std::shared_ptr<SearchInfo>)
+Q_DECLARE_METATYPE(std::shared_ptr<AddFriendApply>)
+Q_DECLARE_METATYPE(std::shared_ptr<AuthInfo>)
+Q_DECLARE_METATYPE(std::shared_ptr<AuthRsp>)
+Q_DECLARE_METATYPE(std::shared_ptr<TextChatMsg>)
 
 #endif // USERDATA_H
