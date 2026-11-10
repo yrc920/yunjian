@@ -347,14 +347,16 @@ rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
 | 1011 | `UidInvalid` | uid 无效（Redis 无 token / 用户不存在） | 长连接登录、通知类消息 |
 | 1012 | `FileNotExists` | 服务器没有这次传输的记录 | 资源续传同步 |
 | 1013 | `FileSaveRedisFailed` | 续传进度写入 Redis 失败 | 资源上传 |
-| 1014 | `FileWritePermissionFailed` | 目标文件无法创建或写入 | 资源上传/下载 |
-| 1015 | `FileDataInvalid` | 分片数据与声明偏移不一致 | 资源上传/下载 |
+| 1014 | `FileWritePermissionFailed` | 目标文件无法创建或写入 | 资源上传 |
+| 1015 | `FileDataInvalid` | 分片数据与声明偏移不一致 | 资源上传 |
 | 1016 | `FileNameInvalid` | 文件名含路径分隔符或超长 | 资源上传/下载 |
 | 1017 | `FileTooLarge` | 文件超过 4GB 上限 | 资源上传 |
 | 1018 | `FileSeqInvalid` | 分片序号不连续 | 资源上传 |
+| 1019 | `FileReadPermissionFailed` | 源文件无法打开或读取 | 资源下载 |
+| 1020 | `FileOffsetInvalid` | 请求偏移已超出文件范围 | 资源下载 |
 
 > `ChatServer/include/const.h` 在 1001–1009 的基础上追加了 1010/1011；
-> `ResourceServer/include/const.h` 追加了 1012–1018；StatusServer 复用同一份 1010/1011 定义。
+> `ResourceServer/include/const.h` 追加了 1012–1020；StatusServer 复用同一份 1010/1011 定义。
 > 各处 `ErrorCodes` 目前是**各自独立复制**的枚举，修改时需同步。
 
 ### 验证码服务错误码（`VerifyServer/include/const.h`，`VerifyCodes`）

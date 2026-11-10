@@ -17,6 +17,8 @@ enum ErrorCodes {
 	FileNameInvalid = 1016, //文件名含路径分隔符或超长
 	FileTooLarge = 1017, //文件超过4GB上限
 	FileSeqInvalid = 1018, //分片序号不连续
+	FileReadPermissionFailed = 1019, //源文件无法打开或读取
+	FileOffsetInvalid = 1020, //请求的偏移已超出文件范围
 };
 
 //go语言风格的延迟执行

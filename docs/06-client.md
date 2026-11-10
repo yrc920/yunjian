@@ -135,8 +135,9 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 - 暂停只停止发送下一片，继续前由 `FileService` 发 `ID_SYNC_FILE_REQ` 对齐服务器进度。
 
 `FileService`（`core/service/fileservice.cpp`）负责业务编排：头像保存后上传、登录后拉取
-本机/好友缺失头像、进度与暂停状态、下载结果的本地缓存。详细协议见
-[13-ResourceServer](13-resource-server.md)。
+本机/好友缺失头像、进度与暂停状态、下载结果的本地缓存。缓存文件按 PNG 签名与 `IEND`
+尾块判断完整性，下载中断留下的半截文件会被删除后重新请求；资源连接断开或换账号时，
+在途下载记录与未完成的文件一并清理。详细协议见 [13-ResourceServer](13-resource-server.md)。
 
 ### 登录的两阶段握手
 

@@ -24,6 +24,16 @@ bool isPng(const QString &path)
     static const QByteArray signature("\x89PNG\r\n\x1a\n", 8);
     return head == signature;
 }
+
+//只有服务端下发的资源文件名才需要下载；默认头像、本地/内嵌/网络地址都能直接加载
+bool isRemoteResource(const QString &iconName)
+{
+    return !iconName.isEmpty()
+        && !iconName.startsWith(QLatin1Char(':'))
+        && !iconName.startsWith(QStringLiteral("file:"))
+        && !iconName.startsWith(QStringLiteral("data:"))
+        && !iconName.startsWith(QStringLiteral("http"));
+}
 }
 
 FileService::FileService()
@@ -47,6 +57,7 @@ FileService::FileService()
     //对端断开与主动关闭共用同一个标志，避免业务层继续往socket投递分片
     connect(file, &FileTcpMgr::sig_connection_closed, this, [this] {
         _connected = false; //断线后OnSessionReady不能再触发同步
+        AbortDownloads(); //在途下载已经无法继续，记录和半截文件一起清掉
     });
 
     //收发帧由FileTcpMgr负责，业务层的落盘、缓存与界面刷新集中在本类
@@ -71,7 +82,7 @@ void FileService::ConnectToResource(const ServerInfo &info)
     _uploadName.clear();
     _trans_size = 0; //进度归零，等新账号登录后重新开始
     _total_size = 0;
-    _download_owners.clear(); //旧的资源归属不能带到新账号
+    AbortDownloads(); //上一个账号的在途下载不能带到新连接
     _message.clear(); //个人资料页的旧提示不保留
     if (!_resourceConfigured) { //没有配置资源服务时不发连接请求
         _message = QStringLiteral("当前服务器未配置资源服务，头像仅保存在本机"); //只提示，不影响聊天
@@ -85,7 +96,7 @@ void FileService::CloseResource()
 {
     _connected = false; //资源连接即将断开
     _sessionReady = false; //登录态也一起失效
-    _download_owners.clear(); //旧回包不再有归属对象
+    AbortDownloads(); //主动关闭同样要清掉在途任务
     FileTcpMgr::GetInstance()->CloseConnectionAsync(); //交给网络线程关闭socket
 }
 
@@ -105,9 +116,12 @@ void FileService::TryStartResourceSync()
     if (!user) //登录资料还没写入，等下一次触发
         return;
 
-    //本机已有头像时不再下载；缺失且服务端存的是资源文件名才请求
+    //本机已有完整头像时不再下载；缺失或上次下载中断留下半截文件才重新请求
     const QString local_avatar = UserMgr::LocalAvatarPath();
-    if (!QFileInfo::exists(local_avatar))
+    if (!local_avatar.isEmpty() && !UserMgr::IsCompleteAvatarFile(local_avatar))
+        QFile::remove(local_avatar); //残图留着会被下次登录当成有效头像
+    if (!local_avatar.isEmpty() && !QFileInfo::exists(local_avatar)
+        && isRemoteResource(user->_icon))
         RequestResource(user->_uid, user->_icon, local_avatar); //本机头像缓存
 
     const int count = mgr->FriendCount();
@@ -130,23 +144,19 @@ void FileService::TryStartResourceSync()
 
 void FileService::CacheContactIcon(int uid, const QString &iconName)
 {
-    if (uid <= 0 || iconName.isEmpty()) //没有归属或没有资源名，跳过
-        return;
-    //资源路径（qrc）、已经缓存的 file URL、内嵌 data URL 和 http 地址都不需要再下载
-    if (iconName.startsWith(QLatin1Char(':'))
-        || iconName.startsWith(QStringLiteral("file:"))
-        || iconName.startsWith(QStringLiteral("data:"))
-        || iconName.startsWith(QStringLiteral("http")))
+    if (uid <= 0 || !isRemoteResource(iconName)) //没有归属，或图标不是待下载的资源名
         return;
 
     const QString target = UserMgr::ResourceCachePath(uid, iconName); //按网关/uid/资源名算缓存路径
     if (target.isEmpty()) //AppData 不可用或文件名非法
         return;
 
-    if (QFileInfo::exists(target) && QFileInfo(target).size() > 0) { //本地已有完整缓存
+    if (UserMgr::IsCompleteAvatarFile(target)) { //本地已有完整缓存
         UserMgr::GetInstance()->SetContactIcon(uid, QUrl::fromLocalFile(target).toString()); //直接换成 file URL
         return;
     }
+    if (QFileInfo::exists(target))
+        QFile::remove(target); //下载中断留下的残图不能继续用
     RequestResource(uid, iconName, target); //没有缓存才真正走网络
 }
 
@@ -156,7 +166,7 @@ void FileService::RequestResource(int ownerUid, const QString &iconName, const Q
         return;
 
     //调用方可能在下载开始后又调用了一次，这里再检查一次本地文件，命中就直接发布
-    if (QFileInfo::exists(targetPath) && QFileInfo(targetPath).size() > 0) {
+    if (UserMgr::IsCompleteAvatarFile(targetPath)) {
         if (ownerUid == UserMgr::GetInstance()->GetUid()) { //自己的头像走 data URL
             QFile file(targetPath);
             if (file.open(QIODevice::ReadOnly))
@@ -168,6 +178,8 @@ void FileService::RequestResource(int ownerUid, const QString &iconName, const Q
         }
         return;
     }
+    if (QFileInfo::exists(targetPath))
+        QFile::remove(targetPath); //半截文件不能接着写，从seq=1重新传时会覆盖
 
     //同名资源只允许一个下载任务，避免多个列表同时请求同一头像时重复占连接
     if (UserMgr::GetInstance()->GetDownloadFile(iconName))
@@ -181,6 +193,24 @@ void FileService::RequestResource(int ownerUid, const QString &iconName, const Q
     UserMgr::GetInstance()->AddDownloadFile(info); //登记，FileTcpMgr 会按名字取
     _download_owners[iconName] = ownerUid; //回包只带资源名，归属要在这里记
     FileTcpMgr::GetInstance()->StartDownload(iconName); //投递到资源网络线程
+}
+
+void FileService::AbortDownloads()
+{
+    const int self_uid = UserMgr::GetInstance()->GetUid();
+    for (auto iter = _download_owners.begin(); iter != _download_owners.end(); ++iter) {
+        //自己的头像写在固定路径，联系人的写在按 uid 分层的缓存目录
+        const QString path = (self_uid > 0 && iter.value() == self_uid)
+            ? UserMgr::LocalAvatarPath()
+            : UserMgr::ResourceCachePath(iter.value(), iter.key());
+
+        //没写完的 PNG 不能留在缓存里，否则下次登录会被当成已下载，头像永久损坏
+        if (!path.isEmpty() && !UserMgr::IsCompleteAvatarFile(path))
+            QFile::remove(path);
+
+        UserMgr::GetInstance()->RemoveDownloadFile(iter.key()); //记录也要清，重连后才能重新请求
+    }
+    _download_owners.clear();
 }
 
 void FileService::CancelOwnAvatarDownload()

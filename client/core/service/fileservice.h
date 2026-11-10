@@ -48,6 +48,7 @@ private:
     void TryStartResourceSync(); //连接与登录都完成后补拉头像
     void CacheContactIcon(int uid, const QString &iconName); //查缓存或发起下载
     void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath); //建下载状态
+    void AbortDownloads(); //断线/换账号时清掉在途下载与半截文件
     void CancelOwnAvatarDownload(); //上传前取消本机旧头像下载
     void HandleUploadProgress(const QString &name, qint64 trans, qint64 total); //更新进度
     void HandleUploadFinished(const QString &name); //收尾

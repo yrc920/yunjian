@@ -13,12 +13,14 @@
 namespace {
 constexpr qint64 MaxAvatarBytes = 4 * 1024 * 1024;
 
-//头像文件按 PNG 签名和大小校验，避免把其他文件当图片塞进 Image
+//头像文件按 PNG 签名和 IEND 尾块校验：下载中断留下的半截文件不能当图片用
 bool isAvatarPng(const QByteArray &png)
 {
     static const QByteArray signature("\x89PNG\r\n\x1a\n", 8);
-    return png.size() > signature.size() && png.size() <= MaxAvatarBytes
-        && png.startsWith(signature);
+    if (png.size() <= signature.size() + 8 || png.size() > MaxAvatarBytes
+        || !png.startsWith(signature))
+        return false;
+    return png.mid(png.size() - 8, 4) == QByteArrayLiteral("IEND");
 }
 
 //直接给 data URL：同一路径覆盖保存后 Image 会命中旧缓存，data URL 每次都是新内容
@@ -122,6 +124,28 @@ QString UserMgr::ResourceCachePath(int ownerUid, const QString &name)
         return {};
     return QDir(root).filePath(QStringLiteral("avatars/cache/%1/%2/%3")
         .arg(scope).arg(ownerUid).arg(safeName));
+}
+
+//下载中断、进程被杀都会留下半截文件；只校验非空会把残图当成已缓存，之后不再重试
+bool UserMgr::IsCompleteAvatarFile(const QString &path)
+{
+    if (path.isEmpty())
+        return false;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    if (file.size() <= 16 || file.size() > MaxAvatarBytes)
+        return false;
+
+    static const QByteArray signature("\x89PNG\r\n\x1a\n", 8);
+    if (file.read(8) != signature)
+        return false;
+
+    //IEND是PNG最后一个块，文件被截断时读不到；只认最后8字节里的块类型
+    if (!file.seek(file.size() - 8))
+        return false;
+    return file.read(4) == QByteArrayLiteral("IEND");
 }
 
 QString UserMgr::GetIcon() const

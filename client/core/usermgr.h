@@ -35,6 +35,7 @@ public:
     QString GetToken() const;
     static QString LocalAvatarPath(); //当前网关与账号对应的头像文件
     static QString ResourceCachePath(int ownerUid, const QString &name); //好友头像缓存
+    static bool IsCompleteAvatarFile(const QString &path); //文件存在且是完整PNG，半截文件返回false
     QString GetIcon() const;
     bool SetLocalAvatar(const QByteArray &png); //发布已落盘的头像，不修改服务器头像字段
 

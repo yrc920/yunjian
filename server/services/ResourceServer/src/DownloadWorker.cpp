@@ -87,7 +87,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	//seq从1开始；offset已经到文件尾说明客户端请求越界
 	const long long offset = static_cast<long long>(task->_seq - 1) * MAX_FILE_LEN;
 	if (task->_seq < 1 || offset >= total_size) {
-		FinishDownload(task, ErrorCodes::FileDataInvalid, {}, 0, total_size); //真实大小便于排查
+		FinishDownload(task, ErrorCodes::FileOffsetInvalid); //偏移不合法，重试同一seq也不会成功
 		return;
 	}
 
@@ -98,7 +98,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 
 	std::ifstream infile(task->_path, std::ios::binary); //只读打开，不改变文件
 	if (!infile) {
-		FinishDownload(task, ErrorCodes::FileNotExists, {}, 0, total_size);
+		FinishDownload(task, ErrorCodes::FileReadPermissionFailed); //存在但打不开，属于读权限问题
 		return;
 	}
 
@@ -106,7 +106,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	std::string data(read_len, '\0'); //预分配读取缓冲
 	infile.read(data.data(), static_cast<std::streamsize>(read_len));
 	if (!infile) { //文件被截断或IO错误
-		FinishDownload(task, ErrorCodes::FileWritePermissionFailed, {}, 0, total_size);
+		FinishDownload(task, ErrorCodes::FileReadPermissionFailed);
 		return;
 	}
 
