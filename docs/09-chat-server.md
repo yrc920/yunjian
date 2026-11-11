@@ -202,13 +202,19 @@ flowchart TB
 
 1. 解析 `{fromuid, touid, back}`；
 2. `AddFriend(uid, touid, back_name, apply_desc)` 开启事务并锁定对方向自己的好友申请，无申请则失败；
-3. 同一事务内把申请状态置 1，再双向插入 `friend` 表（`INSERT IGNORE`）；
+3. 同一事务内把申请状态置 1，再双向插入 `friend` 表（`INSERT IGNORE`）；两条插入固定按 `self_id` 升序执行，
+   两个用户同时互相同意时不会出现 AB/BA 的锁顺序；
 4. 创建或复用 `private_chat` 线程；线程创建失败不回滚好友关系，聊天在首次打开/发送时再建；
 5. `AddFriend` 在事务内读取 `friend_apply.descs` 并返回给逻辑层；逻辑层随后按“申请方留言 → 同意方默认句”写入两条 `chat_message`，申请方在前；欢迎消息写失败只记录日志，不回滚好友关系；
 6. 回 1014（附对方资料、`thread_id`、`welcome_msgs`）；
 7. 通知对方 1015（本实例直投 / 跨实例 `NotifyAuthFriend`），带同样的 `thread_id` 与申请方视角的 `welcome_msgs`。
 
 > 好友关系写库失败才回滚并返回错误。欢迎消息属于附加内容，写失败只记录日志，不回滚好友关系。
+
+**单聊会话创建（1025 / 首次发消息）**：先普通查询已有 `private_chat`，没有则直接插入
+`chat_thread` + `private_chat`，由 `uk_private_users` 唯一键决定谁创建成功；撞键的一方回滚后
+读对方已提交的 `thread_id`。这里不能用 `SELECT ... FOR UPDATE` 占位——查不到行时加的是间隙锁，
+随后的 INSERT 需要插入意向锁，两个并发请求会互相等待并被 MySQL 判定为死锁（1213）。
 
 ## 9.8 文本消息（1017）与会话同步
 

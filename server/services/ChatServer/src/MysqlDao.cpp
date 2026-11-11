@@ -222,15 +222,25 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
         con->_session->sql("UPDATE friend_apply SET status = 1 WHERE from_uid = ? AND to_uid = ?")
             .bind(to).bind(from).execute();
 
-		//执行第一个插入语句, 插入认证方好友数据
-		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, back) "
-			"VALUES (?, ?, ?) ")
-			.bind(from).bind(to).bind(back_name).execute();
+		//两条好友关系必须按 uid 从小到大写入: 对方同时同意我的申请时, 两个事务插入的是
+		//同一对行, 只是自身视角不同; 按固定顺序加锁才能避免 AB/BA 循环等待造成的死锁
+		const bool from_is_lower = from < to;
+		const int lower_self = from_is_lower ? from : to;
+		const int lower_friend = from_is_lower ? to : from;
+		const std::string& lower_back = from_is_lower ? back_name : reverse_back;
+		const int higher_self = from_is_lower ? to : from;
+		const int higher_friend = from_is_lower ? from : to;
+		const std::string& higher_back = from_is_lower ? reverse_back : back_name;
 
-		//执行第二个插入语句, 插入申请方好友数据(反过来的申请时from, 验证时to)
+		//第一条: uid 较小的一方作为 self_id
 		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, back) "
 			"VALUES (?, ?, ?) ")
-			.bind(to).bind(from).bind(reverse_back).execute();
+			.bind(lower_self).bind(lower_friend).bind(lower_back).execute();
+
+		//第二条: uid 较大的一方作为 self_id, 备注跟随各自的方向
+		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, back) "
+			"VALUES (?, ?, ?) ")
+			.bind(higher_self).bind(higher_friend).bind(higher_back).execute();
 
 		//提交事务
 		con->_session->commit();
@@ -475,36 +485,43 @@ long long MysqlDao::GetOrCreatePrivateChat(int user1, int user2)
 	const int low = std::min(user1, user2);
 	const int high = std::max(user1, user2);
 
-	//两个线程同时首次打开同一会话时, 后插入的一方会撞唯一键;
-	//重试一次即可在下一轮读到对方刚提交的会话
-	for (int attempt = 0; attempt < 2; ++attempt) {
+	//会话通常已经存在: 先用普通查询取一次, 不开事务, 也不会给不存在的行加锁
+	{
+		auto con = pool_->getConnection();
+		if (con == nullptr)
+			return 0;
+		Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
+		try {
+			auto friendship = con->_session->sql(
+				"SELECT id FROM friend WHERE self_id = ? AND friend_id = ?")
+				.bind(user1).bind(user2).execute().fetchOne();
+			if (friendship.isNull())
+				return 0;
+
+			auto existing = con->_session->sql(
+				"SELECT thread_id FROM private_chat WHERE user1_id = ? AND user2_id = ?")
+				.bind(low).bind(high).execute().fetchOne();
+			if (!existing.isNull())
+				return existing[0].get<int64_t>(); //X DevAPI 只对 int64_t 实例化 get
+		}
+		catch (mysqlx::Error& e) {
+			con->_healthy = false; //标记为不可复用, 归还时丢弃
+			std::cerr << "Mysqlx Error reading private chat: " << e.what() << std::endl;
+			return 0;
+		}
+	}
+
+	//没有会话时直接插入, 由 uk_private_users 唯一键决定谁创建成功:
+	//不要先 SELECT ... FOR UPDATE 占位。查不到记录时它锁的是索引间隙, 而随后的 INSERT
+	//需要插入意向锁, 两个并发请求会各自持有间隙锁再等对方释放, 形成死锁(1213)。
+	//这里被唯一键挡住的一方回滚后能读到对方已提交的 thread_id, 直接复用即可。
+	for (int attempt = 0; attempt < 3; ++attempt) {
 		auto con = pool_->getConnection();
 		if (con == nullptr)
 			return 0;
 		try {
 			con->_session->startTransaction();
-			auto friendship = con->_session->sql(
-				"SELECT id FROM friend WHERE self_id = ? AND friend_id = ?")
-				.bind(user1).bind(user2).execute().fetchOne();
-			if (friendship.isNull()) {
-				con->_session->rollback();
-				pool_->returnConnection(std::move(con));
-				return 0;
-			}
-
-			//FOR UPDATE 锁住这条会话记录, 让并发的创建请求在这里排队
-			auto existing = con->_session->sql(
-				"SELECT thread_id FROM private_chat WHERE user1_id = ? AND user2_id = ? FOR UPDATE")
-				.bind(low).bind(high).execute().fetchOne();
-			if (!existing.isNull()) {
-				//X DevAPI 只对 int64_t 等固定类型实例化 get, 不支持 long long, 需要显式指定类型
-				const long long thread_id = existing[0].get<int64_t>();
-				con->_session->commit();
-				pool_->returnConnection(std::move(con));
-				return thread_id;
-			}
-
-			//先建公共会话行, 再挂上两人的单聊关系, 两步必须同一个事务
+			//先建公共会话行, 再挂上两人的单聊关系; 唯一键冲突时整笔回滚, 不会留下空会话
 			con->_session->sql("INSERT INTO chat_thread (thread_type) VALUES (1)").execute();
 			auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
 			if (id_row.isNull()) {
@@ -520,13 +537,31 @@ long long MysqlDao::GetOrCreatePrivateChat(int user1, int user2)
 			return thread_id;
 		}
 		catch (mysqlx::Error& e) {
-			//连接可能停在事务中间, 回滚失败也不影响丢弃这条连接
-			if (con) {
-				try { con->_session->rollback(); } catch (...) {}
-				con->_healthy = false;
+			//事务可能还停在中间, 先回滚; 连接已断时回滚本身会抛异常, 不能让它逃出本函数
+			bool connection_ok = true;
+			try { con->_session->rollback(); } catch (...) { connection_ok = false; }
+
+			//回滚后查一次: 查到会话说明另一方已经建好, 本次失败属于正常竞态;
+			//查不到才是真的失败, 换下一轮重试
+			long long thread_id = 0;
+			try {
+				auto existing = con->_session->sql(
+					"SELECT thread_id FROM private_chat WHERE user1_id = ? AND user2_id = ?")
+					.bind(low).bind(high).execute().fetchOne();
+				if (!existing.isNull())
+					thread_id = existing[0].get<int64_t>();
 			}
+			catch (mysqlx::Error& read_error) {
+				connection_ok = false; //连查询都失败, 这条连接不能再用
+				if (attempt == 2)
+					std::cerr << "Mysqlx Error re-reading private chat: " << read_error.what() << std::endl;
+			}
+			if (!connection_ok)
+				con->_healthy = false;
 			pool_->returnConnection(std::move(con));
-			if (attempt == 1)
+			if (thread_id > 0)
+				return thread_id;
+			if (attempt == 2)
 				std::cerr << "Mysqlx Error creating private chat: " << e.what() << std::endl;
 		}
 	}

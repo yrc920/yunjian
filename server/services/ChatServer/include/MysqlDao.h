@@ -38,7 +38,8 @@ public:
 	bool GetSentApplyList(int from_uid,
 		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int offset, int limit);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
-	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建; 非好友返回0
+	//取单聊会话, 没有则创建; 非好友返回0. 依赖 private_chat 的 (user1_id,user2_id) 唯一键去重
+	long long GetOrCreatePrivateChat(int user1, int user2);
 	//按会话ID升序分页取会话列表, has_more 表示还有下一页
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,
 		std::vector<ChatThreadInfo>& threads, bool& has_more);

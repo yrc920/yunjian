@@ -38,6 +38,8 @@
 
 唯一索引 `(self_id, friend_id)`。好友关系是**双向两行**：A 同意 B 的申请时，
 `AddFriend` 会分别插入 `(A,B)` 与 `(B,A)`，用 `INSERT IGNORE` 避免重复。
+两条 INSERT 固定按 `self_id` 升序执行：两个用户同时互相同意时写入的是同一对行，
+顺序一致才不会形成 AB/BA 循环等待。
 
 ### 表 `friend_apply`
 
@@ -93,7 +95,10 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 把 `status` 改成 1。接收方通知与图片下载仍留到后续章节。
 
 消息分页使用 `(thread_id, message_id)` 索引及游标 `message_id > last_id`；会话分页使用 `thread_id > last_id`。
-首次单聊在事务中查询或创建 `chat_thread` 和 `private_chat`，参与者按 uid 归一化并由唯一键兜底。
+首次单聊先用普通查询取已有会话，缺失时直接插入 `chat_thread` + `private_chat`，由
+`uk_private_users` 唯一键裁决；撞键的一方回滚掉自己新建的会话行，再读对方已提交的 `thread_id`。
+这里不用 `SELECT ... FOR UPDATE` 占位：查不到行时它锁的是索引间隙，随后的 INSERT 又需要插入意向锁，
+两个并发请求会各自持有间隙锁并互相等待。
 客户端当前仍只保存在内存，不含 SQLite；每次登录会同步会话及服务端历史消息，后续本地缓存可用全局 `message_id` 增量续传。
 当前 QML 客户端已经按会话持有 `ChatThreadData`，消息对象包含 `msgid`、`thread_id`、`message_id`、发送者/接收者和状态。
 发送中的消息先进入会话并显示转圈，服务器回包后变为已发送，失败变为失败标记。
