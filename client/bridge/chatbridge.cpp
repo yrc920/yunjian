@@ -474,16 +474,13 @@ bool ChatBridge::sendParts(const QVariantList &parts)
     if (!hasContent)
         return false;
 
-    //图片没有网络字段，直接作为本地会话消息插入；文字交给 ChatService 分帧
+    //按编辑器顺序发送：文本分帧，图片先发 1031 再由回执触发资源上传
     for (const QVariant &part : parts) {
         const QVariantMap item = part.toMap();
         if (item.value("kind").toString() == "image") {
-            auto message = std::make_shared<TextChatData>(QUuid::createUuid().toString(),
-                                                        QString(), mgr->GetUid(), _currentUid);
-            message->_imageSource = item.value("source").toString();
-            message->_imageWidth = item.value("width").toInt();
-            message->_imageHeight = item.value("height").toInt();
-            mgr->AppendFriendChatMsg(_currentUid, {message});
+            if (!ChatService::GetInstance()->sendImage(_currentUid, item.value("source").toString(),
+                    item.value("width").toInt(), item.value("height").toInt()))
+                return false;
         } else if (!ChatService::GetInstance()->sendText(_currentUid, item.value("text").toString())) {
             return false;
         }

@@ -30,6 +30,8 @@ public:
     void OnSessionReady(); //聊天登录完成，可以拉取缺失头像
 
     void UploadAvatar(const QString &path); //裁剪器保存后的PNG路径
+    //图片消息资源：走通用上传通道(2001)，不改变头像的进度与暂停状态
+    void UploadChatImage(const QString &name, const QString &path, const QString &md5);
     void SetUploadPaused(bool paused); //暂停/继续，继续时会先同步服务器进度
     void ToggleUploadPaused(); //QML按钮用
 

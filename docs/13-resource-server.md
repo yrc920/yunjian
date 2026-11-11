@@ -172,6 +172,7 @@
 - 发送队列用 `bytesWritten` 续写，处理 `socket.write()` 只写出一部分的情况；
 - 上传：`UserMgr` 保存 `UploadFileInfo`（路径、md5、总大小、当前偏移、req_id），
   收到 2008/2002 后按 `trans_size` 读取下一片；
+- 聊天图片由 `ChatService` 落盘到本机缓存后复用 `2001` 通道，与头像上传的状态互不影响；
 - 下载：`DownloadFileInfo` 保存本地路径与 seq，`seq == 1` 覆盖写，否则追加；
 - 暂停：置 `UserMgr::_upload_paused`，当前分片回包后不再发下一片；
 - 继续：向服务器发 2003，按返回的 `trans_size` 与 `seq` 继续。

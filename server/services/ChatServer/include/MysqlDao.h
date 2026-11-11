@@ -49,8 +49,14 @@ public:
 	bool SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 		const std::vector<std::pair<std::string, std::string>>& contents,
 		std::vector<ChatMessageInfo>& messages);
+	//写入一条图片消息: 资源还没上传, 先落库占位, 由资源服务器完成后回写状态
+	bool SaveImageMessage(int sender_id, int recv_id, long long thread_id,
+		const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message);
 	
 private:
+	//把客户端传入的会话ID解析成有效单聊: 为0时校验好友关系并补建, 失败返回0
+	long long EnsureChatThread(int sender_id, int recv_id, long long thread_id);
+
 	//MySQL连接池对象, 用于管理MySQL连接, 提供线程安全的获取和归还连接的接口
 	std::unique_ptr<MySqlPool> pool_;
 };

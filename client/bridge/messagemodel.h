@@ -33,6 +33,7 @@ public:
         AvatarRole,
         NameRole,
         StatusRole,
+        IsImageRole, //图片消息：没有本地文件时由气泡显示占位
     };
 
     explicit MessageModel(QObject *parent = nullptr);

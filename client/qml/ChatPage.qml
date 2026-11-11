@@ -128,6 +128,7 @@ Item {
             width: ListView.view.width
             text: model.text
             isSelf: model.isSelf
+            isImage: model.isImage
             avatar: model.avatar
             name: model.name
             imageSource: model.imageSource

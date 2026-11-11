@@ -314,6 +314,7 @@ void FileTcpMgr::initHandlers()
 
         //服务器拒绝时不要继续发下一片，交给 FileService 结束本次上传并提示
         if (error != 0) {
+            UserMgr::GetInstance()->RemoveUploadFile(md5); //失败后清记录，重发同一内容能从头开始
             emit sig_upload_failed(name, error);
             return;
         }

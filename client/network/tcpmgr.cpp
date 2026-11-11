@@ -206,6 +206,12 @@ void TcpMgr::initHandlers()
     };
     emitJson(ID_LOAD_CHAT_THREAD_RSP, &TcpMgr::sig_chat_threads);
     emitJson(ID_LOAD_CHAT_MSG_RSP, &TcpMgr::sig_chat_messages);
+    //图片回执成功失败都要回传：成功后启动资源上传，失败要把消息标成发送失败
+    _handlers.insert(ID_IMG_CHAT_MSG_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_chat_img_rsp(document.object());
+    });
     //创建会话失败也要回传，客户端据此清除 pending 并允许重试
     _handlers.insert(ID_CREATE_PRIVATE_CHAT_RSP, [this](ReqId, int, QByteArray data) {
         const auto document = QJsonDocument::fromJson(data);

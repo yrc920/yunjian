@@ -118,6 +118,14 @@ enum class ChatMessageStatus : int {
     Read = 4,
 };
 
+//消息类型：文本走气泡，图片/文件直接显示资源
+enum class ChatMsgType : int {
+    Text = 0,
+    Image = 1,
+    Video = 2,
+    File = 3,
+};
+
 //一个单聊会话：thread_id 来自服务端，_chat_msgs 始终按 message_id 排序
 struct ChatThreadData {
     explicit ChatThreadData(qint64 thread_id = 0) : _thread_id(thread_id) {}
@@ -208,9 +216,11 @@ struct TextChatData{
     qint64 _thread_id = 0;
     ChatMessageStatus _status = ChatMessageStatus::Sending;
     QString _msg_content;
-    QString _imageSource; // 仅用于本地预览，不进入文本协议
+    QString _imageSource; //图片消息的本地显示地址（data/file URL）
     int _imageWidth = 0;
     int _imageHeight = 0;
+    ChatMsgType _msg_type = ChatMsgType::Text; //消息类型，历史同步与发送时确定
+    QString _resource_name; //图片/文件在资源服务器上的名字，文本为空
     int _from_uid;
     int _to_uid;
 };

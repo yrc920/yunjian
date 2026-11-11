@@ -130,6 +130,8 @@ void LogicSystem::RegisterCallBacks()
 
 	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatTextMsg, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatImgMsg, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = std::bind(&LogicSystem::CreatePrivateChat, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = std::bind(&LogicSystem::LoadChatThreads, this,
@@ -706,6 +708,42 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		rtvalue["delivery_pending"] = true;
 }
 
+void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
+	const short&, const std::string& msg_data)
+{
+	Json::Value root;
+	Json::Reader reader;
+	reader.parse(msg_data, root);
+
+	const int uid = root["fromuid"].asInt();
+	const int touid = root["touid"].asInt();
+	const long long thread_id = root["thread_id"].asInt64();
+	const std::string md5 = root["md5"].asString();
+	const std::string name = root["name"].asString();
+	const std::string unique_id = root["unique_id"].asString();
+
+	Json::Value response;
+	response["error"] = ErrorCodes::Success;
+	response["fromuid"] = uid;
+	response["touid"] = touid;
+	response["md5"] = md5;
+	response["name"] = name;
+	response["unique_id"] = unique_id;
+
+	//消息先落库, content存资源文件名; 资源本体由客户端随后上传到 ResourceServer
+	ChatMessageInfo saved;
+	if (!MysqlMgr::GetInstance()->SaveImageMessage(uid, touid, thread_id, unique_id, name, saved)) {
+		response["error"] = ErrorCodes::RPCFailed;
+		session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
+		return;
+	}
+
+	response["thread_id"] = Json::Int64(saved.thread_id);
+	response["message_id"] = Json::Int64(saved.message_id);
+	response["status"] = 0; //资源尚未上传; 接收方通知留到资源完成后的章节
+	session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
+}
+
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session,
 	const short&, const std::string& msg_data)
 {
@@ -790,6 +828,7 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 		item["touid"] = message.recv_id;
 		item["msgid"] = message.client_msg_id;
 		item["content"] = message.content;
+		item["msg_type"] = message.msg_type; //0 文本, 1 图片; 客户端据此决定渲染方式
 		//历史消息按"自己发的/对方发的"给默认状态, 库里 status 暂未维护已读
 		item["status"] = message.sender_id == uid ? 1 : 3;
 		response["text_array"].append(item);

@@ -294,6 +294,34 @@ void FileService::UploadAvatar(const QString &path)
     FileTcpMgr::GetInstance()->StartUpload(md5); //网络线程读第一片
 }
 
+//聊天图片走通用上传通道(2001)，与头像的上传状态互不影响
+void FileService::UploadChatImage(const QString &name, const QString &path, const QString &md5)
+{
+    const QFileInfo file_info(path);
+    if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0)
+        return;
+
+    //同一内容已经在传（例如连续发送同一张图），复用这次上传，避免两路分片互相覆盖进度
+    if (UserMgr::GetInstance()->GetUploadFile(md5))
+        return;
+
+    auto info = std::make_shared<UploadFileInfo>();
+    info->_md5 = md5;
+    info->_name = name;
+    info->_path = path;
+    info->_total_size = file_info.size();
+    info->_uid = UserMgr::GetInstance()->GetUid();
+    info->_req_id = ID_UPLOAD_FILE_REQ; //通用资源，不是头像
+    UserMgr::GetInstance()->AddUploadFile(info);
+
+    //资源服务器没连上时不阻塞聊天：本地文件已保存，等下次登录重新发送
+    if (!_resourceConfigured || !_connected) {
+        UserMgr::GetInstance()->RemoveUploadFile(md5);
+        return;
+    }
+    FileTcpMgr::GetInstance()->StartUpload(md5);
+}
+
 void FileService::SetUploadPaused(bool paused)
 {
     if (!_uploading || _paused == paused) //没有上传或状态没变，直接返回

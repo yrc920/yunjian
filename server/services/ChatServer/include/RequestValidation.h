@@ -2,6 +2,7 @@
 
 #include "const.h"
 #include <json/json.h>
+#include <string>
 
 //在业务分发前统一检查请求字段和会话身份，只有校验通过才交给对应的handler处理
 //这里校验登录请求的字段格式，token是否有效仍由LoginHandler查询Redis后判断
@@ -38,6 +39,27 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         return positiveId("fromuid") && root["fromuid"].asInt() == session_uid
             && positiveId("touid") && root["touid"].asInt() != session_uid
             ? Success : UidInvalid;
+    }
+    //图片消息先落库再上传资源, 字段约束与资源上传协议保持一致
+    if (id == ID_IMG_CHAT_MSG_REQ) {
+        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid
+            || !positiveId("touid") || root["touid"].asInt() == session_uid)
+            return UidInvalid;
+        if (root.isMember("thread_id")
+            && (!root["thread_id"].isInt64() || root["thread_id"].asInt64() < 0))
+            return Error_Json;
+        if (!stringField("md5") || !stringField("name") || !stringField("token")
+            || !stringField("unique_id"))
+            return Error_Json;
+        const auto md5 = root["md5"].asString();
+        const auto name = root["name"].asString();
+        const auto unique_id = root["unique_id"].asString();
+        //md5 是后续续传键, name 是落盘文件名, 不能带路径分隔符
+        if (md5.size() != 32 || name.empty() || name.size() > 128
+            || name.find('/') != std::string::npos || name.find('\\') != std::string::npos
+            || name.front() == '.' || unique_id.empty())
+            return Error_Json;
+        return Success;
     }
     //好友申请用uid表示申请人，同意好友、文本消息和心跳用fromuid表示操作者
     //请求中声明的操作者必须与服务端绑定的用户一致，不能仅凭客户端传来的uid执行操作

@@ -82,6 +82,8 @@
 | 1028 | `ID_LOAD_CHAT_THREAD_RSP` | S → C | 会话列表与 `load_more` |
 | 1029 | `ID_LOAD_CHAT_MSG_REQ` | C → S | 按 `thread_id + message_id` 拉历史消息 |
 | 1030 | `ID_LOAD_CHAT_MSG_RSP` | S → C | 历史消息与 `load_more` |
+| 1031 | `ID_IMG_CHAT_MSG_REQ` | C → S | 发送图片消息（先落库，资源随后上传） |
+| 1032 | `ID_IMG_CHAT_MSG_RSP` | S → C | 图片消息回执（含消息 ID 与线程 ID） |
 
 > 1012 与 1016 为历史预留空位，当前未使用。
 
@@ -162,7 +164,19 @@
 
 **1029 拉历史消息** `{fromuid:int, thread_id:int64, message_id:int64}` —— 取 `message_id` 之后的消息，首屏传 0。
 
-**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, status}], load_more:bool}`
+**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status}], load_more:bool}`
+
+`msg_type`：0=文本，1=图片（`content` 是资源文件名），2/3 预留给视频与文件。
+
+**1031 图片消息** `{fromuid:int, touid:int, thread_id:int64, md5:string, name:string, token:string, unique_id:string}`
+
+`md5` 为 32 位十六进制，`name` 是资源文件名（`<md5>.png`），`unique_id` 是客户端消息 ID。
+服务端只做格式校验与落库（`chat_message.msg_type=1`、`status=0` 表示资源未上传），
+**不向接收方推送**；资源上传完成后的通知留到后续章节。
+
+**1032 图片消息回执** `{error, fromuid, touid, thread_id, message_id, md5, name, unique_id, status}`
+
+`status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `2001` 上传资源。
 
 ---
 

@@ -97,3 +97,10 @@ bool MysqlMgr::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	//调用数据库访问对象的SaveChatMessages方法, 写入成功时回填消息ID与所属会话
 	return _dao.SaveChatMessages(sender_id, recv_id, thread_id, contents, messages);
 }
+
+bool MysqlMgr::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
+	const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message)
+{
+	//content 在图片消息里是资源文件名, 资源本体走 ResourceServer
+	return _dao.SaveImageMessage(sender_id, recv_id, thread_id, client_msg_id, content, message);
+}

@@ -118,6 +118,8 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
     }
     case StatusRole:
         return static_cast<int>(msg->_status);
+    case IsImageRole:
+        return msg->_msg_type == ChatMsgType::Image;
     default: return {};
     }
 }
@@ -135,6 +137,7 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {AvatarRole, "avatar"},
         {NameRole, "name"},
         {StatusRole, "status"},
+        {IsImageRole, "isImage"},
     };
 }
 

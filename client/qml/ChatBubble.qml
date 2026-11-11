@@ -1,6 +1,6 @@
 import QtQuick
 
-// 文字按自然宽度排版，图片使用消息中的尺寸；两种内容都能随窗口收窄。
+// 文字按自然宽度排版，图片优先用消息里的尺寸，缺失时读图片自身大小。
 // 自己发的消息靠右，状态行只在文字消息左侧出现。
 Item {
     id: root
@@ -9,20 +9,33 @@ Item {
     property string name: ""
     property string text: ""
     property bool isSelf: false
+    property bool isImage: false
     property string imageSource: ""
     property int imageWidth: 0
     property int imageHeight: 0
     property int status: 1
     readonly property bool localImage: imageSource.length > 0
+    //图片消息但本地还没有资源：显示占位，等资源下载/上传完成后再换成图片
+    readonly property bool imagePending: isImage && !localImage
     readonly property real paddingH: localImage ? 5 : 15
     readonly property real paddingV: localImage ? 5 : 11
-    // 宽度上限留给头像、左右间距和状态图标，避免气泡压到状态行
     readonly property real availableWidth: Math.max(1, Math.min(Theme.bubbleMaxWidth, width - 102))
+    readonly property real pictureWidth: imageWidth > 0 ? imageWidth
+        : (preview.sourceSize.width > 0 ? preview.sourceSize.width : 200)
+    readonly property real pictureRatio: {
+        if (imageWidth > 0 && imageHeight > 0)
+            return imageHeight / imageWidth
+        if (preview.sourceSize.width > 0 && preview.sourceSize.height > 0)
+            return preview.sourceSize.height / preview.sourceSize.width
+        return 0.66
+    }
     readonly property real contentWidth: localImage
-        ? Math.max(1, Math.min(imageWidth, availableWidth - paddingH * 2))
+        ? Math.max(1, Math.min(pictureWidth, availableWidth - paddingH * 2))
         : Math.max(1, Math.min(Math.ceil(metrics.advanceWidth), availableWidth - paddingH * 2))
     readonly property real bodyWidth: Math.max(36, contentWidth + paddingH * 2)
-    readonly property real bodyHeight: (localImage ? preview.height : label.implicitHeight) + paddingV * 2
+    readonly property real bodyHeight: localImage
+        ? preview.height + paddingV * 2
+        : (imagePending ? 96 : label.implicitHeight + paddingV * 2)
     readonly property color bubbleColor: isSelf ? Theme.bubbleSelf : Theme.bubbleOther
 
     implicitHeight: Math.max(34, bodyHeight)
@@ -45,6 +58,7 @@ Item {
 
     Rectangle {
         id: body
+        visible: !root.imagePending
         x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
         width: root.bodyWidth
         height: root.bodyHeight
@@ -60,7 +74,7 @@ Item {
             x: root.paddingH
             y: root.paddingV
             width: root.contentWidth
-            height: root.localImage ? width * root.imageHeight / Math.max(1, root.imageWidth) : 0
+            height: root.localImage ? width * root.pictureRatio : 0
             source: root.imageSource
             fillMode: Image.PreserveAspectFit
         }
@@ -83,10 +97,29 @@ Item {
         }
     }
 
+    //图片还没有本地资源时用中性占位，避免显示成空文本气泡
+    Rectangle {
+        visible: root.imagePending
+        x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
+        width: 150
+        height: 96
+        radius: 9
+        color: Theme.fieldBg
+        border.width: 1
+        border.color: Theme.line
+
+        Text {
+            anchors.centerIn: parent
+            text: "图片"
+            color: Theme.textHint
+            font.pixelSize: 12
+        }
+    }
+
     // 状态行：0 发送中（转圈）、1 已发送、2 失败、3 未读、4 已读。
-    // 本地图片不参与网络协议，因此不显示状态
+    // 图片不在文字状态行里展示上传进度，只有失败时提示
     Row {
-        visible: root.isSelf && !root.localImage
+        visible: root.isSelf && (!root.isImage || root.status === 2)
         spacing: 3
         anchors.right: body.left
         anchors.rightMargin: 7

@@ -6,7 +6,7 @@
 | 产物 | `bin/<实例名>/`，每份 `config/*.ini` 一个实例 |
 | 监听 | TCP `[SelfServer].Port`（客户端，8090 / 8091）；gRPC `[SelfServer].RPCPort`（服务间，50055 / 50056） |
 | 依赖 | Boost.Asio、gRPC / protobuf、jsoncpp、hiredis、mysql-connector-cpp |
-| 角色 | 承载客户端长连接；处理登录、搜索、好友申请/认证、文本消息；跨实例转发 |
+| 角色 | 承载客户端长连接；处理登录、搜索、好友申请/认证、文本与图片消息；跨实例转发 |
 
 ## 9.1 模块构成
 
@@ -119,6 +119,7 @@ flowchart LR
 | 1009 | `AddFriendApply` | 好友申请 |
 | 1013 | `AuthFriendApply` | 同意好友申请 |
 | 1017 | `DealChatTextMsg` | 文本消息 |
+| 1031 | `DealChatImgMsg` | 图片消息：只落库，资源随后由客户端上传 |
 
 出队后释放队列锁，数据库/RPC 不持有队列锁；单条请求异常会关闭对应连接，不终止逻辑线程。
 各 handler 用 `Defer`（析构时执行 lambda）处理正常业务分支的回包。
@@ -217,7 +218,11 @@ flowchart TB
 4. 查 `uip_<touid>` → 本实例直投 1019 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
 5. 目标离线时消息已持久化，不推送；下次登录按 1027/1029 同步。
 
-登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。
+图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
+（`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
+**不向接收方推送**，也没有跨实例转发；资源上传完成后的 gRPC 回调、状态更新和双方通知留到资源链路章节。
+
+登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`，图片消息的 `content` 是资源文件名。
 
 ## 9.9 多实例部署
 

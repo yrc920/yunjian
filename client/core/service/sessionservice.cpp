@@ -1,9 +1,12 @@
 #include "sessionservice.h"
 
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>
+#include <QUrl>
 
+#include "chatservice.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "fileservice.h"
@@ -55,6 +58,28 @@ SessionService::SessionService() : _ready(false)
             mgr->UpdateChatMessage(peerUid, value.toObject().value("msgid").toString(), 0,
                 ChatMessageStatus::Failed);
     });
+    //图片消息回执：补上 message_id/thread_id 后启动资源上传；失败则结束本地消息
+    connect(tcp, &TcpMgr::sig_chat_img_rsp, this, [](const QJsonObject &data) {
+        auto *mgr = UserMgr::GetInstance().get();
+        const QString uniqueId = data.value("unique_id").toString();
+        const int peerUid = data.value("touid").toInt();
+        if (uniqueId.isEmpty() || peerUid <= 0)
+            return;
+
+        if (data.value("error").toInt(1) != 0) {
+            ChatService::GetInstance()->discardPendingImage(uniqueId);
+            mgr->UpdateChatMessage(peerUid, uniqueId, 0, ChatMessageStatus::Failed);
+            return;
+        }
+
+        const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
+        if (threadId > 0)
+            mgr->SetThreadId(peerUid, threadId);
+        //消息已落库但资源还没上传，状态保持发送中，等资源完成后的章节再推进
+        mgr->UpdateChatMessage(peerUid, uniqueId,
+            data.value("message_id").toVariant().toLongLong(), ChatMessageStatus::Sending);
+        ChatService::GetInstance()->uploadPendingImage(uniqueId);
+    });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const auto threads = data.value("thread_list").toArray();
@@ -82,10 +107,19 @@ SessionService::SessionService() : _ready(false)
                 : static_cast<int>(ChatMessageStatus::Unread);
             const auto status = static_cast<ChatMessageStatus>(
                 item.value("status").toInt(defaultStatus));
-            messages.push_back(std::make_shared<TextChatData>(item.value("msgid").toString(),
+            auto message = std::make_shared<TextChatData>(item.value("msgid").toString(),
                 item.value("content").toString(), item.value("fromuid").toInt(),
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
-                threadId, status));
+                threadId, status);
+            //图片消息的 content 是资源文件名，有本机缓存就先显示，否则留给资源加载章节
+            if (item.value("msg_type").toInt(0) == static_cast<int>(ChatMsgType::Image)) {
+                message->_msg_type = ChatMsgType::Image;
+                message->_resource_name = item.value("content").toString();
+                const QString path = ChatService::ImageCachePath(message->_resource_name);
+                if (!path.isEmpty() && QFileInfo::exists(path))
+                    message->_imageSource = QUrl::fromLocalFile(path).toString();
+            }
+            messages.push_back(std::move(message));
         }
         mgr->AppendFriendChatMsg(peerUid, std::move(messages));
         if (data.value("load_more").toBool()) {

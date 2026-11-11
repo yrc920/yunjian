@@ -598,7 +598,7 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 			return false;
 		//按消息ID升序增量读取; 多取一条判断下一页
 		auto res = con->_session->sql(
-			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status "
+			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type "
 			"FROM chat_message WHERE thread_id = ? AND message_id > ? "
 			"ORDER BY message_id ASC LIMIT ?")
 			.bind(thread_id).bind(last_message_id).bind(limit + 1).execute();
@@ -616,6 +616,7 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 			info.client_msg_id = row[4].get<std::string>();
 			info.content = row[5].get<std::string>();
 			info.status = row[6].get<int>();
+			info.msg_type = row[7].get<int>();
 			messages.push_back(std::move(info));
 			row = res.fetchOne();
 		}
@@ -628,6 +629,33 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 	}
 }
 
+//单聊会话解析: thread_id 为0时先确认好友关系再补建; 返回0表示不是好友或数据库不可用
+long long MysqlDao::EnsureChatThread(int sender_id, int recv_id, long long thread_id)
+{
+	if (thread_id > 0)
+		return thread_id;
+
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return 0;
+	try {
+		auto friendship = con->_session->sql(
+			"SELECT id FROM friend WHERE self_id = ? AND friend_id = ?")
+			.bind(sender_id).bind(recv_id).execute().fetchOne();
+		if (friendship.isNull()) {
+			pool_->returnConnection(std::move(con));
+			return 0;
+		}
+	} catch (mysqlx::Error& e) {
+		con->_healthy = false;
+		pool_->returnConnection(std::move(con));
+		std::cerr << "Mysqlx Error checking chat friendship: " << e.what() << std::endl;
+		return 0;
+	}
+	pool_->returnConnection(std::move(con));
+	return GetOrCreatePrivateChat(sender_id, recv_id); //内部会再借一次连接
+}
+
 bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	const std::vector<std::pair<std::string, std::string>>& contents,
 	std::vector<ChatMessageInfo>& messages)
@@ -635,35 +663,13 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	messages.clear();
 	if (contents.empty())
 		return true;
+	//客户端还没拿到会话ID时, 先确认两人仍是好友, 再由这里补建会话
+	thread_id = EnsureChatThread(sender_id, recv_id, thread_id);
+	if (thread_id <= 0)
+		return false;
 	auto con = pool_->getConnection();
 	if (con == nullptr)
 		return false;
-	//客户端还没拿到会话ID时, 先确认两人仍是好友, 再由这里补建会话
-	if (thread_id <= 0) {
-		try {
-			auto friendship = con->_session->sql(
-				"SELECT id FROM friend WHERE self_id = ? AND friend_id = ?")
-				.bind(sender_id).bind(recv_id).execute().fetchOne();
-			if (friendship.isNull()) {
-				pool_->returnConnection(std::move(con));
-				return false;
-			}
-		} catch (mysqlx::Error& e) {
-			con->_healthy = false;
-			pool_->returnConnection(std::move(con));
-			std::cerr << "Mysqlx Error checking chat friendship: " << e.what() << std::endl;
-			return false;
-		}
-		pool_->returnConnection(std::move(con));
-		thread_id = GetOrCreatePrivateChat(sender_id, recv_id);
-		con = pool_->getConnection();
-		if (con == nullptr)
-			return false;
-	}
-	if (thread_id <= 0) {
-		pool_->returnConnection(std::move(con));
-		return false;
-	}
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
 		//写入前再校验一次会话归属, 防止客户端传一个别人的 thread_id
@@ -708,6 +714,63 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 			con->_healthy = false;
 		}
 		std::cerr << "Mysqlx Error saving chat messages: " << e.what() << std::endl;
+		return false;
+	}
+}
+
+bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
+	const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message)
+{
+	thread_id = EnsureChatThread(sender_id, recv_id, thread_id);
+	if (thread_id <= 0)
+		return false;
+
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
+
+	try {
+		//与文本消息一样校验会话归属, 防止用别人的 thread_id 写消息
+		auto member = con->_session->sql(
+			"SELECT thread_id FROM private_chat WHERE thread_id = ? AND ((user1_id = ? AND user2_id = ?) "
+			"OR (user1_id = ? AND user2_id = ?))")
+			.bind(thread_id).bind(sender_id).bind(recv_id).bind(recv_id).bind(sender_id).execute().fetchOne();
+		if (member.isNull())
+			return false;
+
+		con->_session->startTransaction();
+		//msg_type=1 图片; status=0 表示资源还没上传完成, 由后续资源回调改成已发送
+		con->_session->sql(
+			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, msg_type, status) "
+			"VALUES (?, ?, ?, ?, ?, 1, 0) ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
+			.bind(thread_id).bind(sender_id).bind(recv_id).bind(client_msg_id).bind(content).execute();
+		auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
+		if (id_row.isNull()) {
+			con->_session->rollback();
+			return false;
+		}
+		const long long message_id = id_row[0].get<int64_t>();
+		con->_session->sql("UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
+			.bind(thread_id).execute();
+		con->_session->commit();
+
+		message.message_id = message_id;
+		message.thread_id = thread_id;
+		message.sender_id = sender_id;
+		message.recv_id = recv_id;
+		message.client_msg_id = client_msg_id;
+		message.content = content;
+		message.msg_type = 1;
+		message.status = 0;
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) {
+			try { con->_session->rollback(); } catch (...) {}
+			con->_healthy = false;
+		}
+		std::cerr << "Mysqlx Error saving image message: " << e.what() << std::endl;
 		return false;
 	}
 }

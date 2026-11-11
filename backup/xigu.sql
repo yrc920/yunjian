@@ -31,6 +31,7 @@ CREATE TABLE `chat_message` (
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `status` tinyint unsigned NOT NULL DEFAULT '0',
+  `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
   KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),

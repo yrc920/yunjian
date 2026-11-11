@@ -52,6 +52,7 @@ struct ChatMessageInfo {
 	int sender_id = 0; //发送者用户ID
 	int recv_id = 0; //接收者用户ID
 	std::string client_msg_id; //客户端生成的去重ID, 重发同一条时保持不变
-	std::string content; //消息正文
-	int status = 0; //消息状态, 当前落库统一为默认值, 未读/已读由客户端展示
+	std::string content; //消息正文; 图片消息这里存资源文件名
+	int status = 0; //消息状态: 图片落库时为0(资源未上传), 文本不使用
+	int msg_type = 0; //消息类型: 0 文本, 1 图片, 2 视频, 3 文件
 };
