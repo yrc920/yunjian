@@ -193,6 +193,25 @@ void UserMgr::RemoveUploadFile(const QString &md5)
         _upload_paused = false; //没有在途任务，暂停标志复位
 }
 
+//资源连接断开时聊天图片已经发不出去，把记录整体取走，由 FileService 逐条标记失败
+QList<std::shared_ptr<UploadFileInfo>> UserMgr::TakeImageUploads()
+{
+    QList<std::shared_ptr<UploadFileInfo>> images;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (auto it = _uploads.begin(); it != _uploads.end();) {
+        if (it.value() && it.value()->_req_id == ID_UPLOAD_FILE_REQ) {
+            images.append(it.value());
+            it = _uploads.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+    if (_uploads.isEmpty())
+        _upload_paused = false;
+    return images;
+}
+
 void UserMgr::SetUploadPaused(bool paused)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -478,6 +497,39 @@ void UserMgr::UpdateChatMessage(int friend_id, const QString &msg_id, qint64 mes
         info->AppendChatMsgs({message});
         emit FriendChatChanged(friend_id);
         return;
+    }
+}
+
+//图片上传是异步的：网络线程按资源名回推进度，同一张图可能被多条消息引用，
+//所以遍历所有会话一次性更新，再按好友逐个通知模型
+void UserMgr::UpdateImageTransfer(const QString &resource_name, qint64 trans, qint64 total,
+                                  ImageTransferState state)
+{
+    if (resource_name.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        bool changed = false;
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_msg_type != ChatMsgType::Image
+                || message->_resource_name != resource_name)
+                continue;
+            //只推进还在发送中的消息；同内容的旧消息已经完成，不能被这次上传重新改成发送中
+            if (message->_status != ChatMessageStatus::Sending)
+                continue;
+            if (state == ImageTransferState::Uploading) {
+                const qint64 percent = total > 0 ? trans * 100 / total : 0;
+                message->_uploadProgress = static_cast<int>(qBound<qint64>(0LL, percent, 100LL));
+            }
+            else {
+                message->_uploadProgress = state == ImageTransferState::Finished ? 100 : -1;
+                message->_status = state == ImageTransferState::Finished
+                    ? ChatMessageStatus::Sent : ChatMessageStatus::Failed;
+            }
+            changed = true;
+        }
+        if (changed)
+            emit FriendChatChanged(info->_uid);
     }
 }
 

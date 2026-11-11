@@ -151,8 +151,11 @@ target_include_directories(xiguchat_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/network
 )
 
+# 图片缩略图在 core/service 里用 QImage 生成，核心库因此需要 Gui；
+# 客户端本来就链接 Gui/Quick，这里不额外增加依赖
 target_link_libraries(xiguchat_core PUBLIC
     Qt6::Core
+    Qt6::Gui
     Qt6::Network
 )
 

@@ -5,9 +5,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QStandardPaths>
 #include <QUuid>
 
@@ -15,6 +18,35 @@
 #include "sessionservice.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
+
+namespace {
+constexpr int ThumbMaxWidth = 480; //与 ComposerBridge 的缩略图尺寸保持一致
+constexpr int ThumbMaxHeight = 360;
+constexpr int ThumbQuality = 86;
+
+QString imageRoot()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+}
+}
+
+ChatService::ChatService()
+{
+    //资源上传的进度和结果由 FileService 汇总，这里只按资源名更新对应消息；
+    //ChatService 不是 QObject，连接的上下文用 FileService，生命周期随它一起结束
+    auto *file = FileService::GetInstance().get();
+    QObject::connect(file, &FileService::chatImageProgress, file,
+            [](const QString &name, qint64 trans, qint64 total) {
+        UserMgr::GetInstance()->UpdateImageTransfer(name, trans, total,
+            ImageTransferState::Uploading);
+    });
+    QObject::connect(file, &FileService::chatImageFinished, file, [](const QString &name) {
+        UserMgr::GetInstance()->UpdateImageTransfer(name, 1, 1, ImageTransferState::Finished);
+    });
+    QObject::connect(file, &FileService::chatImageFailed, file, [](const QString &name, int) {
+        UserMgr::GetInstance()->UpdateImageTransfer(name, 0, 0, ImageTransferState::Failed);
+    });
+}
 
 // 打开会话：只有登录就绪、会话不存在且没有在途请求时才发 1025，
 // 避免连续点同一个好友时重复建 thread
@@ -79,31 +111,97 @@ QString ChatService::ImageCachePath(const QString &name)
 {
     if (name.isEmpty())
         return {};
-    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString root = imageRoot();
     if (root.isEmpty())
         return {};
     return QDir(root).filePath(QStringLiteral("images/") + QFileInfo(name).fileName());
 }
 
+QString ChatService::ImageThumbPath(const QString &name)
+{
+    if (name.isEmpty())
+        return {};
+    const QString root = imageRoot();
+    if (root.isEmpty())
+        return {};
+    const QString base = QFileInfo(name).completeBaseName();
+    if (base.isEmpty())
+        return {};
+    return QDir(root).filePath(QStringLiteral("images/thumbs/%1_thumb.jpg").arg(base));
+}
+
+QString ChatService::EnsureImageThumbnail(const QString &name, QSize *pixelSize)
+{
+    const QString full = ImageCachePath(name);
+    const QString thumb = ImageThumbPath(name);
+    if (full.isEmpty() || thumb.isEmpty() || !QFileInfo::exists(full))
+        return {};
+
+    //缩略图比原图新且能读出尺寸时直接复用，避免每次登录都重新解码大图
+    if (QFileInfo::exists(thumb)
+        && QFileInfo(thumb).lastModified() >= QFileInfo(full).lastModified()) {
+        const QSize cached = QImageReader(thumb).size();
+        if (cached.isValid()) {
+            if (pixelSize)
+                *pixelSize = cached;
+            return thumb;
+        }
+    }
+
+    QImageReader reader(full);
+    reader.setAutoTransform(true);
+    QImage image = reader.read();
+    if (image.isNull())
+        return {};
+    if (image.width() > ThumbMaxWidth || image.height() > ThumbMaxHeight)
+        image = image.scaled(ThumbMaxWidth, ThumbMaxHeight, Qt::KeepAspectRatio,
+            Qt::SmoothTransformation);
+
+    //缩略图统一存 JPEG：历史消息数量多时，解码开销和磁盘占用都更小
+    if (image.hasAlphaChannel()) {
+        QImage canvas(image.size(), QImage::Format_RGB32);
+        canvas.fill(Qt::white);
+        QPainter painter(&canvas);
+        painter.drawImage(0, 0, image);
+        image = canvas;
+    }
+    QDir().mkpath(QFileInfo(thumb).absolutePath());
+    if (!image.save(thumb, "JPG", ThumbQuality))
+        return {};
+    if (pixelSize)
+        *pixelSize = image.size();
+    return thumb;
+}
+
 // 图片消息：先插入本地消息并发 1031，服务端落库后回执，再上传资源。
 // 返回 true 只代表消息已交给网络层
-bool ChatService::sendImage(int uid, const QString &source, int width, int height)
+bool ChatService::sendImage(int uid, const QString &thumbnail, const QString &uploadPath,
+    int width, int height)
 {
     auto *mgr = UserMgr::GetInstance().get();
     if (!SessionService::GetInstance()->isReady() || !mgr->GetFriendById(uid))
         return false;
 
-    //编辑器插入图片时统一转成 PNG data URL，上传用的就是这份数据
-    static const QString prefix = QStringLiteral("data:image/png;base64,");
-    if (!source.startsWith(prefix))
+    //上传源由输入区压缩好，这里只读一次算 md5，不再经过 QML 传递大块数据
+    const QFileInfo upload_info(uploadPath);
+    if (!upload_info.isFile() || upload_info.size() <= 0)
         return false;
-    const QByteArray png = QByteArray::fromBase64(source.mid(prefix.size()).toLatin1());
-    if (png.isEmpty())
+    QFile upload(uploadPath);
+    if (!upload.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray data = upload.readAll();
+    upload.close();
+    if (data.isEmpty())
         return false;
 
     const QString md5 = QString::fromLatin1(
-        QCryptographicHash::hash(png, QCryptographicHash::Md5).toHex());
-    const QString name = md5 + QStringLiteral(".png"); //内容相同即同名，服务器只存一份
+        QCryptographicHash::hash(data, QCryptographicHash::Md5).toHex());
+    QString suffix = upload_info.suffix().toLower();
+    if (suffix == "jpeg")
+        suffix = QStringLiteral("jpg");
+    if (suffix != "jpg" && suffix != "png")
+        suffix = QStringLiteral("png");
+    const QString name = md5 + QLatin1Char('.') + suffix; //内容相同即同名，服务器只存一份
     const QString uniqueId = QUuid::createUuid().toString();
 
     ensurePrivateChat(uid);
@@ -112,13 +210,25 @@ bool ChatService::sendImage(int uid, const QString &source, int width, int heigh
         mgr->ThreadId(uid), ChatMessageStatus::Sending);
     message->_msg_type = ChatMsgType::Image;
     message->_resource_name = name;
-    message->_imageSource = source;
+    message->_imageSource = thumbnail;
     message->_imageWidth = width;
     message->_imageHeight = height;
+    message->_uploadProgress = 0;
     mgr->AppendFriendChatMsg(uid, {message});
 
-    //回执前把图片数据留在内存，按 unique_id 取回后落盘上传
-    _pending_images.insert(uniqueId, PendingImage{png, name, md5, uid});
+    //上传源落到本机缓存：既供本次上传，也让重新登录后的历史图片能直接显示缩略图
+    const QString cache = ImageCachePath(name);
+    if (!cache.isEmpty()) {
+        QDir().mkpath(QFileInfo(cache).absolutePath());
+        QFile::remove(cache);
+        if (QFile::copy(uploadPath, cache))
+            EnsureImageThumbnail(name); //顺手生成气泡缩略图，历史加载不再解码压缩图
+        else
+            qWarning() << "[chat] cache outgoing image failed:" << cache;
+    }
+    //临时上传文件由 ChatBridge 在整批发送成功后统一删除：同一张图可能被发送两次
+
+    _pending_images.insert(uniqueId, PendingImage{cache, name, md5, uid});
 
     QJsonObject frame{{"fromuid", mgr->GetUid()}, {"touid", uid}};
     frame["thread_id"] = mgr->ThreadId(uid);
@@ -139,24 +249,7 @@ void ChatService::uploadPendingImage(const QString &uniqueId, qint64 messageId, 
     const PendingImage image = iter.value();
     _pending_images.erase(iter);
 
-    //落盘到本机缓存：既是上传源，也让重新登录后的历史消息能直接显示
-    const QString path = ImageCachePath(image.name);
-    if (path.isEmpty())
-        return;
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning() << "[chat] save outgoing image failed:" << path;
-        return;
-    }
-    const bool written = file.write(image.data) == image.data.size();
-    file.close();
-    if (!written) {
-        qWarning() << "[chat] write outgoing image failed:" << path;
-        return;
-    }
-
-    FileService::GetInstance()->UploadChatImage(image.name, path, image.md5,
+    FileService::GetInstance()->UploadChatImage(image.name, image.path, image.md5,
         messageId, touid, threadId, uniqueId);
 }
 

@@ -2,23 +2,113 @@
 
 #include <QBuffer>
 #include <QClipboard>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <QImageReader>
 #include <QMimeData>
+#include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
+#include <QUuid>
+
+namespace {
+constexpr int UploadMaxSide = 1600; //上传压缩图的长边上限，点开大图时不至于模糊
+constexpr int ThumbMaxWidth = 480; //气泡缩略图按 2x 屏幕准备，实际显示再缩到 220 宽
+constexpr int ThumbMaxHeight = 360;
+constexpr int PreviewMaxWidth = 160; //输入区里的显示尺寸，与图片像素尺寸分开
+constexpr int PreviewMaxHeight = 100;
+constexpr int ImageQuality = 86;
+
+//带透明像素的图必须存 PNG，否则透明区域会变黑；不透明照片一律 JPEG，体积小很多
+bool hasTransparency(const QImage &image)
+{
+    if (!image.hasAlphaChannel())
+        return false;
+    const QImage argb = image.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < argb.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(argb.constScanLine(y));
+        for (int x = 0; x < argb.width(); ++x) {
+            if (qAlpha(line[x]) < 255)
+                return true;
+        }
+    }
+    return false;
+}
+
+//按长边等比缩放；图片本身更小时不放大，避免把缩略图再糊一层
+QImage shrinkTo(const QImage &image, int max_width, int max_height)
+{
+    if (image.width() <= max_width && image.height() <= max_height)
+        return image;
+    return image.scaled(max_width, max_height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+
+QByteArray encodeImage(const QImage &image, QByteArray *format)
+{
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::WriteOnly))
+        return {};
+    if (hasTransparency(image)) {
+        if (format)
+            *format = "png";
+        return image.save(&buffer, "PNG") ? bytes : QByteArray();
+    }
+    if (format)
+        *format = "jpg";
+    return image.save(&buffer, "JPG", ImageQuality) ? bytes : QByteArray();
+}
+}
 
 ComposerBridge::ComposerBridge(QObject *parent) : QObject(parent)
 {
+    //上次退出时没有发送的待上传图片已经没人引用，启动时统一清掉
+    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty())
+        return;
+    QDir pending(QDir(root).filePath(QStringLiteral("images/pending")));
+    if (!pending.exists())
+        return;
+    const auto files = pending.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+    for (const auto &info : files)
+        QFile::remove(info.absoluteFilePath());
 }
 
 void ComposerBridge::setError(const QString &message)
 {
     _errorText = message;
     emit errorTextChanged();
+}
+
+QString ComposerBridge::imageKey(const QString &source)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
+//上传文件放在应用数据目录，整批发送成功后由 ChatBridge 删除；这里只负责落盘，不参与显示
+QString ComposerBridge::savePendingImage(const QByteArray &data, const QByteArray &suffix)
+{
+    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty())
+        return {};
+    QDir dir(QDir(root).filePath(QStringLiteral("images/pending")));
+    if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
+        return {};
+    const QString path = dir.filePath(QUuid::createUuid().toString(QUuid::WithoutBraces)
+        + QLatin1Char('.') + QString::fromLatin1(suffix));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size()) {
+        file.close();
+        QFile::remove(path);
+        return {};
+    }
+    return path;
 }
 
 int ComposerBridge::insertImage(QQuickTextDocument *document, int position, const QUrl &url)
@@ -44,24 +134,43 @@ int ComposerBridge::insertImageData(QQuickTextDocument *document, int position, 
         return position;
     }
 
-    // 预览保存图片内容，原文件移动或输入框清空后仍能显示。
-    const QImage preview = image.width() > 800 || image.height() > 600
-        ? image.scaled(800, 600, Qt::KeepAspectRatio, Qt::SmoothTransformation) : image;
-    QByteArray bytes;
-    QBuffer buffer(&bytes);
-    buffer.open(QIODevice::WriteOnly);
-    preview.save(&buffer, "PNG");
-    const QString source = QStringLiteral("data:image/png;base64,")
-        + QString::fromLatin1(bytes.toBase64());
-    const QSize size = preview.width() > 160 || preview.height() > 100
-        ? preview.size().scaled(160, 100, Qt::KeepAspectRatio) : preview.size();
+    //上传图保留长边 1600 的清晰度，供其他客户端下载和以后点开大图使用
+    const QImage upload = shrinkTo(image, UploadMaxSide, UploadMaxSide);
+    QByteArray upload_suffix;
+    const QByteArray upload_bytes = encodeImage(upload, &upload_suffix);
+    if (upload_bytes.isEmpty()) {
+        setError(tr("图片压缩失败"));
+        return position;
+    }
+    const QString upload_path = savePendingImage(upload_bytes, upload_suffix);
+    if (upload_path.isEmpty()) {
+        setError(tr("无法保存待发送图片"));
+        return position;
+    }
+
+    //气泡只加载缩略图，滚动长会话时不会反复解码大图
+    const QImage thumb = shrinkTo(upload, ThumbMaxWidth, ThumbMaxHeight);
+    QByteArray thumb_suffix;
+    const QByteArray thumb_bytes = encodeImage(thumb, &thumb_suffix);
+    if (thumb_bytes.isEmpty()) {
+        QFile::remove(upload_path);
+        setError(tr("图片压缩失败"));
+        return position;
+    }
+    const QString mime = thumb_suffix == "png" ? QStringLiteral("png") : QStringLiteral("jpeg");
+    const QString source = QStringLiteral("data:image/%1;base64,%2")
+        .arg(mime, QString::fromLatin1(thumb_bytes.toBase64()));
+
+    //输入区按 160×100 显示，像素尺寸仍以缩略图为准，发送后气泡据此算宽高比
+    const QSize display = thumb.size().scaled(PreviewMaxWidth, PreviewMaxHeight, Qt::KeepAspectRatio);
     QTextImageFormat format;
     format.setName(source);
-    format.setWidth(size.width());
-    format.setHeight(size.height());
+    format.setWidth(display.width());
+    format.setHeight(display.height());
     QTextCursor cursor(document->textDocument());
     cursor.setPosition(qBound(0, position, document->textDocument()->characterCount() - 1));
     cursor.insertImage(format);
+    _images.insert(imageKey(source), InsertedImage{upload_path, thumb.size()});
     setError({});
     return cursor.position();
 }
@@ -112,10 +221,20 @@ QVariantList ComposerBridge::parts(QQuickTextDocument *document) const
             if (fragment.charFormat().isImageFormat()) {
                 flush();
                 const auto format = fragment.charFormat().toImageFormat();
-                // 一个 fragment 可能包含多个相同图片对象。
-                for (int i = 0; i < fragment.length(); ++i)
-                    result.append(QVariantMap{{"kind", "image"}, {"source", format.name()},
-                        {"width", format.width()}, {"height", format.height()}});
+                const QString source = format.name();
+                const auto inserted = _images.constFind(imageKey(source));
+                const QSize pixel = inserted != _images.constEnd()
+                    ? inserted->pixelSize : QSize(qRound(format.width()), qRound(format.height()));
+                //一个 fragment 可能包含多个相同图片对象，每个都要带上自己的上传文件
+                for (int i = 0; i < fragment.length(); ++i) {
+                    result.append(QVariantMap{
+                        {"kind", "image"},
+                        {"source", source},
+                        {"upload", inserted != _images.constEnd() ? inserted->uploadPath : QString()},
+                        {"width", pixel.width()},
+                        {"height", pixel.height()},
+                    });
+                }
             } else {
                 text += fragment.text();
             }

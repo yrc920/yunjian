@@ -1,9 +1,9 @@
 #include "sessionservice.h"
 
-#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>
+#include <QSize>
 #include <QUrl>
 
 #include "chatservice.h"
@@ -75,7 +75,7 @@ SessionService::SessionService() : _ready(false)
         const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         if (threadId > 0)
             mgr->SetThreadId(peerUid, threadId);
-        //消息已落库但资源还没上传，状态保持发送中，等资源完成后的章节再推进
+        //消息已落库但资源还没上传；状态保持发送中，由资源上传进度推进到已发送
         const qint64 messageId = data.value("message_id").toVariant().toLongLong();
         mgr->UpdateChatMessage(peerUid, uniqueId, messageId, ChatMessageStatus::Sending);
         ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, peerUid, threadId);
@@ -111,13 +111,19 @@ SessionService::SessionService() : _ready(false)
                 item.value("content").toString(), item.value("fromuid").toInt(),
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
                 threadId, status);
-            //图片消息的 content 是资源文件名，有本机缓存就先显示，否则留给资源加载章节
+            //图片消息的 content 是资源文件名；重新登录后用本机缩略图显示，
+            //不要把压缩图按原尺寸铺到消息列表里，否则一条图占满整屏
             if (item.value("msg_type").toInt(0) == static_cast<int>(ChatMsgType::Image)) {
                 message->_msg_type = ChatMsgType::Image;
                 message->_resource_name = item.value("content").toString();
-                const QString path = ChatService::ImageCachePath(message->_resource_name);
-                if (!path.isEmpty() && QFileInfo::exists(path))
-                    message->_imageSource = QUrl::fromLocalFile(path).toString();
+                QSize pixel_size;
+                const QString thumb = ChatService::EnsureImageThumbnail(message->_resource_name,
+                    &pixel_size);
+                if (!thumb.isEmpty()) {
+                    message->_imageSource = QUrl::fromLocalFile(thumb).toString();
+                    message->_imageWidth = pixel_size.width();
+                    message->_imageHeight = pixel_size.height();
+                }
             }
             messages.push_back(std::move(message));
         }

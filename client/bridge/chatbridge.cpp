@@ -1,5 +1,7 @@
 #include "chatbridge.h"
 
+#include <QFile>
+#include <QStringList>
 #include <QUuid>
 
 #include "chatservice.h"
@@ -457,7 +459,7 @@ void ChatBridge::setPane(int pane)
     emit paneChanged();
 }
 
-// 把编辑器片段送出去：图片只生成本地消息，文字才进协议。
+// 把编辑器片段送出去：图片先挂本地消息再落库上传，文字直接进协议。
 // 任意一段失败就返回 false，QML 因此保留输入内容
 bool ChatBridge::sendParts(const QVariantList &parts)
 {
@@ -475,15 +477,22 @@ bool ChatBridge::sendParts(const QVariantList &parts)
         return false;
 
     //按编辑器顺序发送：文本分帧，图片先发 1031 再由回执触发资源上传
+    QStringList sent_uploads; //整批成功后才删输入区的临时压缩图
     for (const QVariant &part : parts) {
         const QVariantMap item = part.toMap();
         if (item.value("kind").toString() == "image") {
+            const QString upload = item.value("upload").toString();
+            //source 是气泡缩略图，upload 是输入区预先压缩好的上传文件
             if (!ChatService::GetInstance()->sendImage(_currentUid, item.value("source").toString(),
-                    item.value("width").toInt(), item.value("height").toInt()))
+                    upload, item.value("width").toInt(), item.value("height").toInt()))
                 return false;
+            if (!upload.isEmpty())
+                sent_uploads.append(upload);
         } else if (!ChatService::GetInstance()->sendText(_currentUid, item.value("text").toString())) {
             return false;
         }
     }
+    for (const QString &path : sent_uploads)
+        QFile::remove(path); //发送失败时保留文件，用户可以直接重试
     return true;
 }

@@ -127,6 +127,13 @@ enum class ChatMsgType : int {
     File = 3,
 };
 
+//图片资源上传的界面状态：进度写入消息行，完成/失败同时更新消息状态
+enum class ImageTransferState : int {
+    Uploading = 0,
+    Finished = 1,
+    Failed = 2,
+};
+
 //一个单聊会话：thread_id 来自服务端，_chat_msgs 始终按 message_id 排序
 struct ChatThreadData {
     explicit ChatThreadData(qint64 thread_id = 0) : _thread_id(thread_id) {}
@@ -217,9 +224,10 @@ struct TextChatData{
     qint64 _thread_id = 0;
     ChatMessageStatus _status = ChatMessageStatus::Sending;
     QString _msg_content;
-    QString _imageSource; //图片消息的本地显示地址（data/file URL）
+    QString _imageSource; //图片消息的本地显示地址（data/file URL），始终指向缩略图
     int _imageWidth = 0;
     int _imageHeight = 0;
+    int _uploadProgress = -1; //图片上传进度 0..100，-1 表示不显示进度条
     ChatMsgType _msg_type = ChatMsgType::Text; //消息类型，历史同步与发送时确定
     QString _resource_name; //图片/文件在资源服务器上的名字，文本为空
     int _from_uid;

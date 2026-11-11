@@ -170,15 +170,16 @@
 
 **1031 图片消息** `{fromuid:int, touid:int, thread_id:int64, md5:string, name:string, token:string, unique_id:string}`
 
-`md5` 为 32 位十六进制，`name` 是资源文件名（`<md5>.png`），`unique_id` 是客户端消息 ID。
+`md5` 为 32 位十六进制，`name` 是资源文件名（`<md5>.jpg`，带透明像素的图用 `<md5>.png`），
+`unique_id` 是客户端消息 ID。上传的是输入区压缩后的图（长边 1600），不是气泡缩略图。
 服务端只做格式校验与落库（`chat_message.msg_type=1`、`status=0` 表示资源未上传），
 **不向接收方推送**；资源上传完成后的通知留到后续章节。
 
 **1032 图片消息回执** `{error, fromuid, touid, thread_id, message_id, md5, name, unique_id, status}`
 
 `status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `2001` 上传资源。
-资源完整落盘后，ResourceServer 通过 gRPC `NotifyImageUploaded` 让 ChatServer 把该消息的
-`status` 改成 1（已上传）。
+2001 的每个分片确认都会回推进度，上传完成时消息状态改为已发送；资源完整落盘后，
+ResourceServer 通过 gRPC `NotifyImageUploaded` 让 ChatServer 把该消息的 `status` 改成 1（已上传）。
 
 ---
 

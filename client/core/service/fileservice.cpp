@@ -58,6 +58,7 @@ FileService::FileService()
     connect(file, &FileTcpMgr::sig_connection_closed, this, [this] {
         _connected = false; //断线后OnSessionReady不能再触发同步
         AbortDownloads(); //在途下载已经无法继续，记录和半截文件一起清掉
+        AbortImageUploads(); //聊天图片发不出去，消息不能一直转圈
     });
 
     //收发帧由FileTcpMgr负责，业务层的落盘、缓存与界面刷新集中在本类
@@ -83,6 +84,7 @@ void FileService::ConnectToResource(const ServerInfo &info)
     _trans_size = 0; //进度归零，等新账号登录后重新开始
     _total_size = 0;
     AbortDownloads(); //上一个账号的在途下载不能带到新连接
+    AbortImageUploads(); //旧账号的聊天图片上传没有后续回包，直接结束
     _message.clear(); //个人资料页的旧提示不保留
     if (!_resourceConfigured) { //没有配置资源服务时不发连接请求
         _message = QStringLiteral("当前服务器未配置资源服务，头像仅保存在本机"); //只提示，不影响聊天
@@ -97,6 +99,7 @@ void FileService::CloseResource()
     _connected = false; //资源连接即将断开
     _sessionReady = false; //登录态也一起失效
     AbortDownloads(); //主动关闭同样要清掉在途任务
+    AbortImageUploads(); //聊天图片随连接一起结束，消息标记失败
     FileTcpMgr::GetInstance()->CloseConnectionAsync(); //交给网络线程关闭socket
 }
 
@@ -213,6 +216,17 @@ void FileService::AbortDownloads()
     _download_owners.clear();
 }
 
+//资源连接断开时，聊天图片已经无法继续；记录被取走后不会再有人续传，
+//这里逐条把消息标成失败，避免气泡一直显示上传中的转圈
+void FileService::AbortImageUploads()
+{
+    const auto uploads = UserMgr::GetInstance()->TakeImageUploads();
+    for (const auto &info : uploads) {
+        if (info)
+            emit chatImageFailed(info->_name, 2);
+    }
+}
+
 void FileService::CancelOwnAvatarDownload()
 {
     const int uid = UserMgr::GetInstance()->GetUid(); //只取消本机账号的下载
@@ -299,8 +313,10 @@ void FileService::UploadChatImage(const QString &name, const QString &path, cons
     qint64 messageId, int touid, qint64 threadId, const QString &uniqueId)
 {
     const QFileInfo file_info(path);
-    if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0)
+    if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0) {
+        emit chatImageFailed(name, 1); //本地压缩图没落盘，消息直接标失败
         return;
+    }
 
     //同一内容已经在传（例如连续发送同一张图），复用这次上传，避免两路分片互相覆盖进度
     if (UserMgr::GetInstance()->GetUploadFile(md5))
@@ -319,9 +335,10 @@ void FileService::UploadChatImage(const QString &name, const QString &path, cons
     info->_unique_id = uniqueId;
     UserMgr::GetInstance()->AddUploadFile(info);
 
-    //资源服务器没连上时不阻塞聊天：本地文件已保存，等下次登录重新发送
+    //资源服务器没连上时不阻塞聊天：本地文件已保存，消息标失败等下一轮重发
     if (!_resourceConfigured || !_connected) {
         UserMgr::GetInstance()->RemoveUploadFile(md5);
+        emit chatImageFailed(name, 2);
         return;
     }
     FileTcpMgr::GetInstance()->StartUpload(md5);
@@ -366,44 +383,56 @@ int FileService::Progress() const
 
 void FileService::HandleUploadProgress(const QString &name, qint64 trans, qint64 total)
 {
-    //聊天图片也会走同一个信号，按资源名过滤，不能把它的进度显示到头像上
-    if (!_uploading || name != _uploadName)
+    //头像与聊天图片共用一个网络通道，同名资源才更新头像进度
+    if (_uploading && name == _uploadName) {
+        _trans_size = trans; //已经连续确认的字节数，直接作为进度
+        _total_size = total;
+        if (!_paused) //暂停时保留“已暂停”提示，不被进度覆盖
+            _message = QStringLiteral("正在同步头像");
+        emit uploadStateChanged();
         return;
-    _trans_size = trans; //已经连续确认的字节数，直接作为进度
-    _total_size = total;
-    if (!_paused) //暂停时保留“已暂停”提示，不被进度覆盖
-        _message = QStringLiteral("正在同步头像");
-    emit uploadStateChanged();
+    }
+    if (!name.isEmpty())
+        emit chatImageProgress(name, trans, total); //其余资源都是聊天图片
 }
 
 void FileService::HandleUploadFinished(const QString &name)
 {
-    if (!_uploading || name != _uploadName) //聊天图片完成不结束头像上传
+    if (_uploading && name == _uploadName) {
+        _uploading = false; //进度条收起
+        _paused = false;
+        _trans_size = _total_size; //直接显示100%
+        _message = QStringLiteral("头像已同步");
+        _uploadMd5.clear(); //后续失败回调不再匹配
+        emit uploadStateChanged();
         return;
-    _uploading = false; //进度条收起
-    _paused = false;
-    _trans_size = _total_size; //直接显示100%
-    _message = QStringLiteral("头像已同步");
-    _uploadMd5.clear(); //后续失败回调不再匹配
-    emit uploadStateChanged();
+    }
+    if (!name.isEmpty())
+        emit chatImageFinished(name); //聊天图片完成，消息状态改成已发送
 }
 
 void FileService::HandleUploadFailed(const QString &name, int error)
 {
-    if (!_uploading && _uploadMd5.isEmpty()) //没有在途上传，忽略
+    if (_uploading && name == _uploadName) {
+        _uploading = false; //停止进度展示
+        _paused = false;
+        UserMgr::GetInstance()->SetUploadPaused(false); //网络线程不再继续发片
+        if (!_uploadMd5.isEmpty()) {
+            UserMgr::GetInstance()->RemoveUploadFile(_uploadMd5); //清掉断点状态
+            _uploadMd5.clear();
+        }
+        _message = QStringLiteral("头像同步失败（错误码 %1），本机头像已保留").arg(error); //不删本地文件
+        emit uploadStateChanged();
         return;
-    if (_uploading && !_uploadName.isEmpty() && name != _uploadName)
-        return; //聊天图片失败不影响头像的进度与提示
-
-    _uploading = false; //停止进度展示
-    _paused = false;
-    UserMgr::GetInstance()->SetUploadPaused(false); //网络线程不再继续发片
-    if (!_uploadMd5.isEmpty()) {
-        UserMgr::GetInstance()->RemoveUploadFile(_uploadMd5); //清掉断点状态
-        _uploadMd5.clear();
     }
-    _message = QStringLiteral("头像同步失败（错误码 %1），本机头像已保留").arg(error); //不删本地文件
-    emit uploadStateChanged();
+    //头像已经结束但断点记录还在：只清理，不当成聊天图片
+    if (!_uploading && name == _uploadName && !_uploadMd5.isEmpty()) {
+        UserMgr::GetInstance()->RemoveUploadFile(_uploadMd5);
+        _uploadMd5.clear();
+        return;
+    }
+    if (!name.isEmpty())
+        emit chatImageFailed(name, error); //聊天图片失败，消息标记为发送失败
 }
 
 void FileService::HandleDownloadFinished(const QString &name, const QString &path)

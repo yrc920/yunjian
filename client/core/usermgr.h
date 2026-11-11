@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QByteArray>
+#include <QList>
 #include <memory>
 #include <singleton.h>
 #include "userdata.h"
@@ -43,6 +44,8 @@ public:
     void AddUploadFile(std::shared_ptr<UploadFileInfo> info);
     std::shared_ptr<UploadFileInfo> GetUploadFile(const QString &md5);
     void RemoveUploadFile(const QString &md5);
+    //资源断线时取走全部聊天图片上传记录，头像记录仍由 FileService 自己收尾
+    QList<std::shared_ptr<UploadFileInfo>> TakeImageUploads();
     void SetUploadPaused(bool paused);
     bool UploadPaused() const;
     void AddDownloadFile(std::shared_ptr<DownloadFileInfo> info);
@@ -74,6 +77,9 @@ public:
     void MarkPrivateChatPending(int friend_id, bool pending);
     void UpdateChatMessage(int friend_id, const QString &msg_id, qint64 message_id,
                            ChatMessageStatus status); //回执补 ID/状态并重新排序
+    //图片资源上传进度按资源名回写：同一张图的多条消息一起更新，完成/失败同时改状态
+    void UpdateImageTransfer(const QString &resource_name, qint64 trans, qint64 total,
+                             ImageTransferState state);
     void FailPendingMessages(); //断线时把发送中的消息统一标失败
 
     // 供列表模型按行读取：模型不复制数据，只引用这里的原始对象

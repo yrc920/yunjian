@@ -45,6 +45,10 @@ public:
 signals:
     //所有状态变化走同一个信号，QML 只绑四个只读属性，不直接认识上传细节
     void uploadStateChanged();
+    //聊天图片的进度按资源名转发给 ChatService，头像上传仍走上面的状态属性
+    void chatImageProgress(const QString &name, qint64 trans, qint64 total);
+    void chatImageFinished(const QString &name);
+    void chatImageFailed(const QString &name, int error);
 
 private:
     FileService();
@@ -53,6 +57,7 @@ private:
     void CacheContactIcon(int uid, const QString &iconName); //查缓存或发起下载
     void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath); //建下载状态
     void AbortDownloads(); //断线/换账号时清掉在途下载与半截文件
+    void AbortImageUploads(); //资源断线时把在途聊天图片标记失败
     void CancelOwnAvatarDownload(); //上传前取消本机旧头像下载
     void HandleUploadProgress(const QString &name, qint64 trans, qint64 total); //更新进度
     void HandleUploadFinished(const QString &name); //收尾

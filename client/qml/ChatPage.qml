@@ -135,6 +135,7 @@ Item {
             imageWidth: model.imageWidth
             imageHeight: model.imageHeight
             status: model.status
+            uploadProgress: model.uploadProgress
         }
 
         onCountChanged: Qt.callLater(messageList.positionViewAtEnd)
@@ -269,7 +270,7 @@ Item {
             }
         }
 
-        // 拖入图片时按 URL 逐个插入到当前光标位置，图片只留在本机会话里
+        // 拖入图片时按 URL 逐个插入：输入区显示缩略图，发送时另外上传压缩图
         DropArea {
             anchors.fill: parent
             onEntered: (drag) => { drag.accepted = drag.hasUrls }

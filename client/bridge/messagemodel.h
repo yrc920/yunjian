@@ -34,6 +34,7 @@ public:
         NameRole,
         StatusRole,
         IsImageRole, //图片消息：没有本地文件时由气泡显示占位
+        UploadProgressRole, //图片上传进度 0..100，-1 表示不显示
     };
 
     explicit MessageModel(QObject *parent = nullptr);
