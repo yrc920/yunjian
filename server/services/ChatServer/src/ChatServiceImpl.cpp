@@ -214,3 +214,19 @@ void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> pServer)
 {
     _p_server = pServer; //注册服务器
 }
+
+Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
+    const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response)
+{
+    response->set_message_id(request->message_id());
+    if (request->message_id() <= 0 || request->sender() <= 0) {
+        response->set_error(ErrorCodes::Error_Json);
+        return Status::OK;
+    }
+
+    //聊天图片全部落盘后，把消息从“未上传”改成“已上传”
+    const bool ok = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
+        request->message_id(), request->sender(), 1);
+    response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
+    return Status::OK;
+}

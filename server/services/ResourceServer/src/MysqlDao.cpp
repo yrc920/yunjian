@@ -87,6 +87,29 @@ bool MysqlDao::UpdateUserIcon(int uid, const std::string& icon)
 	}
 }
 
+bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int status)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+	});
+
+	try {
+		//gRPC 不可用时的兜底路径，同样带上 sender 限定
+		con->_session->sql("UPDATE chat_message SET status = ? WHERE message_id = ? AND sender_id = ?")
+			.bind(status).bind(static_cast<int64_t>(message_id)).bind(sender).execute();
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		con->_healthy = false;
+		std::cerr << "Mysqlx Error in UpdateChatMessageStatus: " << e.what() << std::endl;
+		return false;
+	}
+}
+
 MySqlPool::MySqlPool(const std::string& host, unsigned port, const std::string& user,
 	const std::string& pass, const std::string& schema, int pool_size)
 	: _host(host), _port(port), _user(user), _pass(pass), _schema(schema), _pool_size(pool_size)

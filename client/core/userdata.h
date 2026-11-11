@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <vector>
 #include <QJsonObject>
+#include <QSet>
 #include <utility>
 #include <QMetaType>
 #include "global.h"
@@ -247,16 +248,25 @@ struct TextChatMsg{
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
 };
 
-//一次在途的头像/文件上传：FileTcpMgr 收到回包后按这里的偏移继续读下一片
+//一次在途的头像/文件上传：窗口里的分片已发出，等待服务器逐片确认
 struct UploadFileInfo {
     QString _md5;
     QString _name;
     QString _path;
     qint64 _total_size = 0;
-    qint64 _trans_size = 0;
-    int _seq = 0;
+    qint64 _trans_size = 0; //连续确认到的字节数，界面进度用它
+    int _seq = 0; //已经发出的最大分片序号
+    int _max_seq = 0; //总分片数
+    int _confirmed_seq = 0; //连续确认到的分片序号
+    QSet<int> _flighting; //已发送、未确认
+    QSet<int> _acked; //已确认、但还没连成连续段
     int _uid = 0;
     ReqId _req_id = ID_UPLOAD_HEAD_ICON_REQ;
+    //聊天图片上传完成后回写消息状态用；头像与普通文件为0
+    qint64 _chat_msg_id = 0;
+    int _touid = 0;
+    qint64 _thread_id = 0;
+    QString _unique_id;
 };
 
 //一次断点下载：seq 从 1 开始，写完后由 FileTcpMgr 继续请求下一片

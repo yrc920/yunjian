@@ -107,6 +107,19 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		return;
 	}
 
+	//聊天图片额外带消息信息；头像与普通文件不带，缺省为0
+	if ((root.isMember("message_id") && !root["message_id"].isInt64())
+		|| (root.isMember("touid") && !root["touid"].isInt())
+		|| (root.isMember("thread_id") && !root["thread_id"].isInt64())
+		|| (root.isMember("unique_id") && !root["unique_id"].isString())) {
+		SendUploadResponse(session, avatar, ErrorCodes::Error_Json, "", "", 0, 0, 0, 0, 0);
+		return;
+	}
+	const long long chat_msg_id = root.get("message_id", Json::Int64(0)).asInt64();
+	const int touid = root.get("touid", 0).asInt();
+	const long long chat_thread_id = root.get("thread_id", Json::Int64(0)).asInt64();
+	const std::string unique_id = root.get("unique_id", "").asString();
+
 	const std::string md5 = root["md5"].asString(); //资源内容ID，也是续传键
 	const std::string name = root["name"].asString(); //落盘文件名
 	const std::string token = root["token"].asString(); //首片校验用
@@ -157,6 +170,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		file_info->_uid = uid; //归属用户
 		file_info->_total_size = total_size; //总大小
 		file_info->_avatar = avatar; //最后一片是否写user.icon
+		file_info->_accepted_seq = 1; //首片已被逻辑线程接收
 		LogicSystem::GetInstance()->AddFileInfo(file_info); //登记到内存进度表
 	}
 	else {
@@ -175,12 +189,14 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 			return;
 		}
 
-		//客户端必须一片一片等回包，序号跳变说明中间丢片，直接拒绝而不是写出空洞
-		if (seq != file_info->_seq + 1) {
+		//通用资源走拥塞窗口，多个分片可能在途；按“已接收序号”而不是落盘序号判断，
+		//落盘由同一文件的文件线程按队列顺序完成，不会写出空洞
+		if (seq != file_info->_accepted_seq + 1) {
 			SendUploadResponse(session, avatar, ErrorCodes::FileSeqInvalid, md5, name, seq,
 				total_size, trans_size, last, uid);
 			return;
 		}
+		file_info->_accepted_seq = seq; //后续分片可以继续进入窗口
 	}
 
 	//写盘是异步的：文件线程只回结果，这里补齐请求上下文字段再回包
@@ -202,9 +218,14 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 			LogicSystem::GetInstance()->RemoveFileInfo(md5);
 	};
 
-	FileSystem::GetInstance()->PostUploadTask(std::make_shared<FileTask>(
+	auto task = std::make_shared<FileTask>(
 		session, uid, file_path.string(), name, md5, seq, total_size, trans_size, last,
-		root["data"].asString(), avatar, std::move(callback)));
+		root["data"].asString(), avatar, std::move(callback));
+	task->_chat_msg_id = chat_msg_id;
+	task->_touid = touid;
+	task->_thread_id = chat_thread_id;
+	task->_unique_id = unique_id;
+	FileSystem::GetInstance()->PostUploadTask(std::move(task));
 }
 
 void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& data)

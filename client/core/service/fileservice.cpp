@@ -295,7 +295,8 @@ void FileService::UploadAvatar(const QString &path)
 }
 
 //聊天图片走通用上传通道(2001)，与头像的上传状态互不影响
-void FileService::UploadChatImage(const QString &name, const QString &path, const QString &md5)
+void FileService::UploadChatImage(const QString &name, const QString &path, const QString &md5,
+    qint64 messageId, int touid, qint64 threadId, const QString &uniqueId)
 {
     const QFileInfo file_info(path);
     if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0)
@@ -312,6 +313,10 @@ void FileService::UploadChatImage(const QString &name, const QString &path, cons
     info->_total_size = file_info.size();
     info->_uid = UserMgr::GetInstance()->GetUid();
     info->_req_id = ID_UPLOAD_FILE_REQ; //通用资源，不是头像
+    info->_chat_msg_id = messageId;
+    info->_touid = touid;
+    info->_thread_id = threadId;
+    info->_unique_id = uniqueId;
     UserMgr::GetInstance()->AddUploadFile(info);
 
     //资源服务器没连上时不阻塞聊天：本地文件已保存，等下次登录重新发送
@@ -359,20 +364,21 @@ int FileService::Progress() const
     return static_cast<int>(qBound<qint64>(0LL, percent, 100LL)); //QML只认0..100
 }
 
-void FileService::HandleUploadProgress(const QString &, qint64 trans, qint64 total)
+void FileService::HandleUploadProgress(const QString &name, qint64 trans, qint64 total)
 {
-    if (!_uploading) //上一次上传已经结束，迟到的回包忽略
+    //聊天图片也会走同一个信号，按资源名过滤，不能把它的进度显示到头像上
+    if (!_uploading || name != _uploadName)
         return;
-    _trans_size = trans; //服务器已落盘字节数，直接作为进度
+    _trans_size = trans; //已经连续确认的字节数，直接作为进度
     _total_size = total;
     if (!_paused) //暂停时保留“已暂停”提示，不被进度覆盖
         _message = QStringLiteral("正在同步头像");
     emit uploadStateChanged();
 }
 
-void FileService::HandleUploadFinished(const QString &)
+void FileService::HandleUploadFinished(const QString &name)
 {
-    if (!_uploading) //已经结束的上传不再处理
+    if (!_uploading || name != _uploadName) //聊天图片完成不结束头像上传
         return;
     _uploading = false; //进度条收起
     _paused = false;
@@ -382,10 +388,12 @@ void FileService::HandleUploadFinished(const QString &)
     emit uploadStateChanged();
 }
 
-void FileService::HandleUploadFailed(const QString &, int error)
+void FileService::HandleUploadFailed(const QString &name, int error)
 {
     if (!_uploading && _uploadMd5.isEmpty()) //没有在途上传，忽略
         return;
+    if (_uploading && !_uploadName.isEmpty() && name != _uploadName)
+        return; //聊天图片失败不影响头像的进度与提示
 
     _uploading = false; //停止进度展示
     _paused = false;

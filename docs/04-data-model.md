@@ -89,7 +89,8 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 | `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型和上传状态 |
 
 `chat_message.msg_type`：0 文本、1 图片（2/3 预留给视频与文件）。图片消息的 `content` 存资源文件名，
-`status=0` 表示资源还没上传完成，接收方通知与状态回写留到资源链路章节。
+`status=0` 表示资源还没上传完成；ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer
+把 `status` 改成 1。接收方通知与图片下载仍留到后续章节。
 
 消息分页使用 `(thread_id, message_id)` 索引及游标 `message_id > last_id`；会话分页使用 `thread_id > last_id`。
 首次单聊在事务中查询或创建 `chat_thread` 和 `private_chat`，参与者按 uid 归一化并由唯一键兜底。

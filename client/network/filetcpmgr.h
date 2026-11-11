@@ -41,7 +41,7 @@ private:
     void registerMetaType();
     void initHandlers();
     void handleMsg(ReqId id, int len, QByteArray data);
-    void sendNextChunk(const QString &md5); //读服务器已确认偏移的下一片
+    void sendWindow(const QString &md5); //按拥塞窗口补发待确认分片
     void sendDownloadRequest(const QString &name);
 
     QTcpSocket _socket; //必须与FileTcpMgr同线程，MoveToThread里单独迁移

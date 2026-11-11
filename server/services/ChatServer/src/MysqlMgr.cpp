@@ -104,3 +104,8 @@ bool MysqlMgr::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 	//content 在图片消息里是资源文件名, 资源本体走 ResourceServer
 	return _dao.SaveImageMessage(sender_id, recv_id, thread_id, client_msg_id, content, message);
 }
+
+bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int status)
+{
+	return _dao.UpdateChatMessageStatus(message_id, sender, status); //资源完成回调
+}

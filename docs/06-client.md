@@ -130,7 +130,8 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 - 同样运行在 `FileTcpThread` 中，与聊天网络线程分开；
 - 帧头是 `quint16 id` + `quint32 len`，包体上限 16KB；
 - 处理 `2001/2003/2005/2007` 四组消息：通用上传、进度同步、断点下载、头像上传；
-- 上传状态保存在 `UserMgr::UploadFileInfo`，收到回包后按 `trans_size` 读取下一片；
+- 上传状态保存在 `UserMgr::UploadFileInfo`；聊天图片用拥塞窗口（最多 8 片在途），
+  头像固定 1 片，收到回包后按连续确认的序号补发，进度不会因乱序回包回跳；
 - 下载状态保存在 `DownloadFileInfo`，`seq == 1` 覆盖写、其余追加，`is_last` 为真时结束；
 - 暂停只停止发送下一片，继续前由 `FileService` 发 `ID_SYNC_FILE_REQ` 对齐服务器进度。
 

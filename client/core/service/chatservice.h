@@ -14,7 +14,7 @@ public:
     bool sendText(int uid, const QString &text);
     //图片先发 1031 落库，收到回执后由 uploadPendingImage 启动 2001 断点上传
     bool sendImage(int uid, const QString &source, int width, int height);
-    void uploadPendingImage(const QString &uniqueId);
+    void uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId);
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉内存里的图片数据
     static QString ImageCachePath(const QString &name); //本机图片缓存，也是上传源文件
     void ensurePrivateChat(int uid);

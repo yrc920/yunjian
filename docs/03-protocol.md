@@ -177,6 +177,8 @@
 **1032 图片消息回执** `{error, fromuid, touid, thread_id, message_id, md5, name, unique_id, status}`
 
 `status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `2001` 上传资源。
+资源完整落盘后，ResourceServer 通过 gRPC `NotifyImageUploaded` 让 ChatServer 把该消息的
+`status` 改成 1（已上传）。
 
 ---
 
@@ -210,6 +212,10 @@
 上传首个分片必须携带 `uid`、`token`，服务端比对 Redis `utoken_<uid>` 后把 uid 绑定到连接；
 后续分片只校验连接身份。字段、校验规则与断点续传流程见
 [13-ResourceServer](13-resource-server.md)。
+
+聊天图片的 `2001` 请求额外带 `message_id`、`touid`、`thread_id`、`unique_id`，供资源服务器
+最后一片写完后回写消息状态。客户端使用拥塞窗口，聊天图片最多 8 片在途（头像仍逐片确认），
+服务端按“已接收序号”推进，不再要求每一片都等上一片的落盘和回包。
 
 ---
 
@@ -317,6 +323,8 @@ rpc RplyAddFriend      (RplyFriendReq)  returns (RplyFriendRsp);
 rpc SendChatMsg        (SendChatMsgReq) returns (SendChatMsgRsp);
 rpc NotifyAuthFriend   (AuthFriendReq)  returns (AuthFriendRsp);
 rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
+rpc NotifyKickUser     (KickUserReq)    returns (KickUserRsp);
+rpc NotifyImageUploaded(NotifyImageUploadedReq) returns (NotifyImageUploadedRsp);
 ```
 
 | 消息 | 字段 |
@@ -332,8 +340,13 @@ rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
 | `TextChatMsgReq` | `fromuid`, `touid`, `repeated TextChatData textmsgs` |
 | `TextChatData` | `msgid`, `msgcontent` |
 | `TextChatMsgRsp` | `error`, `fromuid`, `touid`, `repeated TextChatData textmsgs` |
+| `KickUserReq` / `KickUserRsp` | `uid` / `error`, `uid` |
+| `NotifyImageUploadedReq` | `message_id`, `sender`, `thread_id`, `name` |
+| `NotifyImageUploadedRsp` | `error`, `message_id` |
 
-实际使用：`NotifyAddFriend`、`NotifyAuthFriend`、`NotifyTextChatMsg` 三个用于跨实例转发；
+实际使用：`NotifyAddFriend`、`NotifyAuthFriend`、`NotifyTextChatMsg` 用于跨实例转发，
+`NotifyKickUser` 用于异地登录踢人；`NotifyImageUploaded` 由 **ResourceServer** 在聊天图片
+全部落盘后调用 ChatServer，把 `chat_message.status` 从 0（未上传）改成 1（已上传）。
 `RplyAddFriend` 与 `SendChatMsg` **已定义但未实现调用**（服务实现中直接返回默认响应）。
 
 所有 RPC 使用 `grpc::InsecureServerCredentials()` / `InsecureChannelCredentials()`，

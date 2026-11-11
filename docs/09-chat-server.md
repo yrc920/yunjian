@@ -220,7 +220,9 @@ flowchart TB
 
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
-**不向接收方推送**，也没有跨实例转发；资源上传完成后的 gRPC 回调、状态更新和双方通知留到资源链路章节。
+**不向接收方推送**，也没有跨实例转发。资源全部落盘后，ResourceServer 通过 gRPC
+`NotifyImageUploaded` 把 `message_id` 交给 ChatServer，`ChatServiceImpl` 更新
+`chat_message.status=1`（带 `sender` 限定）；推送给双方留到后续章节。
 
 登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`，图片消息的 `content` 是资源文件名。
 

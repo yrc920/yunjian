@@ -18,3 +18,8 @@ Schema = xigu
 Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
+
+# 图片上传完成后通过 gRPC 通知 ChatServer 回写消息状态
+[ChatServer]
+Host = 127.0.0.1
+Port = 50055

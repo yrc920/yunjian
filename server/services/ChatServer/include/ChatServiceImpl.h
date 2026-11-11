@@ -24,6 +24,8 @@ using message::TextChatMsgRsp;
 using message::TextChatData;
 using message::KickUserReq;
 using message::KickUserRsp;
+using message::NotifyImageUploadedReq;
+using message::NotifyImageUploadedRsp;
 
 class ChatServiceImpl final : public ChatService::Service
 {
@@ -37,6 +39,9 @@ public:
 		const TextChatMsgReq* request, TextChatMsgRsp* response) override; //处理文本聊天消息请求
     Status NotifyKickUser(::grpc::ServerContext* context,
         const KickUserReq* request, KickUserRsp* response) override; //接受rpc踢人请求
+    //资源服务器在聊天图片完整落盘后通知这里回写消息状态
+    Status NotifyImageUploaded(ServerContext* context,
+        const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response) override;
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
     void RegisterServer(std::shared_ptr<CServer> pServer); //注册CServer对象，方便在处理请求时访问服务器相关功能

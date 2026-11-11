@@ -16,3 +16,8 @@ Schema = xigu
 Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
+
+# 容器内所有服务共用回环地址；图片上传完成后要通知 ChatServer
+[ChatServer]
+Host = 127.0.0.1
+Port = 50055

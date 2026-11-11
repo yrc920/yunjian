@@ -131,7 +131,7 @@ bool ChatService::sendImage(int uid, const QString &source, int width, int heigh
     return true;
 }
 
-void ChatService::uploadPendingImage(const QString &uniqueId)
+void ChatService::uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId)
 {
     auto iter = _pending_images.find(uniqueId);
     if (iter == _pending_images.end())
@@ -156,7 +156,8 @@ void ChatService::uploadPendingImage(const QString &uniqueId)
         return;
     }
 
-    FileService::GetInstance()->UploadChatImage(image.name, path, image.md5);
+    FileService::GetInstance()->UploadChatImage(image.name, path, image.md5,
+        messageId, touid, threadId, uniqueId);
 }
 
 void ChatService::discardPendingImage(const QString &uniqueId)

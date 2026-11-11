@@ -6,7 +6,7 @@
 #    · 逻辑线程按会话分派，落盘线程按文件名分派
 #    · 连接先校验 uid + token，再绑定到本次传输
 #
-#  依赖: Boost + hiredis + jsoncpp + mysql-connector-cpp + Threads
+#  依赖: Boost + hiredis + jsoncpp + mysql-connector-cpp + xigu_proto(gRPC) + Threads
 #  产物: 单配置为 bin/ResourceServer/，多配置为 bin/ResourceServer/<配置名>/
 # ============================================================
 
@@ -35,6 +35,7 @@ set(SERVER_SOURCES
     src/RedisMgr.cpp           # Redis 连接池
     src/MysqlMgr.cpp           # MySQL 管理入口
     src/MysqlDao.cpp           # 用户资料查询与头像更新
+    src/ChatGrpcClient.cpp     # 图片上传完成后通知 ChatServer
 )
 
 set(SERVER_HEADERS
@@ -54,6 +55,7 @@ set(SERVER_HEADERS
     include/RedisMgr.h
     include/MysqlMgr.h
     include/MysqlDao.h
+    include/ChatGrpcClient.h
     include/Singleton.h
     include/const.h
     include/data.h
@@ -64,6 +66,8 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 target_link_libraries(${SERVER_NAME} PRIVATE
+    # 图片上传完成通知 ChatServer；xigu_proto 已 PUBLIC 链接 gRPC/protobuf
+    xigu_proto
     Boost::filesystem
     Boost::headers
     hiredis::hiredis

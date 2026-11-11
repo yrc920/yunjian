@@ -33,6 +33,11 @@ struct FileTask {
 	int _last;
 	std::string _data; //Base64，解码和写盘都在文件线程完成
 	bool _avatar; //最后一片是否要写user.icon
+	//聊天图片的消息信息；头像与普通文件为0，最后一片写完后用它回写消息状态
+	long long _chat_msg_id = 0;
+	int _touid = 0;
+	long long _thread_id = 0;
+	std::string _unique_id;
 	ResultCallback _callback; //写盘结果，error由文件线程填
 };
 

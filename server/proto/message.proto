@@ -89,6 +89,8 @@ service ChatService {
   rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
   // 跨实例踢人：同账号在另一实例登录后，通知旧实例把该用户的旧连接踢下线
   rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
+  // 资源服务器在聊天图片完整落盘后通知 ChatServer 把消息标记为已上传
+  rpc NotifyImageUploaded (NotifyImageUploadedReq) returns (NotifyImageUploadedRsp) {}
 }
 
 // 好友申请通知
@@ -239,4 +241,24 @@ message KickUserRsp {
   int32 error = 1;
   // 回显被踢用户 ID
   int32 uid = 2;
+}
+
+// 资源上传完成的请求：由 ResourceServer 在聊天图片全部落盘后发给 ChatServer
+message NotifyImageUploadedReq {
+  // chat_message 自增主键，图片消息落库时已经返回给客户端并随分片带给 ResourceServer
+  int64 message_id = 1;
+  // 发送者 uid，用于日志与后续推送定位
+  int32 sender = 2;
+  // 会话 ID
+  int64 thread_id = 3;
+  // 资源文件名
+  string name = 4;
+}
+
+// 资源上传完成的响应
+message NotifyImageUploadedRsp {
+  // 业务错误码，0 表示状态已更新；消息不存在或数据库失败返回非 0
+  int32 error = 1;
+  // 回显消息 ID
+  int64 message_id = 2;
 }

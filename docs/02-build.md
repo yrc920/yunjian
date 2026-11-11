@@ -95,7 +95,8 @@ cmake --build --preset macos-clang
 ### proto 代码生成（`server/proto/`）
 
 `proto/` 是**共享 proto 的单一源**，构建期生成代码并打包成静态库 `xigu_proto`，
-需要 RPC 的服务统一链接；ResourceServer 是独立 TCP 服务，不依赖 gRPC/proto。
+需要 RPC 的服务统一链接 `xigu_proto`（已 PUBLIC 链接 gRPC/protobuf）；ResourceServer 以独立 TCP 服务为主，
+只通过 gRPC 客户端在图片上传完成后通知 ChatServer。
 
 ```mermaid
 flowchart LR

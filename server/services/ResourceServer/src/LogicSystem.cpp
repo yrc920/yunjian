@@ -73,6 +73,7 @@ bool LogicSystem::LoadFileInfo(const std::string& md5, std::shared_ptr<FileInfo>
 	loaded->_name = root["name"].asString(); //文件名
 	loaded->_uid = root["uid"].asInt(); //归属用户
 	loaded->_seq = root["seq"].asInt(); //最后落盘分片
+	loaded->_accepted_seq = loaded->_seq; //从Redis恢复时只能从已落盘位置继续接收
 	loaded->_total_size = root["total_size"].asInt64(); //总大小
 	loaded->_trans_size = root["trans_size"].asInt64(); //已落盘大小
 	loaded->_avatar = root["avatar"].asBool(); //是否头像

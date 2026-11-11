@@ -1,5 +1,6 @@
 #include "FileWorker.h"
 #include "Base64.h"
+#include "ChatGrpcClient.h"
 #include "LogicSystem.h"
 #include "MysqlMgr.h"
 #include "RedisMgr.h"
@@ -14,6 +15,12 @@ namespace {
 //文件线程只把结果放进Json，回包字段由逻辑层的回调补齐
 void FinishTask(const std::shared_ptr<FileTask>& task, int error)
 {
+	//写盘失败时把“已接收序号”退回落盘位置，客户端重传这一片不会因为窗口超前面被拒
+	if (error != ErrorCodes::Success) {
+		auto info = LogicSystem::GetInstance()->GetFileInfo(task->_md5);
+		if (info)
+			info->_accepted_seq = info->_seq;
+	}
 	Json::Value result;
 	result["error"] = error;
 	if (task->_callback)
@@ -116,9 +123,10 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		return;
 	}
 
-	//写盘成功后再推进进度，同步接口返回的就是已经落盘的字节数
+	//写盘成功后再推进进度，同步接口返回的就是已经落盘的字节数；
+	//窗口发送可能让多个分片同时在途，进度只能向前，不能被较早的分片回退
 	auto file_info = LogicSystem::GetInstance()->GetFileInfo(task->_md5);
-	if (file_info) { //进度可能已被新上传覆盖，取到才更新
+	if (file_info && task->_seq > file_info->_seq) {
 		file_info->_seq = task->_seq; //最后落盘的分片序号
 		file_info->_trans_size = task->_trans_size; //已落盘字节数
 		LogicSystem::GetInstance()->SaveFileInfo(file_info); //同步到Redis
@@ -127,6 +135,16 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 	if (task->_last && task->_avatar) { //最后一片且是头像
 		//只有头像需要写用户表；通用文件保持原样，等后续资源属性表接入
 		UpdateAvatarInfo(task->_uid, task->_name);
+	}
+	else if (task->_last && task->_chat_msg_id > 0) { //聊天图片全部落盘
+		//第3步：先通过 gRPC 让 ChatServer 更新状态；服务不可用时直接写库兜底
+		bool updated = ChatGrpcClient::GetInstance()->NotifyImageUploaded(
+			task->_chat_msg_id, task->_uid, task->_thread_id, task->_name);
+		if (!updated)
+			updated = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
+				task->_chat_msg_id, task->_uid, 1);
+		if (!updated)
+			std::cerr << "update chat message status failed, id: " << task->_chat_msg_id << std::endl;
 	}
 
 	FinishTask(task, ErrorCodes::Success); //通知逻辑线程回包

@@ -76,9 +76,9 @@ SessionService::SessionService() : _ready(false)
         if (threadId > 0)
             mgr->SetThreadId(peerUid, threadId);
         //消息已落库但资源还没上传，状态保持发送中，等资源完成后的章节再推进
-        mgr->UpdateChatMessage(peerUid, uniqueId,
-            data.value("message_id").toVariant().toLongLong(), ChatMessageStatus::Sending);
-        ChatService::GetInstance()->uploadPendingImage(uniqueId);
+        const qint64 messageId = data.value("message_id").toVariant().toLongLong();
+        mgr->UpdateChatMessage(peerUid, uniqueId, messageId, ChatMessageStatus::Sending);
+        ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, peerUid, threadId);
     });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();

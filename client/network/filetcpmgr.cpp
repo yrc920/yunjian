@@ -16,6 +16,7 @@ namespace {
 constexpr int FileHeadLen = 6; //2字节消息ID + 4字节包体长度
 constexpr int MaxFileLen = 2048; //与ResourceServer的MAX_FILE_LEN一致，两端切片必须同尺寸
 constexpr int MaxFileFrame = 16 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致
+constexpr int MaxCwnd = 8; //拥塞窗口：聊天图片最多8片在途，头像固定1片
 constexpr int ResourceFileNotExists = 1012; //服务器没有这次上传的进度，需要从第一片重来
 
 QJsonObject parseObject(const QByteArray &data)
@@ -210,59 +211,77 @@ void FileTcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     _socket.write(_current_block); //异步写，剩余字节在bytesWritten里补
 }
 
-void FileTcpMgr::sendNextChunk(const QString &md5)
+void FileTcpMgr::sendWindow(const QString &md5)
 {
     auto info = UserMgr::GetInstance()->GetUploadFile(md5); //按md5取本次上传的本地状态
     if (!info)
         return; //记录已移除说明任务取消，迟到回包不再发片
 
-    //已经到文件尾：可能是暂停前最后一片的回包刚刚到达，直接收尾
-    if (info->_trans_size >= info->_total_size) {
-        UserMgr::GetInstance()->RemoveUploadFile(md5); //清掉在途记录
-        emit sig_upload_finished(info->_name, md5); //通知资料页刷新
-        return;
-    }
+    if (info->_max_seq <= 0) //正常路径在开始/Sync时已算好，这里兜底
+        info->_max_seq = static_cast<int>((info->_total_size + MaxFileLen - 1) / MaxFileLen);
 
-    QFile file(info->_path); //每片重新打开，避免长上传一直占着文件句柄
+    //头像要精确显示进度、支持暂停，保持逐片确认；聊天图片等通用资源用拥塞窗口
+    const int cwnd = info->_req_id == ID_UPLOAD_HEAD_ICON_REQ ? 1 : MaxCwnd;
+
+    QFile file(info->_path);
     if (!file.open(QIODevice::ReadOnly)) {
         qWarning() << "[file-tcp] open upload file failed:" << info->_path;
+        UserMgr::GetInstance()->RemoveUploadFile(md5);
         emit sig_upload_failed(info->_name, 1); //文件被删或权限变化，按失败收尾
         return;
     }
-    if (!file.seek(info->_trans_size)) { //从服务器确认过的偏移继续读
-        emit sig_upload_failed(info->_name, 1); //偏移超出文件，说明本地文件被改动
-        return;
+
+    bool failed = false;
+    //窗口里已发出的分片不重复发；只补到 cwnd 个在途，读文件和组包都在本线程完成
+    while (info->_flighting.size() < cwnd && info->_seq < info->_max_seq) {
+        const int seq = info->_seq + 1;
+        const qint64 offset = static_cast<qint64>(seq - 1) * MaxFileLen;
+        const qint64 remain = info->_total_size - offset;
+        if (remain <= 0)
+            break;
+        if (!file.seek(offset)) {
+            failed = true;
+            break;
+        }
+
+        const QByteArray buffer = file.read(static_cast<qint64>(qMin<qint64>(MaxFileLen, remain)));
+        if (buffer.isEmpty()) {
+            failed = true;
+            break;
+        }
+
+        //服务器按 (seq-1)*2048 + 本片长度 校验偏移，last 只在最后一片置 1
+        const qint64 trans_size = offset + buffer.size();
+        const bool last = trans_size >= info->_total_size;
+
+        QJsonObject frame;
+        frame["uid"] = info->_uid; //上传者，服务器据此建<uid>目录
+        frame["token"] = UserMgr::GetInstance()->GetToken(); //首片校验，后续按连接身份
+        frame["md5"] = info->_md5; //续传键
+        frame["name"] = info->_name; //资源名
+        frame["seq"] = seq;
+        frame["trans_size"] = static_cast<double>(trans_size); //JSON用double传大整数
+        frame["total_size"] = static_cast<double>(info->_total_size);
+        frame["last"] = last ? 1 : 0;
+        frame["data"] = QString::fromLatin1(buffer.toBase64());
+        //聊天图片带消息信息，服务器最后一片写完后回写 chat_message.status
+        frame["message_id"] = static_cast<double>(info->_chat_msg_id);
+        if (info->_chat_msg_id > 0) {
+            frame["touid"] = info->_touid;
+            frame["thread_id"] = static_cast<double>(info->_thread_id);
+            frame["unique_id"] = info->_unique_id;
+        }
+
+        info->_seq = seq; //已发出的序号
+        info->_flighting.insert(seq); //等服务器确认
+        SendData(info->_req_id, QJsonDocument(frame).toJson(QJsonDocument::Compact));
     }
+    file.close();
 
-    const QByteArray buffer = file.read(MaxFileLen); //切片大小必须与服务端一致
-    if (buffer.isEmpty()) {
-        emit sig_upload_failed(info->_name, 1); //还没到声明的大小却读不到数据
-        return;
+    if (failed) {
+        UserMgr::GetInstance()->RemoveUploadFile(md5);
+        emit sig_upload_failed(info->_name, 1); //本地文件读不出来，整次上传结束
     }
-    file.close(); //读完立刻关闭，不跨片持有句柄
-
-    //服务器要求 seq 与 (trans_size - 本片长度) 对应，序号从1开始
-    const int seq = info->_seq + 1; //在服务器已落盘的序号上递增
-    const qint64 trans_size = info->_trans_size + buffer.size(); //本片发完后的累计字节
-    const bool last = trans_size >= info->_total_size; //最后一片要通知服务器收尾
-
-    //分片内容用 Base64 放进 JSON；token 每片都带，服务器在首片校验后绑定连接
-    QJsonObject frame;
-    frame["uid"] = info->_uid; //上传者，服务器据此建<uid>目录
-    frame["token"] = UserMgr::GetInstance()->GetToken(); //首片校验utoken前缀，后续只比对连接身份
-    frame["md5"] = info->_md5; //整文件校验值，也是Redis进度键的一部分
-    frame["name"] = info->_name; //资源名，回包按它找回这条记录
-    frame["seq"] = seq; //分片序号，跳号会被拒绝
-    frame["trans_size"] = static_cast<double>(trans_size); //累计字节，JSON里用double传大整数
-    frame["total_size"] = static_cast<double>(info->_total_size); //总大小，首片建FileInfo时要一致
-    frame["last"] = last ? 1 : 0; //最后一片才写库并清进度
-    frame["data"] = QString::fromLatin1(buffer.toBase64()); //二进制分片转文本，避免JSON转义问题
-
-    //先记账再发送：回包处理函数会以这两个字段为基准继续读下一片
-    info->_seq = seq;
-    info->_trans_size = trans_size;
-
-    SendData(info->_req_id, QJsonDocument(frame).toJson(QJsonDocument::Compact)); //头像与通用文件只是ID不同
 }
 
 void FileTcpMgr::slot_start_upload(QString md5)
@@ -272,8 +291,12 @@ void FileTcpMgr::slot_start_upload(QString md5)
         return; //记录被清掉说明任务已取消，不再发片
 
     info->_seq = 0; //从头开始，服务器seq=1会重新建进度
-    info->_trans_size = 0; //本地偏移归零，避免用旧进度读错位置
-    sendNextChunk(md5); //发第一片
+    info->_trans_size = 0; //本地进度归零
+    info->_confirmed_seq = 0;
+    info->_max_seq = static_cast<int>((info->_total_size + MaxFileLen - 1) / MaxFileLen);
+    info->_flighting.clear();
+    info->_acked.clear();
+    sendWindow(md5); //先填满窗口
 }
 
 void FileTcpMgr::sendDownloadRequest(const QString &name)
@@ -321,26 +344,36 @@ void FileTcpMgr::initHandlers()
         if (!info)
             return;
 
-        //以服务器返回值覆盖本地进度：断开重连后本地可能比服务器“多走”了几片
-        const qint64 trans_size = object.value("trans_size").toVariant().toLongLong();
+        //窗口确认：把 seq 从在途集合移到已确认集合，连续段向前推进
+        const int seq = object.value("seq").toInt(info->_seq);
         const qint64 total_size = object.value("total_size").toVariant().toLongLong();
-        info->_seq = object.value("seq").toInt(info->_seq);
-        info->_trans_size = trans_size;
         if (total_size > 0)
             info->_total_size = total_size;
+        if (seq > 0) {
+            info->_flighting.remove(seq);
+            if (seq > info->_confirmed_seq)
+                info->_acked.insert(seq);
+        }
+        while (info->_acked.remove(info->_confirmed_seq + 1))
+            ++info->_confirmed_seq;
 
+        //进度只按连续确认的分片计算，乱序回包不会让进度条来回跳
+        info->_trans_size = qMin<qint64>(
+            static_cast<qint64>(info->_confirmed_seq) * MaxFileLen, info->_total_size);
         emit sig_upload_progress(name, info->_trans_size, info->_total_size);
 
-        if (info->_trans_size >= info->_total_size) {
+        if ((info->_max_seq > 0 && info->_confirmed_seq >= info->_max_seq)
+            || info->_trans_size >= info->_total_size) {
+            info->_trans_size = info->_total_size;
             UserMgr::GetInstance()->RemoveUploadFile(md5);
             emit sig_upload_finished(name, md5);
             return;
         }
 
-        //暂停状态只保留状态，不发下一片；继续时走同步分支
-        if (UserMgr::GetInstance()->UploadPaused())
+        //头像窗口为1，暂停后不再补发；聊天图片不受头像暂停影响
+        if (info->_req_id == ID_UPLOAD_HEAD_ICON_REQ && UserMgr::GetInstance()->UploadPaused())
             return;
-        sendNextChunk(md5);
+        sendWindow(md5); //窗口空出位置，继续补发
     };
 
     _handlers[ID_UPLOAD_HEAD_ICON_RSP] = uploadResponse;
@@ -364,19 +397,24 @@ void FileTcpMgr::initHandlers()
             //服务器已经丢了这次传输（例如Redis过期），只能从第一片重新开始
             info->_seq = 0;
             info->_trans_size = 0;
+            info->_confirmed_seq = 0;
         }
         else if (error != 0) {
             emit sig_upload_failed(info->_name, error);
             return;
         }
         else {
-            //服务器的seq是已落盘的最后一片，本地下一片正好是seq+1
+            //服务器的seq是已落盘的最后一片，本地从seq+1继续
             info->_seq = object.value("seq").toInt(info->_seq);
+            info->_confirmed_seq = info->_seq;
             info->_trans_size = object.value("trans_size").toVariant().toLongLong();
             const qint64 total = object.value("total_size").toVariant().toLongLong();
             if (total > 0)
                 info->_total_size = total;
         }
+        info->_max_seq = static_cast<int>((info->_total_size + MaxFileLen - 1) / MaxFileLen);
+        info->_flighting.clear();
+        info->_acked.clear();
 
         emit sig_upload_progress(info->_name, info->_trans_size, info->_total_size);
 
@@ -385,9 +423,9 @@ void FileTcpMgr::initHandlers()
             emit sig_upload_finished(info->_name, md5);
             return;
         }
-        if (UserMgr::GetInstance()->UploadPaused())
+        if (info->_req_id == ID_UPLOAD_HEAD_ICON_REQ && UserMgr::GetInstance()->UploadPaused())
             return;
-        sendNextChunk(md5);
+        sendWindow(md5);
     };
 
     //下载回包：seq=1 覆盖写，其余追加；写到 is_last 才通知业务层，

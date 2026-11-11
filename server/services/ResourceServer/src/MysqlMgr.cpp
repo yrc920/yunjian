@@ -12,3 +12,8 @@ bool MysqlMgr::UpdateUserIcon(int uid, const std::string& icon)
 {
 	return _dao.UpdateUserIcon(uid, icon); //最后一片头像写回user.icon
 }
+
+bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int status)
+{
+	return _dao.UpdateChatMessageStatus(message_id, sender, status); //图片资源完成后回写消息状态
+}

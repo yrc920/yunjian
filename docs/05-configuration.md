@@ -200,14 +200,18 @@ Path = storage              # 相对服务工作目录；文件存 <Path>/<uid>/
 
 [Mysql]  ...同 GateServer...
 [Redis]  ...同 GateServer...
+[ChatServer]
+Host = 127.0.0.1            # 图片上传完成后通知哪台 ChatServer
+Port = 50055                # ChatServer 的 gRPC 端口
 ```
 
 | 段/字段 | 说明 |
 | --- | --- |
 | `[SelfServer] Port` | 分段上传/下载监听端口 |
 | `[Storage] Path` | 落盘根目录；Docker 部署挂到 `/var/lib/xiguchat/storage` |
-| `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存 |
+| `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存；聊天图片回写消息状态 |
 | `[Redis]` | token 校验与 `file_upload_<md5>` 续传进度（TTL 3600s） |
+| `[ChatServer] Host/Port` | 图片上传完成后的 gRPC 通知目标；不配置时直接写库兜底 |
 
 ---
 

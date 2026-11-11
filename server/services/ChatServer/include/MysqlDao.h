@@ -52,6 +52,8 @@ public:
 	//写入一条图片消息: 资源还没上传, 先落库占位, 由资源服务器完成后回写状态
 	bool SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 		const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message);
+	//资源服务器通知: 把指定消息的状态改成已上传; sender 用于确认消息归属
+	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
 	
 private:
 	//把客户端传入的会话ID解析成有效单聊: 为0时校验好友关系并补建, 失败返回0

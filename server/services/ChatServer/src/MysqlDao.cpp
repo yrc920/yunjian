@@ -776,6 +776,27 @@ bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 }
 
 
+bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int status)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
+
+	try {
+		//带上 sender 限定，避免拿别人的 message_id 改状态；重复回调affected rows为0仍按成功
+		con->_session->sql("UPDATE chat_message SET status = ? WHERE message_id = ? AND sender_id = ?")
+			.bind(status).bind(static_cast<int64_t>(message_id)).bind(sender).execute();
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false;
+		std::cerr << "Mysqlx Error updating chat message status: " << e.what() << std::endl;
+		return false;
+	}
+}
+
+
 MySqlPool::MySqlPool(const std::string& host, unsigned port, const std::string& user, const std::string& pass,
 	const std::string& schema, int poolSize)
     : host_(host), port_(port), user_(user), pass_(pass), schema_(schema), poolSize_(poolSize), b_stop_(false)
