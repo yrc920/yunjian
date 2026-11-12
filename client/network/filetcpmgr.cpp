@@ -53,10 +53,12 @@ FileTcpMgr::FileTcpMgr()
                 if (_buffer.size() < FileHeadLen)
                     return; //头都没收齐，等下一次readyRead
 
+                //每帧重新创建 stream，QDataStream 的读取位置不会随 _buffer 消费而复位；
+                //复用同一个对象会让下一帧从旧偏移开始读，正是粘包场景下的典型错位
                 QDataStream stream(_buffer.left(FileHeadLen)); //只读头部，不消费缓冲
                 stream.setByteOrder(QDataStream::BigEndian); //与服务器网络序一致
                 stream >> _message_id >> _message_len; //2字节ID + 4字节长度
-                _buffer = _buffer.mid(FileHeadLen); //把头部从缓冲摘掉
+                _buffer.remove(0, FileHeadLen); //原地摘掉头部，避免 mid 重新分配整块缓冲
 
                 //资源帧允许2KB分片，长度字段是4字节；超过上限说明流已经错位，直接断开
                 if (_message_len == 0 || _message_len > MaxFileFrame) {
@@ -73,14 +75,15 @@ FileTcpMgr::FileTcpMgr()
 
             //包体收齐：从缓冲区摘掉并交给分发表，然后继续尝试解析下一帧
             _b_recv_pending = false;
-            const QByteArray body = _buffer.mid(0, static_cast<int>(_message_len));
-            _buffer = _buffer.mid(static_cast<int>(_message_len));
+            const QByteArray body = _buffer.left(static_cast<int>(_message_len));
+            _buffer.remove(0, static_cast<int>(_message_len));
             handleMsg(ReqId(_message_id), static_cast<int>(_message_len), body);
         }
     });
 
     //断开时丢弃未发完的队列，避免重连后把上一连接的分片发到新连接
     QObject::connect(&_socket, &QTcpSocket::disconnected, this, [this]() {
+        resetRecvState(); //旧连接可能停在半包，不能拼到新连接的帧头
         _send_queue.clear(); //未发送的帧全部作废
         _current_block.clear(); //正在写的块也不能再续
         _bytes_sent = 0;
@@ -172,13 +175,18 @@ void FileTcpMgr::slot_connect_resource(QString host, int port)
     _socket.connectToHost(_host, _port); //异步建连，结果由connected信号通知
 }
 
-void FileTcpMgr::slot_close_connection()
+void FileTcpMgr::resetRecvState()
 {
-    _socket.abort(); //立即丢弃内核缓冲，不等待未发完的分片
     _buffer.clear(); //旧连接的残留数据会让新连接的帧头解析错位
     _b_recv_pending = false; //回到等待6字节头的状态
     _message_id = 0; //清掉半包解析出的ID
     _message_len = 0; //长度也要归零，否则会按旧长度等包体
+}
+
+void FileTcpMgr::slot_close_connection()
+{
+    _socket.abort(); //立即丢弃内核缓冲，不等待未发完的分片
+    resetRecvState(); //接收状态与旧连接一起丢弃
     _send_queue.clear(); //未发出的帧一律作废
     _current_block.clear(); //正在写的帧也作废
     _bytes_sent = 0; //部分写入计数归零

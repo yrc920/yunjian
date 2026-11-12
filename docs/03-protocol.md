@@ -50,7 +50,9 @@
 客户端（`TcpMgr`）：
 
 - 发送：`QDataStream` 设为 `BigEndian`，写入 `quint16 id`、`quint16 len`，再 append JSON 字节；
-- 接收：`readyRead` 累积到 `_buffer`，用 `_b_recv_pending` 处理半包，按同样的 4 字节头循环拆帧。
+- 接收：`readyRead` 累积到 `_buffer`，用 `_b_recv_pending` 处理半包，按同样的 4 字节头循环拆帧；
+  每帧新建 `QDataStream`（读取位置不会随缓冲消费复位）、用 `remove(0, n)` 消费数据，
+  并校验 `0 < len <= 32763`（服务端 `short` 发送上限）；断开时清空缓冲与半包状态。
 
 > 两端对字节序的处理是对称的：客户端 `QDataStream::BigEndian`，服务端
 > `boost::asio::detail::socket_ops::network_to_host_short`。在小端机器（x86/ARM 均默认小端）

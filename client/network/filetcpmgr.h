@@ -41,6 +41,7 @@ private:
     void registerMetaType();
     void initHandlers();
     void handleMsg(ReqId id, int len, QByteArray data);
+    void resetRecvState(); //清空半包缓冲与解析游标，断开连接时必须调用
     void sendWindow(const QString &md5); //按拥塞窗口补发待确认分片
     void sendDownloadRequest(const QString &name);
 

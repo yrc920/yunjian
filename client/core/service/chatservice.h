@@ -18,7 +18,9 @@ public:
         int width, int height);
     void uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId);
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉待上传记录
-    static QString ImageCachePath(const QString &name); //本机图片缓存，也是上传源文件
+    //本机压缩图，与服务器保存的是同一份（长边 1600），点开大图直接读它；
+    //气泡和输入区只用 thumbs 下的缩略图，两者分开存放
+    static QString ImageCachePath(const QString &name);
     static QString ImageThumbPath(const QString &name); //气泡缩略图缓存
     //有完整图片时按需生成缩略图，成功返回缩略图路径并带回像素尺寸
     static QString EnsureImageThumbnail(const QString &name, QSize *pixelSize = nullptr);

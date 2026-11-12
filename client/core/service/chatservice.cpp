@@ -204,6 +204,21 @@ bool ChatService::sendImage(int uid, const QString &thumbnail, const QString &up
     const QString name = md5 + QLatin1Char('.') + suffix; //内容相同即同名，服务器只存一份
     const QString uniqueId = QUuid::createUuid().toString();
 
+    //先把压缩图复制到本机缓存：本地保留的是和服务器同一份高质量图，以后点开大图直接用；
+    //缓存失败就不发消息，保留输入区让用户重试，避免本地只剩缩略图
+    const QString cache = ImageCachePath(name);
+    if (cache.isEmpty()) {
+        qWarning() << "[chat] local image cache unavailable";
+        return false;
+    }
+    QDir().mkpath(QFileInfo(cache).absolutePath());
+    QFile::remove(cache);
+    if (!QFile::copy(uploadPath, cache)) {
+        qWarning() << "[chat] cache outgoing image failed:" << cache;
+        return false;
+    }
+    EnsureImageThumbnail(name); //气泡缩略图放在 thumbs 下，不覆盖这份压缩图
+
     ensurePrivateChat(uid);
     //先让消息出现在会话里；message_id 与 thread_id 等回执补齐
     auto message = std::make_shared<TextChatData>(uniqueId, QString(), mgr->GetUid(), uid, 0,
@@ -216,18 +231,7 @@ bool ChatService::sendImage(int uid, const QString &thumbnail, const QString &up
     message->_uploadProgress = 0;
     mgr->AppendFriendChatMsg(uid, {message});
 
-    //上传源落到本机缓存：既供本次上传，也让重新登录后的历史图片能直接显示缩略图
-    const QString cache = ImageCachePath(name);
-    if (!cache.isEmpty()) {
-        QDir().mkpath(QFileInfo(cache).absolutePath());
-        QFile::remove(cache);
-        if (QFile::copy(uploadPath, cache))
-            EnsureImageThumbnail(name); //顺手生成气泡缩略图，历史加载不再解码压缩图
-        else
-            qWarning() << "[chat] cache outgoing image failed:" << cache;
-    }
     //临时上传文件由 ChatBridge 在整批发送成功后统一删除：同一张图可能被发送两次
-
     _pending_images.insert(uniqueId, PendingImage{cache, name, md5, uid});
 
     QJsonObject frame{{"fromuid", mgr->GetUid()}, {"touid", uid}};

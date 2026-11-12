@@ -2,7 +2,13 @@
 #include <QAbstractSocket>
 #include <QDebug>
 #include <QJsonDocument>
+#include <limits>
 #include "usermgr.h"
+
+namespace {
+//服务端 CSession::Send 用 short 保存包头+包体总长，超过这个值的响应会被服务端拒绝
+constexpr quint16 MaxChatFrame = std::numeric_limits<short>::max() - 4;
+}
 
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0)
 {
@@ -36,11 +42,22 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
                 if (_buffer.size() < static_cast<int>(sizeof(quint16) * 2))
                     return; //数据不够，等待更多数据
 
+                //每次解析头部都新建 stream：QDataStream 的读取位置是它自己的内部状态，
+                //不会因为 _buffer 被消费而回到 0；复用同一个对象会让第二帧从错误偏移开始读
                 QDataStream stream(_buffer.left(sizeof(quint16) * 2));
                 stream.setByteOrder(QDataStream::BigEndian);
-                stream >> _message_id >> _message_len; //预读取消息ID和消息长度，但不从缓冲区中移除
-                _buffer = _buffer.mid(sizeof(quint16) * 2); //将buffer中的前四个字节移除
+                stream >> _message_id >> _message_len;
+                _buffer.remove(0, sizeof(quint16) * 2); //原地摘掉头部，比 mid 重新分配更省
                 qDebug() << "Message ID:" << _message_id << ", Length:" << _message_len;
+
+                //空包或超长说明字节流已经错位，继续等包体只会把后续帧一起吞掉；
+                //清掉半包状态并断开，让登录流程重新建连
+                if (_message_len == 0 || _message_len > MaxChatFrame) {
+                    qWarning() << "[tcp] invalid frame length" << _message_len;
+                    resetRecvState();
+                    _socket.abort(); //disconnected 会走统一清理并通知会话层
+                    return;
+                }
             }
 
             //buffer剩余长读是否满足消息体长度，不满足则退出继续等待接受
@@ -51,10 +68,9 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
 
             _b_recv_pending = false; //重置标志，准备接收下一条消息
             //读取消息体
-            QByteArray messageBody = _buffer.mid(0, _message_len);
+            const QByteArray messageBody = _buffer.left(_message_len);
             qDebug() << "receive body msg is " << messageBody ;
-
-            _buffer = _buffer.mid(_message_len); //将buffer中的前_message_len个字节移除，为下一条消息做准备
+            _buffer.remove(0, _message_len); //原地移除已处理的包体，剩余数据继续解析
             //调用消息处理函数，根据消息ID分发到对应的处理函数
             handleMsg(ReqId(_message_id), _message_len, messageBody);
         }
@@ -64,6 +80,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
     //处理连接断开
     QObject::connect(&_socket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "Disconnected from server.";
+        resetRecvState(); //旧连接可能停在半包，重连后不能把残留字节拼到新帧头
         _send_queue.clear();
         _current_block.clear();
         _bytes_sent = 0;
@@ -136,13 +153,18 @@ void TcpMgr::CloseConnectionAsync()
     emit sig_close_connection();
 }
 
+void TcpMgr::resetRecvState()
+{
+    _buffer.clear(); //半包数据属于上一条流，不能带到下一次解析
+    _b_recv_pending = false; //回到等待4字节头部的状态
+    _message_id = 0;
+    _message_len = 0;
+}
+
 void TcpMgr::CloseConnection(){
     _manual_close = true;
     _socket.abort();
-    _buffer.clear();
-    _b_recv_pending = false;
-    _message_id = 0;
-    _message_len = 0;
+    resetRecvState();
     _send_queue.clear();
     _current_block.clear();
     _bytes_sent = 0;

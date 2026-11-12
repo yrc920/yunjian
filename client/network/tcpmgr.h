@@ -38,6 +38,7 @@ private:
     void initHandlers(); //初始化消息处理函数
     void handleMsg(ReqId id, int len, QByteArray data); //处理消息的函数
     void registerMetaType(); //注册跨线程信号携带的自定义类型
+    void resetRecvState(); //清空半包缓冲与解析游标，断开连接时必须调用
 
     QTcpSocket _socket; //TCP套接字对象，必须与TcpMgr在同一线程
     QString _host; //服务器地址
