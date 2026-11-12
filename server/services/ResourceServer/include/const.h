@@ -62,6 +62,7 @@ enum MSG_IDS {
 };
 
 #define USERTOKENPREFIX "utoken_" //与StatusServer、ChatServer共用的token前缀
+#define USERIPPREFIX "uip_" //用户当前登录的 ChatServer 实例名
 #define USER_BASE_INFO "ubaseinfo_" //用户基本信息缓存
 #define NAME_INFO "nameinfo_" //用户名索引缓存
 #define FILE_INFO_PREFIX "file_upload_" //续传进度的Redis键前缀

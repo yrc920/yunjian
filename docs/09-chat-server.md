@@ -120,6 +120,7 @@ flowchart LR
 | 1013 | `AuthFriendApply` | 同意好友申请 |
 | 1017 | `DealChatTextMsg` | 文本消息 |
 | 1031 | `DealChatImgMsg` | 图片消息：只落库，资源随后由客户端上传 |
+| 1033 | `CSession::NotifyImageRecv` | 服务端推送：图片已上传完成，接收方开始下载 |
 
 出队后释放队列锁，数据库/RPC 不持有队列锁；单条请求异常会关闭对应连接，不终止逻辑线程。
 各 handler 用 `Defer`（析构时执行 lambda）处理正常业务分支的回包。
@@ -226,9 +227,11 @@ flowchart TB
 
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
-**不向接收方推送**，也没有跨实例转发。资源全部落盘后，ResourceServer 通过 gRPC
-`NotifyImageUploaded` 把 `message_id` 交给 ChatServer，`ChatServiceImpl` 更新
-`chat_message.status=1`（带 `sender` 限定）；推送给双方留到后续章节。
+资源全部落盘后，ResourceServer 按 Redis `uip_<receiver>` 选择接收方所在实例，通过 gRPC
+`NotifyImageUploaded` 把 `message_id`、双方 uid、`thread_id`、资源名与 `client_msg_id` 交给 ChatServer：
+`ChatServiceImpl` 先更新 `chat_message.status=1`（带 `sender` 限定），如果接收方在本实例在线，
+再调用 `CSession::NotifyImageRecv` 推送 1033。接收方离线时只更新状态，下次登录按历史消息同步；
+ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 
 登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`，图片消息的 `content` 是资源文件名。
 

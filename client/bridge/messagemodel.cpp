@@ -120,8 +120,8 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return static_cast<int>(msg->_status);
     case IsImageRole:
         return msg->_msg_type == ChatMsgType::Image;
-    case UploadProgressRole:
-        return msg->_uploadProgress;
+    case TransferProgressRole:
+        return msg->_transferProgress;
     default: return {};
     }
 }
@@ -140,7 +140,7 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {NameRole, "name"},
         {StatusRole, "status"},
         {IsImageRole, "isImage"},
-        {UploadProgressRole, "uploadProgress"},
+        {TransferProgressRole, "transferProgress"},
     };
 }
 

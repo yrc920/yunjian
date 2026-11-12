@@ -80,6 +80,10 @@ SessionService::SessionService() : _ready(false)
         mgr->UpdateChatMessage(peerUid, uniqueId, messageId, ChatMessageStatus::Sending);
         ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, peerUid, threadId);
     });
+    //对方图片上传完成：补消息并下载资源，界面先在会话里显示占位和进度
+    connect(tcp, &TcpMgr::sig_image_notify, this, [](const QJsonObject &data) {
+        ChatService::GetInstance()->HandleImageNotify(data);
+    });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const auto threads = data.value("thread_list").toArray();
@@ -112,7 +116,7 @@ SessionService::SessionService() : _ready(false)
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
                 threadId, status);
             //图片消息的 content 是资源文件名；重新登录后用本机缩略图显示，
-            //不要把压缩图按原尺寸铺到消息列表里，否则一条图占满整屏
+            //本机没有压缩图时自动下载，避免离线消息一直停在占位
             if (item.value("msg_type").toInt(0) == static_cast<int>(ChatMsgType::Image)) {
                 message->_msg_type = ChatMsgType::Image;
                 message->_resource_name = item.value("content").toString();
@@ -123,6 +127,12 @@ SessionService::SessionService() : _ready(false)
                     message->_imageSource = QUrl::fromLocalFile(thumb).toString();
                     message->_imageWidth = pixel_size.width();
                     message->_imageHeight = pixel_size.height();
+                    message->_transferProgress = 100;
+                }
+                else if (!message->_resource_name.isEmpty()) {
+                    message->_transferProgress = 0; //先显示进度条，由资源下载推进
+                    ChatService::GetInstance()->DownloadChatImage(message->_resource_name,
+                        message->_from_uid, message->_message_id, threadId);
                 }
             }
             messages.push_back(std::move(message));

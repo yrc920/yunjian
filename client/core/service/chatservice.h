@@ -2,6 +2,7 @@
 #define CHATSERVICE_H
 
 #include <QHash>
+#include <QJsonObject>
 #include <QSize>
 #include <QString>
 #include "singleton.h"
@@ -18,6 +19,10 @@ public:
         int width, int height);
     void uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId);
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉待上传记录
+    //接收方收到 1033：补一条图片消息，本地没有压缩图时发起下载
+    void HandleImageNotify(const QJsonObject &data);
+    void DownloadChatImage(const QString &name, int sender, qint64 messageId, qint64 threadId);
+    void RetryImageDownloads(); //资源连接就绪后补发等待中的图片下载
     //本机压缩图，与服务器保存的是同一份（长边 1600），点开大图直接读它；
     //气泡和输入区只用 thumbs 下的缩略图，两者分开存放
     static QString ImageCachePath(const QString &name);
@@ -38,6 +43,14 @@ private:
     };
 
     QHash<QString, PendingImage> _pending_images; //unique_id -> 待上传图片
+
+    //一次接收方图片下载：完成后按资源名找到所有引用它的消息
+    struct ChatDownload {
+        int sender = 0;
+        qint64 message_id = 0;
+        qint64 thread_id = 0;
+    };
+    QHash<QString, ChatDownload> _chat_downloads; //资源名 -> 下载中的消息
 };
 
 #endif // CHATSERVICE_H

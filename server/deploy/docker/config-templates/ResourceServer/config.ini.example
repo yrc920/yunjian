@@ -17,7 +17,16 @@ Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
 
-# 容器内所有服务共用回环地址；图片上传完成后要通知 ChatServer
-[ChatServer]
+# 图片上传完成后按 uip_<receiver> 选择实例：更新状态并把下载通知推给接收方
+[ChatServers]
+Servers = chatserver1,chatserver2
+
+[chatserver1]
+Name = chatserver1
 Host = 127.0.0.1
 Port = 50055
+
+[chatserver2]
+Name = chatserver2
+Host = 127.0.0.1
+Port = 50056

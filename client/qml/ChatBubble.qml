@@ -15,12 +15,13 @@ Item {
     property int imageWidth: 0
     property int imageHeight: 0
     property int status: 1
-    property int uploadProgress: -1
+    property int transferProgress: -1
 
     readonly property bool localImage: imageSource.length > 0
     //图片消息但本地还没有缩略图：显示占位，等上传/下载完成后再换成图片
     readonly property bool imagePending: isImage && !localImage
-    readonly property bool uploading: isImage && isSelf && status === 0 && localImage
+    //上传和下载共用同一条进度：>=0 时显示，100 或 -1 时隐藏
+    readonly property bool transferring: isImage && transferProgress >= 0 && transferProgress < 100
     //缩略图显示上限；窗口变窄时跟着收，避免压到头像或左侧状态位
     readonly property real imageMaxWidth: Math.max(72, Math.min(220, width - 102))
     readonly property real imageMaxHeight: 180
@@ -151,10 +152,10 @@ Item {
         }
     }
 
-    // 上传进度：贴在图片底部，随已确认字节数推进；完成后状态变成已发送，进度条自动隐藏
+    // 图片传输进度：上传和下载共用，贴在图片/占位底部推进，完成后自动隐藏
     Rectangle {
         id: progressTrack
-        visible: root.uploading && root.uploadProgress >= 0
+        visible: root.transferring
         anchors.left: pictureFrame.left
         anchors.right: pictureFrame.right
         anchors.bottom: pictureFrame.bottom
@@ -166,7 +167,7 @@ Item {
         color: Qt.rgba(1, 1, 1, 0.55)
 
         Rectangle {
-            width: parent.width * Math.max(0, Math.min(100, root.uploadProgress)) / 100
+            width: parent.width * Math.max(0, Math.min(100, root.transferProgress)) / 100
             height: parent.height
             radius: parent.radius
             color: Theme.primary

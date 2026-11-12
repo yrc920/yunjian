@@ -477,6 +477,7 @@ void FileTcpMgr::initHandlers()
         info->_seq = seq;
         info->_current_size = object.value("current_size").toVariant().toLongLong();
         info->_total_size = object.value("total_size").toVariant().toLongLong();
+        emit sig_download_progress(name, info->_current_size, info->_total_size);
 
         if (object.value("is_last").toBool()) {
             const QString path = info->_client_path;

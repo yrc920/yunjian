@@ -200,9 +200,20 @@ Path = storage              # 相对服务工作目录；文件存 <Path>/<uid>/
 
 [Mysql]  ...同 GateServer...
 [Redis]  ...同 GateServer...
-[ChatServer]
-Host = 127.0.0.1            # 图片上传完成后通知哪台 ChatServer
-Port = 50055                # ChatServer 的 gRPC 端口
+
+# 图片上传完成后按接收方所在实例选择 gRPC 目标
+[ChatServers]
+Servers = chatserver1,chatserver2
+
+[chatserver1]
+Name = chatserver1
+Host = 127.0.0.1
+Port = 50055
+
+[chatserver2]
+Name = chatserver2
+Host = 127.0.0.1
+Port = 50056
 ```
 
 | 段/字段 | 说明 |
@@ -210,8 +221,9 @@ Port = 50055                # ChatServer 的 gRPC 端口
 | `[SelfServer] Port` | 分段上传/下载监听端口 |
 | `[Storage] Path` | 落盘根目录；Docker 部署挂到 `/var/lib/xiguchat/storage` |
 | `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存；聊天图片回写消息状态 |
-| `[Redis]` | token 校验与 `file_upload_<md5>` 续传进度（TTL 3600s） |
-| `[ChatServer] Host/Port` | 图片上传完成后的 gRPC 通知目标；不配置时直接写库兜底 |
+| `[Redis]` | token 校验、`file_upload_<md5>` 续传进度（TTL 3600s）与 `uip_<uid>` 实例路由 |
+| `[ChatServers] Servers` | ChatServer 实例名列表，必须与各自 `[SelfServer] Name` 一致 |
+| `[chatserverN]` | 各实例的 gRPC `Host/Port`；找不到接收方位置或 RPC 失败时直接写库兜底 |
 
 ---
 

@@ -137,14 +137,17 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		UpdateAvatarInfo(task->_uid, task->_name);
 	}
 	else if (task->_last && task->_chat_msg_id > 0) { //聊天图片全部落盘
-		//第3步：先通过 gRPC 让 ChatServer 更新状态；服务不可用时直接写库兜底
-		bool updated = ChatGrpcClient::GetInstance()->NotifyImageUploaded(
-			task->_chat_msg_id, task->_uid, task->_thread_id, task->_name);
-		if (!updated)
-			updated = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
+		//先尝试通知接收方所在的 ChatServer：它会回写消息状态并推送下载通知；
+		//接收方离线或 RPC 不可用时直接写库，保证下次登录仍能看到“已上传”
+		const bool notified = ChatGrpcClient::GetInstance()->NotifyImageReady(
+			task->_chat_msg_id, task->_uid, task->_touid, task->_thread_id, task->_name,
+			task->_unique_id, task->_total_size);
+		if (!notified) {
+			const bool updated = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
 				task->_chat_msg_id, task->_uid, 1);
-		if (!updated)
-			std::cerr << "update chat message status failed, id: " << task->_chat_msg_id << std::endl;
+			if (!updated)
+				std::cerr << "update chat message status failed, id: " << task->_chat_msg_id << std::endl;
+		}
 	}
 
 	FinishTask(task, ErrorCodes::Success); //通知逻辑线程回包

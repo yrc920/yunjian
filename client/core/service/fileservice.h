@@ -38,6 +38,7 @@ public:
     void ToggleUploadPaused(); //QML按钮用
 
     bool IsUploading() const { return _uploading; } //是否显示进度条
+    bool IsConnected() const { return _connected; } //资源连接是否可用，聊天图片下载要先确认
     bool IsPaused() const { return _paused; } //按钮文案用
     int Progress() const; //0..100
     QString Message() const { return _message; } //个人资料页提示

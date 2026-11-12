@@ -83,6 +83,7 @@ signals:
     void sig_upload_progress(const QString &name, qint64 trans_size, qint64 total_size);
     void sig_upload_finished(const QString &name, const QString &md5);
     void sig_upload_failed(const QString &name, int error);
+    void sig_download_progress(const QString &name, qint64 current_size, qint64 total_size);
     void sig_download_finished(const QString &name, const QString &path);
     void sig_download_failed(const QString &name, int error);
 };

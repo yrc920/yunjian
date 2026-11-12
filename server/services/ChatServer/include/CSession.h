@@ -38,6 +38,9 @@ public:
 	void AsyncReadBody(int length); //异步读取消息体
 	void AsyncReadHead(int total_len); //异步读取消息头
     void NotifyOffline(int uid); //通知用户离线
+    //资源已上传完成：把消息 ID、会话与资源名推给接收方，接收方据此下载
+    void NotifyImageRecv(long long message_id, int from_uid, int to_uid, long long thread_id,
+        const std::string& name, const std::string& client_msg_id, long long total_size);
     bool IsHeartbeatExpired(std::time_t& now); //判断心跳是否过期
     void UpdateHeartbeat(); //更新心跳
     void DealExceptionSession(); //处理异常连接

@@ -227,7 +227,7 @@ struct TextChatData{
     QString _imageSource; //图片消息的本地显示地址（data/file URL），始终指向缩略图
     int _imageWidth = 0;
     int _imageHeight = 0;
-    int _uploadProgress = -1; //图片上传进度 0..100，-1 表示不显示进度条
+    int _transferProgress = -1; //图片传输进度 0..100（上传或下载），-1 表示不显示进度条
     ChatMsgType _msg_type = ChatMsgType::Text; //消息类型，历史同步与发送时确定
     QString _resource_name; //图片/文件在资源服务器上的名字，文本为空
     int _from_uid;

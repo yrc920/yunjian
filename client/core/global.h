@@ -47,6 +47,7 @@ enum ReqId{
     ID_LOAD_CHAT_MSG_RSP = 1030, //历史消息与 load_more
     ID_IMG_CHAT_MSG_REQ = 1031, //图片聊天消息：先落库，资源随后上传
     ID_IMG_CHAT_MSG_RSP = 1032, //图片聊天消息回执
+    ID_NOTIFY_IMG_CHAT_MSG_REQ = 1033, //图片上传完成通知，接收方开始下载
     // 资源服务器使用独立的消息空间：帧头为 2 字节 ID + 4 字节长度
     ID_UPLOAD_FILE_REQ = 2001, //通用文件分段上传
     ID_UPLOAD_FILE_RSP = 2002,

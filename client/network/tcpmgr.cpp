@@ -234,6 +234,12 @@ void TcpMgr::initHandlers()
         if (document.isObject())
             emit sig_chat_img_rsp(document.object());
     });
+    //图片已上传完成的推送：插入接收方消息，本地没有压缩图时再发起下载
+    _handlers.insert(ID_NOTIFY_IMG_CHAT_MSG_REQ, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_image_notify(document.object());
+    });
     //创建会话失败也要回传，客户端据此清除 pending 并允许重试
     _handlers.insert(ID_CREATE_PRIVATE_CHAT_RSP, [this](ReqId, int, QByteArray data) {
         const auto document = QJsonDocument::fromJson(data);

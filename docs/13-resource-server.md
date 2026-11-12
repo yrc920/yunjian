@@ -167,9 +167,10 @@
 写盘顺序是「先写文件，再更新进度」，回包在写盘完成后才发出。因此
 `trans_size` 表示已经落盘的字节数，不是客户端声称的进度。
 
-最后一片写完后，如果请求携带 `message_id`（聊天图片），资源服务器通过 gRPC
-调用 ChatServer 的 `NotifyImageUploaded`，把 `chat_message.status` 从 0（未上传）
-改成 1（已上传）；gRPC 不可用时回退为直接更新数据库。
+最后一片写完后，如果请求携带 `message_id`（聊天图片），资源服务器先按 Redis `uip_<receiver>`
+找到接收方所在的 ChatServer，再调用 `NotifyImageUploaded`：对端更新 `chat_message.status`
+从 0（未上传）到 1（已上传），接收方在线时还会推送 1033 下载通知。接收方离线、实例未配置
+或 RPC 失败时，资源服务器直接写库兜底，不影响下次登录同步。
 
 ---
 
@@ -183,10 +184,11 @@
   聊天图片最多 8 片在途，头像固定 1 片；`seq` 从 1 开始，收到 2008/2002 后按确认序号补发；
 - 进度按“连续确认到的分片”计算，乱序回包不会让进度条回跳；全部确认后发 `sig_upload_finished`；
 - 聊天图片由 `ChatService` 把输入区压缩图（长边 1600 的 JPEG/PNG）复制到本机缓存后复用 `2001`
-  通道，与头像上传的状态互不影响；本机缓存 `images/<md5>.<ext>` 与服务器保存的是同一份，
-  气泡用的缩略图单独放在 `images/thumbs/`，不会覆盖压缩图；`FileService` 按资源名把进度与
-  完成/失败转发给消息行，上传完成后消息状态变为已发送，进度条隐藏；
-- 下载：`DownloadFileInfo` 保存本地路径与 seq，`seq == 1` 覆盖写，否则追加；
+  通道，与头像上传的状态互不影响；本机缓存 `users/<网关>/<uid>/images/<md5>.<ext>` 与服务器
+  保存的是同一份，气泡用的缩略图单独放在 `images/thumbs/`，不会覆盖压缩图；`FileService`
+  按资源名把进度与完成/失败转发给消息行，上传完成后消息状态变为已发送，进度条隐藏；
+- 下载：`DownloadFileInfo` 保存本地路径与 seq，`seq == 1` 覆盖写，否则追加；每片回包发出
+  `sig_download_progress`，接收方聊天图片由 `ChatService` 写回消息进度，完成后生成缩略图；
 - 暂停：头像窗口为 1，置 `UserMgr::_upload_paused` 后当前分片回包即停止；聊天图片不受影响；
 - 继续：向服务器发 2003，按返回的 `seq` 重建连续确认位置后继续。
 
@@ -195,7 +197,7 @@
 - `UploadAvatar`：校验 PNG、计算 MD5，建立上传状态并启动第一片；
 - `OnSessionReady`：登录完成后拉取本机、好友与好友申请里缺失的头像，已有缓存直接使用；
 - 下载完成后，本机头像写回 `LocalAvatarPath`，好友/申请人头像写回
-  `AppDataLocation/avatars/cache/<网关哈希>/<uid>/<name>` 并刷新对应列表；
+  `AppDataLocation/users/<网关哈希>/<登录uid>/contacts/<ownerUid>/<name>` 并刷新对应列表；
 - 新头像开始上传前取消本机旧头像的下载，避免服务端以 `seq=1` 截断文件后
   旧下载把本机头像覆盖成残缺内容。
 - 同一个 uid 可能同时出现在好友列表和「新的朋友」：`UserMgr::SetContactIcon` 会同时替换
@@ -227,10 +229,19 @@ Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
 
-# 图片上传完成后通过 gRPC 通知 ChatServer 回写消息状态
-[ChatServer]
+# 图片上传完成后按 uip_<receiver> 选择实例：更新状态并推送下载通知
+[ChatServers]
+Servers = chatserver1,chatserver2
+
+[chatserver1]
+Name = chatserver1
 Host = 127.0.0.1
 Port = 50055
+
+[chatserver2]
+Name = chatserver2
+Host = 127.0.0.1
+Port = 50056
 ```
 
 `Storage/Path` 相对服务工作目录；Docker 部署把它挂到 `resource-data` 卷
@@ -258,4 +269,4 @@ Port = 9090
 - 服务端的 `accepted_seq` 只在内存中，进程重启后回落到已落盘进度；在途窗口内的分片需要客户端重新发送。
 - 下载没有独立的进度持久化，断线后由客户端从本地文件大小重新发起。
 - 本机已有头像文件时优先使用本机版本，不比较服务端 `icon` 是否变化；多设备同步需要额外记录本地头像来源。
-- 聊天图片已接入压缩图上传、进度显示、状态回写与历史缩略图；文件消息、接收方推送与点开大图尚未接入。
+- 聊天图片已接入压缩图上传、下载与进度、接收方推送、状态回写与历史缩略图；文件消息与点开大图尚未接入。

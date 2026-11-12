@@ -9,12 +9,13 @@
 #include <QImage>
 #include <QImageReader>
 #include <QMimeData>
-#include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
 #include <QUuid>
+
+#include "usermgr.h"
 
 namespace {
 constexpr int UploadMaxSide = 1600; //上传压缩图的长边上限，点开大图时不至于模糊
@@ -67,16 +68,8 @@ QByteArray encodeImage(const QImage &image, QByteArray *format)
 
 ComposerBridge::ComposerBridge(QObject *parent) : QObject(parent)
 {
-    //上次退出时没有发送的待上传图片已经没人引用，启动时统一清掉
-    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (root.isEmpty())
-        return;
-    QDir pending(QDir(root).filePath(QStringLiteral("images/pending")));
-    if (!pending.exists())
-        return;
-    const auto files = pending.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
-    for (const auto &info : files)
-        QFile::remove(info.absoluteFilePath());
+    //待上传图按登录账号存放，登录时由 UserMgr::CleanPendingImages 清理上次退出留下的文件；
+    //这里构造时还没有账号信息，不能直接拼路径
 }
 
 void ComposerBridge::setError(const QString &message)
@@ -91,13 +84,13 @@ QString ComposerBridge::imageKey(const QString &source)
         QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
-//上传文件放在应用数据目录，整批发送成功后由 ChatBridge 删除；这里只负责落盘，不参与显示
+//上传文件放在当前账号的 pending 目录，sendImage 复制走并生成缓存，整批成功后由 ChatBridge 删除
 QString ComposerBridge::savePendingImage(const QByteArray &data, const QByteArray &suffix)
 {
-    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (root.isEmpty())
+    const QString dir_path = UserMgr::PendingImageDir();
+    if (dir_path.isEmpty())
         return {};
-    QDir dir(QDir(root).filePath(QStringLiteral("images/pending")));
+    QDir dir(dir_path);
     if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
         return {};
     const QString path = dir.filePath(QUuid::createUuid().toString(QUuid::WithoutBraces)

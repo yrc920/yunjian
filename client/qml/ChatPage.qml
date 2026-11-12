@@ -135,7 +135,7 @@ Item {
             imageWidth: model.imageWidth
             imageHeight: model.imageHeight
             status: model.status
-            uploadProgress: model.uploadProgress
+            transferProgress: model.transferProgress
         }
 
         onCountChanged: Qt.callLater(messageList.positionViewAtEnd)

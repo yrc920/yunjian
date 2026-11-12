@@ -253,6 +253,12 @@ message NotifyImageUploadedReq {
   int64 thread_id = 3;
   // 资源文件名
   string name = 4;
+  // 接收者 uid：资源服务器按它查 uip_<uid>，把推送发到对方所在的 ChatServer
+  int32 receiver = 5;
+  // 发送方客户端消息 ID，接收方用它与历史消息去重
+  string client_msg_id = 6;
+  // 资源文件大小，接收方展示下载进度
+  int64 total_size = 7;
 }
 
 // 资源上传完成的响应

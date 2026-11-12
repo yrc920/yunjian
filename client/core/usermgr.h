@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QList>
+#include <QSize>
 #include <memory>
 #include <singleton.h>
 #include "userdata.h"
@@ -36,6 +37,12 @@ public:
     QString GetToken() const;
     static QString LocalAvatarPath(); //当前网关与账号对应的头像文件
     static QString ResourceCachePath(int ownerUid, const QString &name); //好友头像缓存
+    //本机资源统一按「网关 + 登录账号」分层，换账号不会读到别人的图片和头像缓存
+    static QString AccountRootPath(); //AppData/users/<网关摘要>/<uid>
+    static QString ChatImagePath(const QString &name); //本账号的聊天压缩图
+    static QString ChatImageThumbPath(const QString &name); //本账号的气泡缩略图
+    static QString PendingImageDir(); //输入区待上传的临时压缩图目录
+    static void CleanPendingImages(); //登录后清掉本账号上次退出时的临时图
     static bool IsCompleteAvatarFile(const QString &path); //文件存在且是完整PNG，半截文件返回false
     QString GetIcon() const;
     bool SetLocalAvatar(const QByteArray &png); //发布已落盘的头像，不修改服务器头像字段
@@ -80,6 +87,13 @@ public:
     //图片资源上传进度按资源名回写：同一张图的多条消息一起更新，完成/失败同时改状态
     void UpdateImageTransfer(const QString &resource_name, qint64 trans, qint64 total,
                              ImageTransferState state);
+    //接收方收到 1033：按 msgid 合并或追加图片消息，避免与历史同步重复
+    void UpsertImageMessage(int friend_id, std::shared_ptr<TextChatData> message);
+    //图片下载完成/失败：按资源名更新所有引用该图片的消息
+    void UpdateImageDownloadProgress(const QString &resource_name, qint64 current, qint64 total);
+    void FinishImageDownload(const QString &resource_name, const QString &thumb_path,
+                             const QSize &pixel_size);
+    void FailImageDownload(const QString &resource_name);
     void FailPendingMessages(); //断线时把发送中的消息统一标失败
 
     // 供列表模型按行读取：模型不复制数据，只引用这里的原始对象

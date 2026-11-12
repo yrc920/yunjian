@@ -96,7 +96,7 @@ RPC 调用与数据库访问，会阻塞该 IO 线程。这是当前实现的吞
 
 资源服务没有 ChatServer 那样的单消费者队列，而是两级分派：同一连接固定到一个 LogicWorker，
 同一文件固定到一个 FileWorker，既保证分片顺序，又让不同文件并行。聊天图片完整落盘后，
-FileWorker 通过 gRPC 通知 ChatServer 把消息状态改成已上传。详见
+FileWorker 按 `uip_<receiver>` 通过 gRPC 通知接收方所在的 ChatServer 更新状态并推送下载通知。详见
 [13-ResourceServer](13-resource-server.md)。
 
 ### StatusServer / VerifyServer

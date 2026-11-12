@@ -86,6 +86,7 @@
 | 1030 | `ID_LOAD_CHAT_MSG_RSP` | S → C | 历史消息与 `load_more` |
 | 1031 | `ID_IMG_CHAT_MSG_REQ` | C → S | 发送图片消息（先落库，资源随后上传） |
 | 1032 | `ID_IMG_CHAT_MSG_RSP` | S → C | 图片消息回执（含消息 ID 与线程 ID） |
+| 1033 | `ID_NOTIFY_IMG_CHAT_MSG_REQ` | S → C | 图片已上传完成，接收方开始下载 |
 
 > 1012 与 1016 为历史预留空位，当前未使用。
 
@@ -174,14 +175,20 @@
 
 `md5` 为 32 位十六进制，`name` 是资源文件名（`<md5>.jpg`，带透明像素的图用 `<md5>.png`），
 `unique_id` 是客户端消息 ID。上传的是输入区压缩后的图（长边 1600），不是气泡缩略图。
-服务端只做格式校验与落库（`chat_message.msg_type=1`、`status=0` 表示资源未上传），
-**不向接收方推送**；资源上传完成后的通知留到后续章节。
+服务端只做格式校验与落库（`chat_message.msg_type=1`、`status=0` 表示资源未上传）。
+资源完整落盘后，ResourceServer 通过 gRPC `NotifyImageUploaded` 通知**接收方所在的 ChatServer**，
+由它更新状态并推送 1033；接收方离线或跨实例通知失败时，ResourceServer 直接回写数据库。
 
 **1032 图片消息回执** `{error, fromuid, touid, thread_id, message_id, md5, name, unique_id, status}`
 
 `status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `2001` 上传资源。
-2001 的每个分片确认都会回推进度，上传完成时消息状态改为已发送；资源完整落盘后，
-ResourceServer 通过 gRPC `NotifyImageUploaded` 让 ChatServer 把该消息的 `status` 改成 1（已上传）。
+2001 的每个分片确认都会回推进度，上传完成时消息状态改为已发送。
+
+**1033 图片完成通知** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size}`
+
+`msgid` 是发送方的客户端消息 ID，与历史同步一致，接收方据此去重。接收方先查本机压缩图，
+命中则直接显示缩略图；否则把消息插入会话并向 ResourceServer 发送 `2005` 断点下载，
+进度写回同一条消息，完成后生成缩略图。
 
 ---
 
@@ -344,12 +351,14 @@ rpc NotifyImageUploaded(NotifyImageUploadedReq) returns (NotifyImageUploadedRsp)
 | `TextChatData` | `msgid`, `msgcontent` |
 | `TextChatMsgRsp` | `error`, `fromuid`, `touid`, `repeated TextChatData textmsgs` |
 | `KickUserReq` / `KickUserRsp` | `uid` / `error`, `uid` |
-| `NotifyImageUploadedReq` | `message_id`, `sender`, `thread_id`, `name` |
+| `NotifyImageUploadedReq` | `message_id`, `sender`, `receiver`, `thread_id`, `name`, `client_msg_id`, `total_size` |
 | `NotifyImageUploadedRsp` | `error`, `message_id` |
 
 实际使用：`NotifyAddFriend`、`NotifyAuthFriend`、`NotifyTextChatMsg` 用于跨实例转发，
 `NotifyKickUser` 用于异地登录踢人；`NotifyImageUploaded` 由 **ResourceServer** 在聊天图片
-全部落盘后调用 ChatServer，把 `chat_message.status` 从 0（未上传）改成 1（已上传）。
+全部落盘后调用。ResourceServer 先按 Redis `uip_<receiver>` 找到接收方所在实例，
+ChatServer 收到后把 `chat_message.status` 从 0（未上传）改成 1（已上传），
+如果接收方在本实例在线，再推送 1033 通知其下载。
 `RplyAddFriend` 与 `SendChatMsg` **已定义但未实现调用**（服务实现中直接返回默认响应）。
 
 所有 RPC 使用 `grpc::InsecureServerCredentials()` / `InsecureChannelCredentials()`，

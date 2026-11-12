@@ -219,7 +219,8 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
     const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response)
 {
     response->set_message_id(request->message_id());
-    if (request->message_id() <= 0 || request->sender() <= 0) {
+    if (request->message_id() <= 0 || request->sender() <= 0 || request->receiver() <= 0
+        || request->name().empty()) {
         response->set_error(ErrorCodes::Error_Json);
         return Status::OK;
     }
@@ -228,5 +229,15 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
     const bool ok = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
         request->message_id(), request->sender(), 1);
     response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
+
+    //接收方在本实例在线时立即推送；资源服务器已按 uip_<receiver> 选好目标实例
+    if (ok) {
+        auto session = UserMgr::GetInstance()->GetSession(request->receiver());
+        if (session) {
+            session->NotifyImageRecv(request->message_id(), request->sender(),
+                request->receiver(), request->thread_id(), request->name(),
+                request->client_msg_id(), request->total_size());
+        }
+    }
     return Status::OK;
 }

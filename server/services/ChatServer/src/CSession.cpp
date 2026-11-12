@@ -284,6 +284,23 @@ void CSession::NotifyOffline(int uid)
     return;
 }
 
+//图片已经完整落在资源服务器上，接收方收到后先查本地缓存，没有就发起断点下载
+void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
+    long long thread_id, const std::string& name, const std::string& client_msg_id,
+    long long total_size)
+{
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCodes::Success;
+    rtvalue["message_id"] = Json::Int64(message_id);
+    rtvalue["thread_id"] = Json::Int64(thread_id);
+    rtvalue["fromuid"] = from_uid;
+    rtvalue["touid"] = to_uid;
+    rtvalue["msgid"] = client_msg_id; //与历史同步同一个 ID，客户端据此去重
+    rtvalue["name"] = name;
+    rtvalue["total_size"] = Json::Int64(total_size);
+    Send(rtvalue.toStyledString(), ID_NOTIFY_IMG_CHAT_MSG_REQ);
+}
+
 //读取完整长度
 void CSession::asyncReadFull(std::size_t maxLength,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
