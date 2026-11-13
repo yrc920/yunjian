@@ -240,6 +240,9 @@ void TcpMgr::initHandlers()
         if (document.isObject())
             emit sig_image_notify(document.object());
     });
+    //视频/文件回执与上传完成通知：成功后才上传资源，通知只建卡片不自动下载
+    emitJson(ID_RESOURCE_CHAT_MSG_RSP, &TcpMgr::sig_resource_chat_rsp);
+    emitJson(ID_NOTIFY_RESOURCE_CHAT_MSG_REQ, &TcpMgr::sig_resource_notify);
     //创建会话失败也要回传，客户端据此清除 pending 并允许重试
     _handlers.insert(ID_CREATE_PRIVATE_CHAT_RSP, [this](ReqId, int, QByteArray data) {
         const auto document = QJsonDocument::fromJson(data);

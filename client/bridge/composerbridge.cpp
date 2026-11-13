@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
 #include <QImageReader>
@@ -168,9 +169,49 @@ int ComposerBridge::insertImageData(QQuickTextDocument *document, int position, 
     return cursor.position();
 }
 
-int ComposerBridge::paste(QQuickTextDocument *document, int position, int selectionEnd)
+//拖入/粘贴时按扩展名分流；只接受真实存在的本地文件，目录和空文件直接忽略
+QString ComposerBridge::fileKind(const QUrl &url) const
 {
-    if (!document || !document->textDocument())
+    if (!url.isLocalFile())
+        return {};
+    const QFileInfo info(url.toLocalFile());
+    if (!info.isFile() || info.size() <= 0)
+        return {};
+
+    static const QStringList images = {
+        QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg"),
+        QStringLiteral("bmp"), QStringLiteral("webp")
+    };
+    static const QStringList videos = {
+        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
+        QStringLiteral("avi"), QStringLiteral("webm")
+    };
+    const QString suffix = info.suffix().toLower();
+    if (images.contains(suffix))
+        return QStringLiteral("image");
+    if (videos.contains(suffix))
+        return QStringLiteral("video");
+    return QStringLiteral("file");
+}
+
+QVariantList ComposerBridge::clipboardFiles() const
+{
+    QVariantList result;
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasUrls())
+        return result;
+    for (const QUrl &url : mime->urls()) {
+        const QString kind = fileKind(url);
+        if (kind.isEmpty())
+            continue;
+        result.append(QVariantMap{{QStringLiteral("url"), url.toString()},
+                                  {QStringLiteral("kind"), kind}});
+    }
+    return result;
+}
+
+int ComposerBridge::paste(QQuickTextDocument *document, int position, int selectionEnd)
+{    if (!document || !document->textDocument())
         return position;
     const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
     if (!mime)
@@ -234,7 +275,63 @@ QVariantList ComposerBridge::parts(QQuickTextDocument *document) const
         }
     }
     flush();
+    //附件排在文字/图片之后，按添加顺序逐个发送
+    for (const QVariant &attachment : _attachments)
+        result.append(attachment);
     return result;
+}
+
+//选择/拖入视频或文件后追加一条附件记录；同一路径只保留一次
+bool ComposerBridge::addAttachment(const QUrl &url, const QString &kind)
+{
+    if (kind != "video" && kind != "file") {
+        setError(tr("不支持的附件类型"));
+        return false;
+    }
+    if (!url.isLocalFile()) {
+        setError(tr("请选择本地文件"));
+        return false;
+    }
+    const QFileInfo info(url.toLocalFile());
+    if (!info.isFile() || info.size() <= 0) {
+        setError(tr("文件不存在或为空"));
+        return false;
+    }
+
+    const QString path = info.absoluteFilePath();
+    for (const QVariant &item : _attachments) {
+        if (item.toMap().value("path").toString() == path)
+            return true; //重复拖同一个文件不叠加卡片
+    }
+    if (_attachments.size() >= 20) {
+        setError(tr("一次最多添加 20 个附件"));
+        return false;
+    }
+    _attachments.append(QVariantMap{
+        {"kind", kind},
+        {"path", path},
+        {"name", info.fileName()},
+        {"size", info.size()},
+    });
+    setError({});
+    emit attachmentsChanged();
+    return true;
+}
+
+void ComposerBridge::removeAttachment(int index)
+{
+    if (index < 0 || index >= _attachments.size())
+        return;
+    _attachments.removeAt(index);
+    emit attachmentsChanged();
+}
+
+void ComposerBridge::clearAttachments()
+{
+    if (_attachments.isEmpty())
+        return;
+    _attachments.clear();
+    emit attachmentsChanged();
 }
 
 void ComposerBridge::switchConversation(QQuickTextDocument *document, int uid)
@@ -246,5 +343,6 @@ void ComposerBridge::switchConversation(QQuickTextDocument *document, int uid)
         _drafts.insert(_uid, doc->toHtml());
     _uid = uid;
     doc->setHtml(_drafts.value(uid));
+    clearAttachments(); //附件不跨会话保留，避免把上一个会话的文件发错人
     setError({});
 }

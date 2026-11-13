@@ -3,6 +3,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>
+#include <QFileInfo>
+#include <QImageReader>
 #include <QSize>
 #include <QUrl>
 
@@ -84,6 +86,13 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_image_notify, this, [](const QJsonObject &data) {
         ChatService::GetInstance()->HandleImageNotify(data);
     });
+    //视频/文件回执与上传完成通知：卡片先出现，资源等用户点击后再下载
+    connect(tcp, &TcpMgr::sig_resource_chat_rsp, this, [](const QJsonObject &data) {
+        ChatService::GetInstance()->HandleResourceRsp(data);
+    });
+    connect(tcp, &TcpMgr::sig_resource_notify, this, [](const QJsonObject &data) {
+        ChatService::GetInstance()->HandleResourceNotify(data);
+    });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const auto threads = data.value("thread_list").toArray();
@@ -115,9 +124,10 @@ SessionService::SessionService() : _ready(false)
                 item.value("content").toString(), item.value("fromuid").toInt(),
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
                 threadId, status);
-            //图片消息的 content 是资源文件名；重新登录后用本机缩略图显示，
-            //本机没有压缩图时排入下载队列，界面先显示占位和进度
-            if (item.value("msg_type").toInt(0) == static_cast<int>(ChatMsgType::Image)) {
+            //图片消息的 content 是资源文件名；视频/文件的 content 是元数据 JSON。
+            //图片自动补全，视频只补首帧，视频/文件本体等用户点击下载
+            const int msgType = item.value("msg_type").toInt(0);
+            if (msgType == static_cast<int>(ChatMsgType::Image)) {
                 message->_msg_type = ChatMsgType::Image;
                 message->_resource_name = item.value("content").toString();
                 QSize pixel_size;
@@ -127,12 +137,47 @@ SessionService::SessionService() : _ready(false)
                     message->_imageSource = QUrl::fromLocalFile(thumb).toString();
                     message->_imageWidth = pixel_size.width();
                     message->_imageHeight = pixel_size.height();
+                    message->_local_path = ChatService::ImageCachePath(message->_resource_name);
                     message->_transferProgress = 100;
+                    message->_transfer_state = ResourceTransferState::Done;
                 }
                 else if (!message->_resource_name.isEmpty()) {
                     message->_transferProgress = 0; //先显示进度条，由资源下载推进
+                    message->_transfer_state = ResourceTransferState::Downloading;
                     ChatService::GetInstance()->DownloadChatImage(message->_resource_name,
                         message->_from_uid, message->_message_id, threadId);
+                }
+            }
+            else if (msgType == static_cast<int>(ChatMsgType::Video)
+                || msgType == static_cast<int>(ChatMsgType::File)) {
+                auto resource = ChatService::BuildResourceMessage(message->_from_uid,
+                    message->_to_uid, message->_message_id, threadId, msgType,
+                    item.value("content").toString(), QString(), status);
+                if (resource && !resource->_resource_name.isEmpty()) {
+                    resource->_msg_id = message->_msg_id;
+                    const QString local = ChatService::ResourcePath(resource->_msg_type,
+                        resource->_resource_name);
+                    if (QFileInfo::exists(local)) {
+                        resource->_local_path = local;
+                        resource->_transferProgress = 100;
+                        resource->_transfer_state = ResourceTransferState::Done;
+                    }
+                    if (resource->_msg_type == ChatMsgType::Video
+                        && !resource->_thumb_name.isEmpty()) {
+                        const QString thumbPath = ChatService::VideoThumbPath(
+                            resource->_thumb_name);
+                        if (QFileInfo::exists(thumbPath)) {
+                            resource->_imageSource = QUrl::fromLocalFile(thumbPath).toString();
+                            resource->_imageWidth = QImageReader(thumbPath).size().width();
+                            resource->_imageHeight = QImageReader(thumbPath).size().height();
+                        }
+                        else {
+                            ChatService::GetInstance()->DownloadVideoThumb(
+                                resource->_thumb_name, resource->_from_uid,
+                                resource->_message_id, threadId);
+                        }
+                    }
+                    message = std::move(resource);
                 }
             }
             messages.push_back(std::move(message));

@@ -89,7 +89,7 @@ service ChatService {
   rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
   // 跨实例踢人：同账号在另一实例登录后，通知旧实例把该用户的旧连接踢下线
   rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
-  // 资源服务器在聊天图片完整落盘后通知 ChatServer 把消息标记为已上传
+  // 资源服务器在聊天图片/视频/文件完整落盘后通知 ChatServer 把消息标记为已上传
   rpc NotifyImageUploaded (NotifyImageUploadedReq) returns (NotifyImageUploadedRsp) {}
 }
 

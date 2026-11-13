@@ -69,6 +69,9 @@ enum MSG_IDS {
 	ID_IMG_CHAT_MSG_REQ = 1031, //图片聊天消息: 先落库, 资源随后上传
 	ID_IMG_CHAT_MSG_RSP = 1032, //图片聊天消息回执
 	ID_NOTIFY_IMG_CHAT_MSG_REQ = 1033, //通知接收方图片已上传完成, 可以下载
+	ID_RESOURCE_CHAT_MSG_REQ = 1034, //视频/文件消息: content 存文件名、大小与预览资源
+	ID_RESOURCE_CHAT_MSG_RSP = 1035, //视频/文件消息回执
+	ID_NOTIFY_RESOURCE_CHAT_MSG_REQ = 1036, //通知接收方视频/文件已上传, 等待手动下载
 };
 
 #define USERIPPREFIX  "uip_" //用户登录ip server的名字前缀

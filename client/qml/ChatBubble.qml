@@ -16,6 +16,8 @@ Item {
     property int imageHeight: 0
     property int status: 1
     property int transferProgress: -1
+    signal imageClicked() //图片气泡点击后交给查看器打开原图
+    signal contextRequested(real x, real y) //右键菜单：坐标相对当前气泡
 
     readonly property bool localImage: imageSource.length > 0
     //图片消息但本地还没有缩略图：显示占位，等上传/下载完成后再换成图片
@@ -27,11 +29,10 @@ Item {
     readonly property real imageMaxHeight: 180
     readonly property real availableWidth: Math.max(1, Math.min(Theme.bubbleMaxWidth, width - 102))
 
-    //优先用消息里保存的缩略图像素尺寸；缺失时读已加载的图片，最后才用占位尺寸
-    readonly property real sourceWidth: imageWidth > 0 ? imageWidth
-        : (preview.sourceSize.width > 0 ? preview.sourceSize.width : 150)
-    readonly property real sourceHeight: imageHeight > 0 ? imageHeight
-        : (preview.sourceSize.height > 0 ? preview.sourceSize.height : 96)
+    //优先用消息里保存的缩略图像素尺寸；没有尺寸时用固定占位，避免图片异步加载时
+    //反复改写气泡高度，长会话里会出现列表抖动和自动滚底竞争
+    readonly property real sourceWidth: imageWidth > 0 ? imageWidth : 150
+    readonly property real sourceHeight: imageHeight > 0 ? imageHeight : 96
     readonly property real pictureScale: Math.min(1,
         Math.min(imageMaxWidth / Math.max(1, sourceWidth), imageMaxHeight / Math.max(1, sourceHeight)))
     readonly property real pictureWidth: Math.max(48, sourceWidth * pictureScale)
@@ -92,6 +93,16 @@ Item {
             font.pixelSize: Theme.fontBody
             color: root.isSelf ? Theme.bubbleSelfText : Theme.textPrimary
         }
+
+        //只接收右键，左键选择文字仍由上面的 TextEdit 处理
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            onPressed: (mouse) => {
+                const p = mapToItem(root, mouse.x, mouse.y)
+                root.contextRequested(p.x, p.y)
+            }
+        }
     }
 
     // 图片容器：没有气泡底色和文字内边距，仅保留圆角裁切
@@ -131,6 +142,24 @@ Item {
         color: "white"
         visible: false
         layer.enabled: true
+    }
+
+    MouseArea {
+        anchors.fill: pictureFrame
+        enabled: root.localImage
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.imageClicked()
+    }
+
+    //图片右键：查看、复制、另存为；左键仍走上面的点击预览
+    MouseArea {
+        anchors.fill: pictureFrame
+        enabled: root.localImage
+        acceptedButtons: Qt.RightButton
+        onPressed: (mouse) => {
+            const p = mapToItem(root, mouse.x, mouse.y)
+            root.contextRequested(p.x, p.y)
+        }
     }
 
     // 图片还没到本机时的占位，不显示文件名

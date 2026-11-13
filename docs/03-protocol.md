@@ -87,6 +87,9 @@
 | 1031 | `ID_IMG_CHAT_MSG_REQ` | C → S | 发送图片消息（先落库，资源随后上传） |
 | 1032 | `ID_IMG_CHAT_MSG_RSP` | S → C | 图片消息回执（含消息 ID 与线程 ID） |
 | 1033 | `ID_NOTIFY_IMG_CHAT_MSG_REQ` | S → C | 图片已上传完成，接收方开始下载 |
+| 1034 | `ID_RESOURCE_CHAT_MSG_REQ` | C → S | 发送视频/文件消息（先落库，资源随后上传） |
+| 1035 | `ID_RESOURCE_CHAT_MSG_RSP` | S → C | 视频/文件消息回执（含消息 ID 与线程 ID） |
+| 1036 | `ID_NOTIFY_RESOURCE_CHAT_MSG_REQ` | S → C | 视频/文件已上传完成，接收方显示下载卡片 |
 
 > 1012 与 1016 为历史预留空位，当前未使用。
 
@@ -169,7 +172,7 @@
 
 **1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status}], load_more:bool}`
 
-`msg_type`：0=文本，1=图片（`content` 是资源文件名），2/3 预留给视频与文件。
+`msg_type`：0=文本，1=图片（`content` 是资源文件名），2=视频，3=文件（2/3 的 `content` 是元数据 JSON）。
 
 **1031 图片消息** `{fromuid:int, touid:int, thread_id:int64, md5:string, name:string, token:string, unique_id:string}`
 
@@ -181,20 +184,43 @@
 
 **1032 图片消息回执** `{error, fromuid, touid, thread_id, message_id, md5, name, unique_id, status}`
 
-`status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `2001` 上传资源。
-2001 的每个分片确认都会回推进度，上传完成时消息状态改为已发送。
+`status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `1037` 上传资源。
+1037 的每个分片确认都会回推进度，上传完成时消息状态改为已发送。
 
 **1033 图片完成通知** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size}`
 
 `msgid` 是发送方的客户端消息 ID，与历史同步一致，接收方据此去重。接收方先查本机压缩图，
-命中则直接显示缩略图；否则把消息插入会话并向 ResourceServer 发送 `2005` 断点下载，
+命中则直接显示缩略图；否则把消息插入会话并向 ResourceServer 发送 `1041` 断点下载，
 进度写回同一条消息，完成后生成缩略图。
+
+**1034 视频/文件消息**
+`{fromuid, touid, thread_id, msg_type:2|3, md5, name, file_name, file_size:int64, thumb, token, unique_id}`
+
+`msg_type=2` 为视频、`3` 为文件；`name` 是资源文件名，优先使用上传者的原文件名
+（去掉路径分隔符与系统保留字符，重名追加 `(2)` 后缀），`file_name` 保留完整原文件名用于展示，
+`thumb` 是视频首帧的资源名（仍按内容 md5 命名，文件消息为空）。服务端把 `file_name`、`file_size`、
+`name`、`thumb` 写进 `chat_message.content` 的 JSON，`msg_type` 与 `status=0` 单独落库；
+原始文件名只用于展示，不参与资源路径拼接。
+
+**1035 视频/文件消息回执** `{error, fromuid, touid, msg_type, name, unique_id, thread_id, message_id, status}`
+
+`status=0`；客户端回填消息 ID 与线程 ID 后开始 `1037` 上传。视频先上传首帧缩略图，
+再把视频本体分片上传，两者都完成后才由资源服务器通知接收方。
+
+**1036 视频/文件完成通知**
+`{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, msg_type, content}`
+
+`content` 与历史同步里的一致，接收方据此渲染文件名、大小与首帧；`name` 就是原文件名，
+下载端直接按这个名字落盘。收到 1036 时**不自动下载**
+资源本体：视频与文件都先显示卡片和下载按钮，由用户点击后再向 ResourceServer 发 `1041`；
+视频首帧缩略图较小，会在后台自动下载用于预览。
 
 ---
 
 ### 资源服务器私有协议（Client ↔ ResourceServer）
 
-资源服务器使用同一套「ID + 长度 + JSON」思路，但长度字段扩为 4 字节，容纳文件分片：
+资源服务器使用同一套「ID + 长度 + JSON」思路，但长度字段扩为 4 字节，容纳文件分片。
+消息 ID 仍沿用 1000 段（1037–1044），只是走另一条 TCP 连接，与聊天协议不会在同一连接上冲突：
 
 ```
  0        1        2        3        4        5        6 ...
@@ -214,18 +240,21 @@
 
 | ID | 名称 | 方向 | 说明 |
 | --- | --- | --- | --- |
-| 2001 / 2002 | `ID_UPLOAD_FILE_REQ/RSP` | C ↔ S | 通用文件分段上传 |
-| 2003 / 2004 | `ID_SYNC_FILE_REQ/RSP` | C ↔ S | 续传前同步服务器进度 |
-| 2005 / 2006 | `ID_DOWN_LOAD_FILE_REQ/RSP` | C ↔ S | 断点下载 |
-| 2007 / 2008 | `ID_UPLOAD_HEAD_ICON_REQ/RSP` | C ↔ S | 头像分段上传 |
+| 1037 / 1038 | `ID_UPLOAD_FILE_REQ/RSP` | C ↔ S | 通用文件分段上传 |
+| 1039 / 1040 | `ID_SYNC_FILE_REQ/RSP` | C ↔ S | 续传前同步服务器进度 |
+| 1041 / 1042 | `ID_DOWN_LOAD_FILE_REQ/RSP` | C ↔ S | 断点下载 |
+| 1043 / 1044 | `ID_UPLOAD_HEAD_ICON_REQ/RSP` | C ↔ S | 头像分段上传 |
 
 上传首个分片必须携带 `uid`、`token`，服务端比对 Redis `utoken_<uid>` 后把 uid 绑定到连接；
 后续分片只校验连接身份。字段、校验规则与断点续传流程见
 [13-ResourceServer](13-resource-server.md)。
 
-聊天图片的 `2001` 请求额外带 `message_id`、`touid`、`thread_id`、`unique_id`，供资源服务器
-最后一片写完后回写消息状态。客户端使用拥塞窗口，聊天图片最多 8 片在途（头像仍逐片确认），
-服务端按“已接收序号”推进，不再要求每一片都等上一片的落盘和回包。
+聊天资源（图片、视频、文件）的 `1037` 请求额外带 `message_id`、`touid`、`thread_id`、
+`unique_id`，供资源服务器最后一片写完后回写消息状态。客户端使用拥塞窗口，聊天资源最多 8 片
+在途（头像仍逐片确认），服务端按“已接收序号”推进，不再要求每一片都等上一片的落盘和回包。
+暂停时客户端停止补发分片，已在途的分片仍会落盘；继续时先发 `1039` 取服务器已写到的序号，
+再按该序号续传，因此暂停期间的迟到回包不会造成重复或空洞。下载暂停只是不再请求下一片，
+继续时从内存里的 `seq` 接着要，不需要重新协商进度。
 
 ---
 

@@ -1,12 +1,13 @@
 # 13 · ResourceServer
 
-资源服务器负责头像与文件的分段传输：客户端把文件切成固定大小的分片，逐片上传/下载，
-服务端把进度写进 Redis，断线或暂停后可以只补传未完成的部分。
+资源服务器负责头像、聊天图片、视频与文件的分段传输：客户端把文件切成固定大小的分片，
+逐片上传/下载，服务端把进度写进 Redis，断线或暂停后可以只补传未完成的部分。
 
 它和 ChatServer 是两套独立的 TCP 服务：
 
 - 端口独立（默认 9090），客户端建立两条长连接；
 - 帧头不同：聊天是 2 字节 ID + 2 字节长度，资源是 2 字节 ID + 4 字节长度；
+- 消息 ID 同属 1000 段（1037–1044），数值接在聊天协议之后，因连接独立而不会冲突；
 - 线程模型不同：资源服务没有单消费者逻辑队列，而是按会话分派到多个 `LogicWorker`，
   落盘再按文件名分派到多个 `FileWorker` / `DownloadWorker`。
 
@@ -62,10 +63,10 @@
 
 | ID | 方向 | 用途 |
 | --- | --- | --- |
-| 2001 / 2002 | Client → Server / 回包 | 通用文件分段上传 |
-| 2003 / 2004 | Client → Server / 回包 | 续传前同步服务器进度 |
-| 2005 / 2006 | Client → Server / 回包 | 断点下载 |
-| 2007 / 2008 | Client → Server / 回包 | 头像分段上传 |
+| 1037 / 1038 | Client → Server / 回包 | 通用文件分段上传 |
+| 1039 / 1040 | Client → Server / 回包 | 续传前同步服务器进度 |
+| 1041 / 1042 | Client → Server / 回包 | 断点下载 |
+| 1043 / 1044 | Client → Server / 回包 | 头像分段上传 |
 
 定义在 `services/ResourceServer/include/const.h` 与 `client/core/global.h` 的 `ReqId`，
 新增/修改协议时两端必须同步。
@@ -152,7 +153,7 @@
 | 位置 | 键 / 路径 | 内容 |
 | --- | --- | --- |
 | Redis | `file_upload_<md5>` | `file_path`、`name`、`uid`、`seq`、`total_size`、`trans_size`、`avatar`；`SETEX` 3600 秒 |
-| 磁盘 | `<Storage>/<uid>/<name>` | 头像与通用文件都按上传者分目录，下载用 `owner_uid` 拼出同一路径 |
+| 磁盘 | `<Storage>/<uid>/<name>` | 头像、图片、视频、视频首帧与文件都按上传者分目录；图片/首帧按 md5 命名，视频与文件用原文件名（客户端重名时已加 `(2)` 后缀），下载用 `owner_uid` 拼出同一路径 |
 | MySQL | `user.icon` | 最后一片落盘后写入文件名 |
 | Redis | `ubaseinfo_<uid>`、`nameinfo_<name>` | 同步更新 icon，ChatServer 登录直接读取 |
 
@@ -167,10 +168,11 @@
 写盘顺序是「先写文件，再更新进度」，回包在写盘完成后才发出。因此
 `trans_size` 表示已经落盘的字节数，不是客户端声称的进度。
 
-最后一片写完后，如果请求携带 `message_id`（聊天图片），资源服务器先按 Redis `uip_<receiver>`
-找到接收方所在的 ChatServer，再调用 `NotifyImageUploaded`：对端更新 `chat_message.status`
-从 0（未上传）到 1（已上传），接收方在线时还会推送 1033 下载通知。接收方离线、实例未配置
-或 RPC 失败时，资源服务器直接写库兜底，不影响下次登录同步。
+最后一片写完后，如果请求携带 `message_id`（聊天图片/视频/文件），资源服务器先按 Redis
+`uip_<receiver>` 找到接收方所在的 ChatServer，再调用 `NotifyImageUploaded`（同一个 RPC 覆盖
+三种资源，按库里的 `msg_type` 分流）：对端更新 `chat_message.status` 从 0（未上传）到 1
+（已上传），接收方在线时图片推送 1033、视频/文件推送 1036。接收方离线、实例未配置或 RPC
+失败时，资源服务器直接写库兜底，不影响下次登录同步。
 
 ---
 
@@ -181,17 +183,24 @@
 - 独立 `FileTcpThread` + `FileTcpMgr`，不与聊天 `TcpMgr` 共用线程；
 - 发送队列用 `bytesWritten` 续写，处理 `socket.write()` 只写出一部分的情况；
 - 上传：`UserMgr` 保存 `UploadFileInfo`（路径、md5、总大小、req_id 与窗口状态），
-  聊天图片最多 8 片在途，头像固定 1 片；`seq` 从 1 开始，收到 2008/2002 后按确认序号补发；
+  聊天资源最多 8 片在途，头像固定 1 片；`seq` 从 1 开始，收到 1044/1038 后按确认序号补发；
 - 进度按“连续确认到的分片”计算，乱序回包不会让进度条回跳；全部确认后发 `sig_upload_finished`；
-- 聊天图片由 `ChatService` 把输入区压缩图（长边 1600 的 JPEG/PNG）复制到本机缓存后复用 `2001`
+- 聊天图片由 `ChatService` 把输入区压缩图（长边 1600 的 JPEG/PNG）复制到本机缓存后复用 `1037`
   通道，与头像上传的状态互不影响；本机缓存 `users/<uid>/images/<md5>.<ext>` 与服务器
   保存的是同一份，气泡用的缩略图单独放在 `images/thumbs/`，不会覆盖压缩图；`FileService`
   按资源名把进度与完成/失败转发给消息行，上传完成后消息状态变为已发送，进度条隐藏；
+- 视频与文件同样复用 `1037`，资源名就是原文件名（重名带后缀），服务端落在 `<uid>/<原文件名>`，
+  本机缓存分别在 `users/<uid>/videos/` 与 `users/<uid>/files/`；
+  视频先把首帧 JPEG 作为独立资源上传，再传视频本体，两者都完成才触发通知；文件只传本体；
 - 下载：`DownloadFileInfo` 保存本地路径与 seq，`seq == 1` 覆盖写，否则追加；每片回包发出
   `sig_download_progress`，接收方聊天图片由 `ChatService` 写回消息进度，完成后生成缩略图；
   历史图片与 1033 通知统一进入下载队列，最多同时下两张，避免登录时几十张图一起抢连接；
-- 暂停：头像窗口为 1，置 `UserMgr::_upload_paused` 后当前分片回包即停止；聊天图片不受影响；
-- 继续：向服务器发 2003，按返回的 `seq` 重建连续确认位置后继续。
+  视频与文件**不进队列**，必须由用户点击卡片后调用 `DownloadResource`；
+- 暂停：头像窗口为 1，置 `UserMgr::_upload_paused` 后当前分片回包即停止；聊天资源各自
+  持有 `UploadFileInfo::_paused` / `DownloadFileInfo::_paused`，暂停只影响被点击的那一个，
+  上传停止补发分片、下载停止请求下一片；
+- 继续：上传向服务器发 1039，按返回的 `seq` 重建连续确认位置后继续；下载直接从本地 `seq`
+  接着请求，不重复协商进度。
 
 `client/core/service/fileservice.{h,cpp}` 负责业务编排：
 

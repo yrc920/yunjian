@@ -102,6 +102,8 @@ FileTcpMgr::FileTcpMgr()
                      this, &FileTcpMgr::slot_start_upload); //开始上传
     QObject::connect(this, &FileTcpMgr::sig_start_download,
                      this, &FileTcpMgr::slot_start_download); //开始下载
+    QObject::connect(this, &FileTcpMgr::sig_resume_download,
+                     this, &FileTcpMgr::slot_resume_download); //暂停后继续
 
     //发送队列：一次write可能只写出一部分，必须等bytesWritten确认后再写剩余字节
     QObject::connect(&_socket, &QTcpSocket::bytesWritten, this, [this](qint64 bytes) {
@@ -167,6 +169,11 @@ void FileTcpMgr::StartDownload(const QString &name)
     emit sig_start_download(name);
 }
 
+void FileTcpMgr::ResumeDownload(const QString &name)
+{
+    emit sig_resume_download(name); //已写入的分片不再重发，从下一片继续
+}
+
 void FileTcpMgr::slot_connect_resource(QString host, int port)
 {
     _host = host; //地址来自登录回包的res_host
@@ -224,6 +231,8 @@ void FileTcpMgr::sendWindow(const QString &md5)
     auto info = UserMgr::GetInstance()->GetUploadFile(md5); //按md5取本次上传的本地状态
     if (!info)
         return; //记录已移除说明任务取消，迟到回包不再发片
+    if (info->_paused.load())
+        return; //视频/文件被用户暂停，窗口里的分片回完后停住等继续
 
     if (info->_max_seq <= 0) //正常路径在开始/Sync时已算好，这里兜底
         info->_max_seq = static_cast<int>((info->_total_size + MaxFileLen - 1) / MaxFileLen);
@@ -307,7 +316,7 @@ void FileTcpMgr::slot_start_upload(QString md5)
     sendWindow(md5); //先填满窗口
 }
 
-void FileTcpMgr::sendDownloadRequest(const QString &name)
+void FileTcpMgr::sendDownloadRequest(const QString &name, int seq)
 {
     auto info = UserMgr::GetInstance()->GetDownloadFile(name); //按资源名取本地下载状态
     if (!info)
@@ -318,13 +327,24 @@ void FileTcpMgr::sendDownloadRequest(const QString &name)
     frame["token"] = UserMgr::GetInstance()->GetToken(); //首片绑定连接身份
     frame["owner_uid"] = info->_owner_uid; //文件归属者，服务器据此拼<uid>/<name>路径
     frame["name"] = info->_name; //资源名，回包按它找回这条记录
-    frame["seq"] = info->_seq; //期望的分片序号，服务器按偏移读取
+    frame["seq"] = seq > 0 ? seq : info->_seq; //期望的分片序号，服务器按偏移读取
     SendData(ID_DOWN_LOAD_FILE_REQ, QJsonDocument(frame).toJson(QJsonDocument::Compact)); //投递到网络线程
 }
 
 void FileTcpMgr::slot_start_download(QString name)
 {
     sendDownloadRequest(name); //_seq登记时已置1，从第一片开始拉
+}
+
+//暂停时仍会收完当前在途片；继续时按已写到的序号请求下一片，避免重复追加
+void FileTcpMgr::slot_resume_download(QString name)
+{
+    auto info = UserMgr::GetInstance()->GetDownloadFile(name);
+    if (!info)
+        return;
+    info->_paused.store(false);
+    const int next = info->_current_size > 0 ? info->_seq + 1 : 1;
+    sendDownloadRequest(name, next);
 }
 
 void FileTcpMgr::initHandlers()
@@ -486,7 +506,9 @@ void FileTcpMgr::initHandlers()
             return;
         }
 
-        //继续下一片；下载不设暂停，暂停只作用于用户主动操作的上传
+        //继续下一片；暂停后保留当前偏移与半截文件，等 ResumeDownload 从下一片续传
+        if (info->_paused.load())
+            return;
         info->_seq = seq + 1;
         sendDownloadRequest(name);
     };

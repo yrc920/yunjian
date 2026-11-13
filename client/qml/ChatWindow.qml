@@ -686,13 +686,17 @@ Item {
                 id: chatPage
                 anchors.fill: parent
                 visible: bridge.pane === ChatBridge.ChatPage
+                bridge: bridge
                 currentUid: bridge.currentUid
                 title: bridge.currentName
                 messages: bridge.messages
                 onProfileRequested: bridge.openProfile(bridge.currentUid)
+                onMediaViewRequested: (items, index) => viewer.openPlaylist(items, index)
                 onSendRequested: (parts) => {
-                    if (bridge.sendParts(parts))
+                    if (bridge.sendParts(parts)) {
                         chatPage.clearInput()
+                        chatPage.sent()
+                    }
                 }
             }
             FriendInfoPage {
@@ -789,5 +793,11 @@ Item {
     AvatarEditor {
         id: avatarEditor
         onAvatarSaved: userInfoPage.avatarSaved = true
+    }
+
+    //图片/视频查看器覆盖整个聊天区，打开时压在页面与弹层之上
+    ViewerOverlay {
+        id: viewer
+        anchors.fill: parent
     }
 }

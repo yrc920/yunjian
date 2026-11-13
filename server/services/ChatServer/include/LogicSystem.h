@@ -44,6 +44,8 @@ private:
 	void DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//图片消息: 先落库占位, 回执后客户端再把资源上传到 ResourceServer
 	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//视频/文件消息: 落库时写入文件名、大小与视频首帧资源, 资源随后上传
+	void DealResourceChatMsg(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//打开单聊会话: 按需创建 thread 并返回对方资料
 	void CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//按 thread_id 游标分页拉会话列表

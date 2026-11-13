@@ -82,6 +82,8 @@ signals:
     void sig_chat_messages(const QJsonObject &data); //1030 历史消息，含 load_more
     void sig_chat_img_rsp(const QJsonObject &data); //1032 图片消息回执，成功后才上传资源
     void sig_image_notify(const QJsonObject &data); //1033 对方图片已上传，开始下载
+    void sig_resource_chat_rsp(const QJsonObject &data); //1035 视频/文件回执
+    void sig_resource_notify(const QJsonObject &data); //1036 对方视频/文件已上传，等用户下载
     void sig_private_chat_created(const QJsonObject &data); //1026 建会话结果，error 由会话层判断
     void sig_notify_offline(); //收到服务器踢人消息的信号
     void sig_connection_closed(); //连接断开的信号

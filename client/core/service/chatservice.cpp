@@ -1,5 +1,6 @@
 #include "chatservice.h"
 
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDebug>
@@ -21,56 +22,199 @@
 #include "sessionservice.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "videothumbnail.h"
 
 namespace {
-constexpr int ThumbMaxWidth = 480; //与 ComposerBridge 的缩略图尺寸保持一致
+constexpr int ThumbMaxWidth = 480; //与 ComposerBridge 的图片缩略图尺寸保持一致
 constexpr int ThumbMaxHeight = 360;
 constexpr int ThumbQuality = 86;
+constexpr int VideoThumbMaxWidth = 480; //视频首帧按 16:9 准备，卡片里再等比缩放
+constexpr int VideoThumbMaxHeight = 270;
+constexpr int VideoThumbQuality = 82;
+constexpr int MaxSuffixLength = 12;
+
+//资源名后缀只取安全字符，避免拼出带路径的文件名
+QString resourceSuffix(const QString &path)
+{
+    QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix.isEmpty() || suffix.size() > MaxSuffixLength)
+        return QStringLiteral("bin");
+    for (const QChar ch : suffix) {
+        if (!ch.isLetterOrNumber())
+            return QStringLiteral("bin");
+    }
+    return suffix;
 }
+
+//视频/文件按上传者的原文件名保存：去掉路径分隔符与系统保留字符，
+//并把 UTF-8 长度压到 80 字节以内，给重名后缀和扩展名留空间
+QString safeBaseName(const QString &original)
+{
+    QString base = QFileInfo(original).completeBaseName().trimmed();
+    if (base.isEmpty())
+        base = QStringLiteral("文件");
+
+    QString cleaned;
+    cleaned.reserve(base.size());
+    for (const QChar ch : base) {
+        if (ch.unicode() < 0x20 || QStringLiteral("/\\:*?\"<>|").contains(ch))
+            cleaned += QLatin1Char('_');
+        else
+            cleaned += ch;
+    }
+    while (cleaned.startsWith(QLatin1Char('.')))
+        cleaned.remove(0, 1);
+    while (!cleaned.isEmpty() && cleaned.toUtf8().size() > 80)
+        cleaned.chop(1);
+    return cleaned.isEmpty() ? QStringLiteral("文件") : cleaned;
+}
+
+QString fileMd5(const QString &path);
+
+//重名时追加 (2)、(3)：内容 md5 相同的同名文件视为同一份，重复发送不再堆副本
+QString uniqueResourceName(ChatMsgType type, const QString &sourcePath,
+                           const QString &original, qint64 sourceSize,
+                           const QString &contentMd5)
+{
+    const QString base = safeBaseName(original);
+    const QString suffix = resourceSuffix(sourcePath);
+    for (int index = 1; index < 1000; ++index) {
+        const QString name = index == 1
+            ? base + QLatin1Char('.') + suffix
+            : QStringLiteral("%1 (%2).%3").arg(base).arg(index).arg(suffix);
+        const QString target = ChatService::ResourcePath(type, name);
+        if (target.isEmpty() || !QFileInfo::exists(target))
+            return name;
+        if (QFileInfo(target).size() == sourceSize && fileMd5(target) == contentMd5)
+            return name; //同一份内容沿用已有资源名
+    }
+    return base + QLatin1Char('.') + suffix;
+}
+
+//大视频不能整体读进内存，按流计算 md5
+QString fileMd5(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Md5);
+    if (!hash.addData(&file))
+        return {};
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+std::shared_ptr<TextChatData> findLocalMessage(int peer, const QString &uniqueId)
+{
+    auto info = UserMgr::GetInstance()->GetFriendById(peer);
+    if (!info || uniqueId.isEmpty())
+        return {};
+    for (const auto &message : info->_chat_thread->_chat_msgs) {
+        if (message && message->_msg_id == uniqueId)
+            return message;
+    }
+    return {};
+}
+
+//视频首帧统一存 JPEG；透明通道对视频帧没有意义
+QByteArray encodeVideoThumb(const QImage &source)
+{
+    QImage image = source;
+    if (image.width() > VideoThumbMaxWidth || image.height() > VideoThumbMaxHeight)
+        image = image.scaled(VideoThumbMaxWidth, VideoThumbMaxHeight, Qt::KeepAspectRatio,
+            Qt::SmoothTransformation);
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::WriteOnly))
+        return {};
+    return image.save(&buffer, "JPG", VideoThumbQuality) ? bytes : QByteArray();
+}
+}
+
+ChatService::~ChatService() = default;
 
 ChatService::ChatService()
 {
-    //资源上传的进度和结果由 FileService 汇总，这里只按资源名更新对应消息；
-    //ChatService 不是 QObject，连接的上下文用 FileService，生命周期随它一起结束
+    //资源上传的进度和结果由 FileService 汇总，这里按资源名更新对应消息
     auto *file = FileService::GetInstance().get();
-    QObject::connect(file, &FileService::chatImageProgress, file,
-            [](const QString &name, qint64 trans, qint64 total) {
-        UserMgr::GetInstance()->UpdateImageTransfer(name, trans, total,
-            ImageTransferState::Uploading);
+    QObject::connect(file, &FileService::chatResourceProgress, file,
+            [this](const QString &name, qint64 trans, qint64 total) {
+        if (_video_by_thumb.contains(name))
+            return; //首帧资源只用于预览，不占消息进度
+        UserMgr::GetInstance()->UpdateResourceUploadProgress(name, trans, total);
     });
-    QObject::connect(file, &FileService::chatImageFinished, file, [](const QString &name) {
-        UserMgr::GetInstance()->UpdateImageTransfer(name, 1, 1, ImageTransferState::Finished);
+    QObject::connect(file, &FileService::chatResourceFinished, file, [this](const QString &name) {
+        auto thumb = _video_by_thumb.find(name);
+        if (thumb != _video_by_thumb.end()) {
+            const QString uniqueId = thumb.value();
+            _video_by_thumb.erase(thumb);
+            sendVideoRequest(uniqueId, name); //首帧已落盘，可以发 1034 了
+            return;
+        }
+        UserMgr::GetInstance()->FinishResourceUpload(name);
     });
-    QObject::connect(file, &FileService::chatImageFailed, file, [](const QString &name, int) {
-        UserMgr::GetInstance()->UpdateImageTransfer(name, 0, 0, ImageTransferState::Failed);
+    QObject::connect(file, &FileService::chatResourceFailed, file,
+            [this](const QString &name, int) {
+        auto thumb = _video_by_thumb.find(name);
+        if (thumb != _video_by_thumb.end()) {
+            const QString uniqueId = thumb.value();
+            _video_by_thumb.erase(thumb);
+            auto pending = _pending_videos.constFind(uniqueId);
+            if (pending != _pending_videos.constEnd()) {
+                auto message = findLocalMessage(pending->peer, uniqueId);
+                if (message)
+                    message->_thumb_name.clear(); //首帧没上传成功，通知里不要带无效资源名
+            }
+            sendVideoRequest(uniqueId, QString());
+            return;
+        }
+        UserMgr::GetInstance()->FailResourceUpload(name);
     });
 
     //下载结果由资源网络线程发出，用 qApp 做上下文排队回主线程再改消息数据
     auto *file_tcp = FileTcpMgr::GetInstance().get();
     QObject::connect(file_tcp, &FileTcpMgr::sig_download_progress, qApp,
             [this](const QString &name, qint64 current, qint64 total) {
-        if (!_chat_downloads.contains(name))
-            return; //头像下载不动消息进度
-        UserMgr::GetInstance()->UpdateImageDownloadProgress(name, current, total);
+        const auto it = _chat_downloads.constFind(name);
+        if (it == _chat_downloads.constEnd() || it->thumb)
+            return; //头像与视频首帧不动消息进度
+        UserMgr::GetInstance()->UpdateResourceDownloadProgress(name, current, total);
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_download_finished, qApp,
-            [this](const QString &name, const QString &) {
-        if (_chat_downloads.contains(name)) {
-            _chat_downloads.remove(name);
-            QSize pixel;
-            const QString thumb = EnsureImageThumbnail(name, &pixel);
-            if (thumb.isEmpty())
-                UserMgr::GetInstance()->FailImageDownload(name);
-            else
-                UserMgr::GetInstance()->FinishImageDownload(name, thumb, pixel);
+            [this](const QString &name, const QString &path) {
+        const auto it = _chat_downloads.find(name);
+        if (it != _chat_downloads.end()) {
+            const ChatDownload task = it.value();
+            _chat_downloads.erase(it);
+            if (task.thumb) {
+                UserMgr::GetInstance()->SetVideoThumb(name, path, QImageReader(path).size());
+            }
+            else if (task.type == ChatMsgType::Image) {
+                QSize pixel;
+                const QString thumb = EnsureImageThumbnail(name, &pixel);
+                if (thumb.isEmpty())
+                    UserMgr::GetInstance()->FailResourceDownload(name);
+                else
+                    UserMgr::GetInstance()->FinishResourceDownload(name,
+                        ImageCachePath(name), thumb, pixel);
+            }
+            else {
+                UserMgr::GetInstance()->FinishResourceDownload(name, path, {}, {});
+            }
         }
-        pumpImageDownloads(); //腾出一个并发位，继续下一张
+        pumpDownloads(); //腾出一个并发位，继续下一张
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_download_failed, qApp,
             [this](const QString &name, int) {
-        if (_chat_downloads.remove(name) > 0)
-            UserMgr::GetInstance()->FailImageDownload(name);
-        pumpImageDownloads();
+        const auto it = _chat_downloads.find(name);
+        if (it != _chat_downloads.end()) {
+            const ChatDownload task = it.value();
+            _chat_downloads.erase(it);
+            if (!task.path.isEmpty())
+                QFile::remove(task.path); //半截文件不能留，重试时从第一片覆盖
+            if (!task.thumb)
+                UserMgr::GetInstance()->FailResourceDownload(name);
+        }
+        pumpDownloads();
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_connection_closed, qApp, [this] {
         //资源连接断开后这些下载不会再有回包，清掉记录并删掉半截文件
@@ -78,7 +222,8 @@ ChatService::ChatService()
             UserMgr::GetInstance()->RemoveDownloadFile(it.key());
             if (!it.value().path.isEmpty())
                 QFile::remove(it.value().path);
-            UserMgr::GetInstance()->FailImageDownload(it.key());
+            if (!it.value().thumb)
+                UserMgr::GetInstance()->FailResourceDownload(it.key());
         }
         _chat_downloads.clear();
         _download_queue.clear(); //重连后由 RetryImageDownloads 按消息重新排队
@@ -94,6 +239,9 @@ ChatService::ChatService()
     QObject::connect(UserMgr::GetInstance().get(), &UserMgr::SessionCleared,
                      UserMgr::GetInstance().get(), [this] {
         _pending_images.clear();
+        _pending_resources.clear();
+        _pending_videos.clear();
+        _video_by_thumb.clear();
         for (auto it = _chat_downloads.constBegin(); it != _chat_downloads.constEnd(); ++it) {
             UserMgr::GetInstance()->RemoveDownloadFile(it.key());
             if (!it.value().path.isEmpty())
@@ -133,7 +281,6 @@ bool ChatService::sendText(int uid, const QString &text)
     qsizetype offset = 0;
     while (offset < text.size()) {
         const QString msgId = QUuid::createUuid().toString();
-        QJsonObject item{{"msgid", msgId}};
         QJsonObject frame{{"fromuid", from}, {"touid", uid}};
         frame["thread_id"] = mgr->ThreadId(uid);
         QByteArray payload;
@@ -145,8 +292,7 @@ bool ChatService::sendText(int uid, const QString &text)
             const qsizetype count = text.at(offset).isHighSurrogate()
                 && offset + 1 < text.size() && text.at(offset + 1).isLowSurrogate() ? 2 : 1;
             const QString next = content + text.mid(offset, count);
-            item["content"] = next;
-            frame["text_array"] = QJsonArray{item};
+            frame["text_array"] = QJsonArray{QJsonObject{{"msgid", msgId}, {"content", next}}};
             const QByteArray encoded = QJsonDocument(frame).toJson(QJsonDocument::Compact);
             if (encoded.size() > 1800)
                 break;
@@ -157,10 +303,16 @@ bool ChatService::sendText(int uid, const QString &text)
 
         emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, payload);
         mgr->AppendFriendChatMsg(uid, {
-            std::make_shared<TextChatData>(msgId, content, from, uid, 0, mgr->ThreadId(uid), ChatMessageStatus::Sending)
+            std::make_shared<TextChatData>(msgId, content, from, uid, 0, mgr->ThreadId(uid),
+                ChatMessageStatus::Sending)
         });
     }
     return true;
+}
+
+QString ChatService::ResourcePath(ChatMsgType type, const QString &name)
+{
+    return UserMgr::ResourcePath(type, name);
 }
 
 QString ChatService::ImageCachePath(const QString &name)
@@ -171,6 +323,11 @@ QString ChatService::ImageCachePath(const QString &name)
 QString ChatService::ImageThumbPath(const QString &name)
 {
     return UserMgr::ChatImageThumbPath(name);
+}
+
+QString ChatService::VideoThumbPath(const QString &name)
+{
+    return UserMgr::ResourceThumbPath(ChatMsgType::Video, name);
 }
 
 QString ChatService::EnsureImageThumbnail(const QString &name, QSize *pixelSize)
@@ -268,10 +425,13 @@ bool ChatService::sendImage(int uid, const QString &thumbnail, const QString &up
         mgr->ThreadId(uid), ChatMessageStatus::Sending);
     message->_msg_type = ChatMsgType::Image;
     message->_resource_name = name;
+    message->_resource_md5 = md5;
+    message->_local_path = cache;
     message->_imageSource = thumbnail;
     message->_imageWidth = width;
     message->_imageHeight = height;
     message->_transferProgress = 0;
+    message->_transfer_state = ResourceTransferState::Uploading;
     mgr->AppendFriendChatMsg(uid, {message});
 
     //临时上传文件由 ChatBridge 在整批发送成功后统一删除：同一张图可能被发送两次
@@ -296,13 +456,261 @@ void ChatService::uploadPendingImage(const QString &uniqueId, qint64 messageId, 
     const PendingImage image = iter.value();
     _pending_images.erase(iter);
 
-    FileService::GetInstance()->UploadChatImage(image.name, image.path, image.md5,
+    FileService::GetInstance()->UploadChatResource(image.name, image.path, image.md5,
         messageId, touid, threadId, uniqueId);
 }
 
 void ChatService::discardPendingImage(const QString &uniqueId)
 {
     _pending_images.remove(uniqueId); //服务端没落库，图片不需要上传
+}
+
+bool ChatService::sendVideo(int uid, const QString &path, const QString &fileName, qint64 fileSize)
+{
+    Q_UNUSED(fileSize);
+    auto *mgr = UserMgr::GetInstance().get();
+    if (!SessionService::GetInstance()->isReady() || !mgr->GetFriendById(uid))
+        return false;
+
+    const QFileInfo source(path);
+    if (!source.isFile() || source.size() <= 0) {
+        qWarning() << "[chat] video source unavailable:" << path;
+        return false;
+    }
+    const QString md5 = fileMd5(path);
+    if (md5.isEmpty()) {
+        qWarning() << "[chat] video md5 failed:" << path;
+        return false;
+    }
+    const QString original = fileName.trimmed().isEmpty() ? source.fileName() : fileName.trimmed();
+    //视频按原文件名落盘，重名才追加序号；图片仍按内容 md5 命名
+    const QString name = uniqueResourceName(ChatMsgType::Video, path, original, source.size(), md5);
+    const QString cache = ResourcePath(ChatMsgType::Video, name);
+    if (cache.isEmpty()) {
+        qWarning() << "[chat] video cache path unavailable";
+        return false;
+    }
+
+    if (!QDir().mkpath(QFileInfo(cache).absolutePath())) {
+        qWarning() << "[chat] create video dir failed:" << cache;
+        return false;
+    }
+    if (!QFileInfo::exists(cache) || QFileInfo(cache).size() != source.size()) {
+        QFile::remove(cache);
+        if (!QFile::copy(path, cache)) {
+            qWarning() << "[chat] cache video failed:" << path << cache;
+            return false;
+        }
+    }
+    const qint64 size = QFileInfo(cache).size();
+    const QString uniqueId = QUuid::createUuid().toString();
+
+    ensurePrivateChat(uid);
+    auto message = std::make_shared<TextChatData>(uniqueId, QString(), mgr->GetUid(), uid, 0,
+        mgr->ThreadId(uid), ChatMessageStatus::Sending);
+    message->_msg_type = ChatMsgType::Video;
+    message->_resource_name = name;
+    message->_resource_md5 = md5;
+    message->_file_name = original;
+    message->_file_size = size;
+    message->_local_path = cache;
+    message->_transfer_state = ResourceTransferState::Preparing;
+    mgr->AppendFriendChatMsg(uid, {message});
+
+    _pending_videos.insert(uniqueId, PendingVideo{uid, cache, name, md5,
+        message->_file_name, size});
+
+    //首帧异步提取：拿到后再上传缩略图，缩略图完成后才发 1034
+    auto *thumbnailer = new VideoThumbnailer(FileService::GetInstance().get());
+    QObject::connect(thumbnailer, &VideoThumbnailer::finished, qApp,
+                     [this, thumbnailer, uniqueId](const QImage &image) {
+        thumbnailer->deleteLater();
+        startVideoMessage(uniqueId, image);
+    });
+    QObject::connect(thumbnailer, &VideoThumbnailer::failed, qApp,
+                     [this, thumbnailer, uniqueId] {
+        thumbnailer->deleteLater();
+        startVideoMessage(uniqueId, QImage());
+    });
+    thumbnailer->grab(cache);
+    return true;
+}
+
+//首帧提取完成后：保存并上传缩略图，等它结束再发消息；失败就直接发无预览的视频
+void ChatService::startVideoMessage(const QString &uniqueId, const QImage &image)
+{
+    auto pending = _pending_videos.constFind(uniqueId);
+    if (pending == _pending_videos.constEnd())
+        return; //账号已切换或发送已取消
+
+    QString thumbName;
+    if (!image.isNull()) {
+        const QByteArray bytes = encodeVideoThumb(image);
+        if (!bytes.isEmpty()) {
+            const QString md5 = QString::fromLatin1(
+                QCryptographicHash::hash(bytes, QCryptographicHash::Md5).toHex());
+            thumbName = md5 + QStringLiteral(".jpg");
+            const QString thumbPath = VideoThumbPath(thumbName);
+            if (!thumbPath.isEmpty()) {
+                QDir().mkpath(QFileInfo(thumbPath).absolutePath());
+                QFile file(thumbPath);
+                if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size()) {
+                    file.close();
+                    UserMgr::GetInstance()->SetLocalVideoThumb(pending->peer, uniqueId,
+                        thumbPath, image.size());
+                    auto message = findLocalMessage(pending->peer, uniqueId);
+                    if (message)
+                        message->_thumb_name = thumbName;
+
+                    _video_by_thumb.insert(thumbName, uniqueId);
+                    FileService::GetInstance()->UploadChatResource(thumbName, thumbPath, md5,
+                        0, 0, 0, QString());
+                    return; //上传完成后由 chatResourceFinished 继续
+                }
+                file.close();
+                QFile::remove(thumbPath);
+            }
+        }
+    }
+
+    sendVideoRequest(uniqueId, thumbName); //没有可用首帧也照常发视频
+}
+
+void ChatService::sendVideoRequest(const QString &uniqueId, const QString &thumbName)
+{
+    auto pending = _pending_videos.find(uniqueId);
+    if (pending == _pending_videos.end())
+        return;
+    const PendingVideo video = pending.value();
+    _pending_videos.erase(pending);
+
+    auto message = findLocalMessage(video.peer, uniqueId);
+    if (message)
+        message->_thumb_name = thumbName;
+
+    PendingResource resource;
+    resource.type = ChatMsgType::Video;
+    resource.peer = video.peer;
+    resource.path = video.path;
+    resource.name = video.name;
+    resource.md5 = video.md5;
+    resource.file_name = video.file_name;
+    resource.file_size = video.file_size;
+    resource.thumb_name = thumbName;
+    resource.unique_id = uniqueId;
+    _pending_resources.insert(uniqueId, resource);
+    sendResourceRequest(resource);
+}
+
+bool ChatService::sendFile(int uid, const QString &path, const QString &fileName, qint64 fileSize)
+{
+    Q_UNUSED(fileSize);
+    auto *mgr = UserMgr::GetInstance().get();
+    if (!SessionService::GetInstance()->isReady() || !mgr->GetFriendById(uid))
+        return false;
+
+    const QFileInfo source(path);
+    if (!source.isFile() || source.size() <= 0) {
+        qWarning() << "[chat] file source unavailable:" << path;
+        return false;
+    }
+    const QString md5 = fileMd5(path);
+    if (md5.isEmpty()) {
+        qWarning() << "[chat] file md5 failed:" << path;
+        return false;
+    }
+    const QString original = fileName.trimmed().isEmpty() ? source.fileName() : fileName.trimmed();
+    //文件同样按原文件名保存，下载后可以直接用这个名字打开或另存
+    const QString name = uniqueResourceName(ChatMsgType::File, path, original, source.size(), md5);
+    const QString cache = ResourcePath(ChatMsgType::File, name);
+    if (cache.isEmpty()) {
+        qWarning() << "[chat] file cache path unavailable";
+        return false;
+    }
+
+    if (!QDir().mkpath(QFileInfo(cache).absolutePath())) {
+        qWarning() << "[chat] create file dir failed:" << cache;
+        return false;
+    }
+    if (!QFileInfo::exists(cache) || QFileInfo(cache).size() != source.size()) {
+        QFile::remove(cache);
+        if (!QFile::copy(path, cache)) {
+            qWarning() << "[chat] cache file failed:" << path << cache;
+            return false;
+        }
+    }
+    const qint64 size = QFileInfo(cache).size();
+    const QString uniqueId = QUuid::createUuid().toString();
+
+    ensurePrivateChat(uid);
+    auto message = std::make_shared<TextChatData>(uniqueId, QString(), mgr->GetUid(), uid, 0,
+        mgr->ThreadId(uid), ChatMessageStatus::Sending);
+    message->_msg_type = ChatMsgType::File;
+    message->_resource_name = name;
+    message->_resource_md5 = md5;
+    message->_file_name = original;
+    message->_file_size = size;
+    message->_local_path = cache;
+    message->_transfer_state = ResourceTransferState::Preparing;
+    mgr->AppendFriendChatMsg(uid, {message});
+
+    PendingResource resource;
+    resource.type = ChatMsgType::File;
+    resource.peer = uid;
+    resource.path = cache;
+    resource.name = name;
+    resource.md5 = md5;
+    resource.file_name = message->_file_name;
+    resource.file_size = size;
+    resource.unique_id = uniqueId;
+    _pending_resources.insert(uniqueId, resource);
+    sendResourceRequest(resource);
+    return true;
+}
+
+void ChatService::sendResourceRequest(const PendingResource &resource)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    QJsonObject frame{{"fromuid", mgr->GetUid()}, {"touid", resource.peer}};
+    frame["thread_id"] = mgr->ThreadId(resource.peer);
+    frame["msg_type"] = static_cast<int>(resource.type);
+    frame["name"] = resource.name;
+    frame["file_name"] = resource.file_name;
+    frame["file_size"] = static_cast<double>(resource.file_size);
+    frame["thumb"] = resource.thumb_name;
+    frame["md5"] = resource.md5;
+    frame["token"] = mgr->GetToken();
+    frame["unique_id"] = resource.unique_id;
+    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_RESOURCE_CHAT_MSG_REQ,
+        QJsonDocument(frame).toJson(QJsonDocument::Compact));
+}
+
+//1035 回执：补齐服务端消息 ID 后把资源本体交给 FileService 上传
+void ChatService::HandleResourceRsp(const QJsonObject &data)
+{
+    const QString uniqueId = data.value("unique_id").toString();
+    const int peer = data.value("touid").toInt();
+    auto pending = _pending_resources.find(uniqueId);
+    if (pending == _pending_resources.end())
+        return;
+    const PendingResource resource = pending.value();
+    _pending_resources.erase(pending);
+
+    auto *mgr = UserMgr::GetInstance().get();
+    if (data.value("error").toInt(1) != 0) {
+        mgr->UpdateChatMessage(peer, uniqueId, 0, ChatMessageStatus::Failed);
+        mgr->SetResourceStateByUniqueId(peer, uniqueId, ResourceTransferState::Failed, -1);
+        return;
+    }
+
+    const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
+    if (threadId > 0)
+        mgr->SetThreadId(peer, threadId);
+    const qint64 messageId = data.value("message_id").toVariant().toLongLong();
+    mgr->UpdateChatMessage(peer, uniqueId, messageId, ChatMessageStatus::Sending);
+    mgr->SetResourceStateByUniqueId(peer, uniqueId, ResourceTransferState::Uploading, 0);
+    FileService::GetInstance()->UploadChatResource(resource.name, resource.path,
+        resource.md5, messageId, peer, threadId, uniqueId);
 }
 
 //接收方收到 1033：消息先落到会话里，本地有压缩图就直接生成缩略图显示，否则边下载边显示进度
@@ -330,6 +738,7 @@ void ChatService::HandleImageNotify(const QJsonObject &data)
     message->_msg_type = ChatMsgType::Image;
     message->_resource_name = name;
     message->_transferProgress = 0;
+    message->_transfer_state = ResourceTransferState::Downloading;
 
     QSize pixel;
     const QString thumb = EnsureImageThumbnail(name, &pixel);
@@ -337,27 +746,232 @@ void ChatService::HandleImageNotify(const QJsonObject &data)
         message->_imageSource = QUrl::fromLocalFile(thumb).toString();
         message->_imageWidth = pixel.width();
         message->_imageHeight = pixel.height();
+        message->_local_path = ImageCachePath(name);
         message->_transferProgress = 100; //本机已有压缩图，不需要再下载
+        message->_transfer_state = ResourceTransferState::Done;
     }
-    mgr->UpsertImageMessage(sender, message);
+    mgr->UpsertResourceMessage(sender, message);
 
-    if (thumb.isEmpty()) {
-        //对方刚发来的图优先下载，插到历史图片前面
-        enqueueImageDownload(ChatDownload{name, {}, sender, messageId, threadId}, true);
-    }
+    if (thumb.isEmpty())
+        DownloadChatImage(name, sender, messageId, threadId);
 }
 
-//历史消息都走这一个入口：本地没有图时排队，有图时直接生成缩略图，不再请求服务器
+//接收方收到 1036：只建卡片并下载视频首帧，视频/文件本体等用户点击
+void ChatService::HandleResourceNotify(const QJsonObject &data)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    const int sender = data.value("fromuid").toInt();
+    const int receiver = data.value("touid").toInt();
+    const qint64 messageId = data.value("message_id").toVariant().toLongLong();
+    const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
+    const QString name = data.value("name").toString();
+    const QString msgId = data.value("msgid").toString();
+    const int msgType = data.value("msg_type").toInt();
+    const QString content = data.value("content").toString();
+    if (sender <= 0 || receiver != mgr->GetUid() || name.isEmpty()
+        || (msgType != 2 && msgType != 3))
+        return;
+    if (!mgr->GetFriendById(sender))
+        return;
+
+    if (threadId > 0 && mgr->ThreadId(sender) <= 0)
+        mgr->SetThreadId(sender, threadId);
+
+    auto message = BuildResourceMessage(sender, receiver, messageId, threadId, msgType,
+        content, name, ChatMessageStatus::Unread);
+    if (!message)
+        return;
+    if (!msgId.isEmpty())
+        message->_msg_id = msgId;
+    mgr->UpsertResourceMessage(sender, message);
+
+    if (msgType == 2 && !message->_thumb_name.isEmpty())
+        ensureVideoThumb(message->_thumb_name, sender, messageId, threadId);
+}
+
+//历史消息或通知里的图片没有本地文件时排入下载队列
 void ChatService::DownloadChatImage(const QString &name, int sender, qint64 messageId, qint64 threadId)
 {
     if (name.isEmpty() || sender <= 0)
         return;
-    ChatDownload task{name, {}, sender, messageId, threadId};
-    task.path = ImageCachePath(name);
-    enqueueImageDownload(task, false);
+    ChatDownload task;
+    task.name = name;
+    task.sender = sender;
+    task.message_id = messageId;
+    task.thread_id = threadId;
+    task.type = ChatMsgType::Image;
+    enqueueDownload(task, false);
 }
 
-void ChatService::enqueueImageDownload(const ChatDownload &task, bool urgent)
+//历史视频只补首帧，视频本体等用户点击
+void ChatService::DownloadVideoThumb(const QString &thumbName, int sender, qint64 messageId,
+    qint64 threadId)
+{
+    ensureVideoThumb(thumbName, sender, messageId, threadId);
+}
+
+//用户点击视频/文件卡片后手动开始下载
+void ChatService::DownloadResource(qint64 messageId)
+{
+    auto message = UserMgr::GetInstance()->FindMessage(messageId);
+    if (!message || message->_resource_name.isEmpty()
+        || (message->_msg_type != ChatMsgType::Video && message->_msg_type != ChatMsgType::File))
+        return;
+    if (message->_transfer_state == ResourceTransferState::Done
+        && !LocalPathForMessage(messageId).isEmpty())
+        return;
+    if (message->_transfer_state == ResourceTransferState::Done) {
+        //本地文件被移动或删除：状态退回未下载，点击下载就是重新拉取
+        UserMgr::GetInstance()->MarkResourceMissing(messageId);
+        message = UserMgr::GetInstance()->FindMessage(messageId);
+        if (!message)
+            return;
+    }
+    if (message->_transfer_state == ResourceTransferState::Downloading
+        || message->_transfer_state == ResourceTransferState::DownloadPaused)
+        return;
+
+    ChatDownload task;
+    task.name = message->_resource_name;
+    task.sender = message->_from_uid;
+    task.message_id = messageId;
+    task.thread_id = message->_thread_id;
+    task.type = message->_msg_type;
+    task.expected_size = message->_file_size;
+    enqueueDownload(task, true);
+    UserMgr::GetInstance()->SetResourceState(messageId, ResourceTransferState::Downloading, 0);
+}
+
+void ChatService::ToggleResourceTransfer(qint64 messageId, const QString &uniqueId)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    int friendId = 0;
+    auto message = mgr->FindMessage(messageId, &friendId);
+    if (!message && !uniqueId.isEmpty())
+        message = mgr->FindMessageByUniqueId(uniqueId, &friendId);
+    if (!message || (message->_msg_type != ChatMsgType::Video
+        && message->_msg_type != ChatMsgType::File))
+        return;
+    messageId = message->_message_id; //1035 之前为 0，后面按 msgid 更新状态
+    const bool isSelf = message->_from_uid == mgr->GetUid();
+    const QString name = message->_resource_name;
+    const auto state = message->_transfer_state;
+
+    if (state == ResourceTransferState::Uploading && isSelf) {
+        if (FileService::GetInstance()->PauseResourceUpload(name))
+            mgr->SetResourceState(messageId, ResourceTransferState::UploadPaused,
+                message->_transferProgress);
+        return;
+    }
+    if (state == ResourceTransferState::UploadPaused && isSelf) {
+        if (FileService::GetInstance()->ResumeResourceUpload(name))
+            mgr->SetResourceState(messageId, ResourceTransferState::Uploading,
+                message->_transferProgress);
+        return;
+    }
+    if (state == ResourceTransferState::Downloading) {
+        if (FileService::GetInstance()->PauseDownload(name)) {
+            auto it = _chat_downloads.find(name);
+            if (it != _chat_downloads.end())
+                it->paused = true;
+            mgr->SetResourceState(messageId, ResourceTransferState::DownloadPaused,
+                message->_transferProgress);
+            pumpDownloads(); //暂停不占并发位，让其他资源先走
+        }
+        return;
+    }
+    if (state == ResourceTransferState::DownloadPaused) {
+        if (FileService::GetInstance()->ResumeDownload(name)) {
+            auto it = _chat_downloads.find(name);
+            if (it != _chat_downloads.end())
+                it->paused = false;
+            mgr->SetResourceState(messageId, ResourceTransferState::Downloading,
+                message->_transferProgress);
+        }
+        return;
+    }
+    if (state == ResourceTransferState::Failed && isSelf && !message->_local_path.isEmpty()) {
+        if (message->_message_id > 0) {
+            //消息已经落库，只是资源没传完：重新走上传，服务端最后一片写完后仍会通知对方
+            mgr->UpdateChatMessage(friendId, message->_msg_id, messageId, ChatMessageStatus::Sending);
+            mgr->SetResourceState(messageId, ResourceTransferState::Uploading, 0);
+            FileService::GetInstance()->UploadChatResource(name, message->_local_path,
+                message->_resource_md5, messageId, message->_to_uid, message->_thread_id,
+                message->_msg_id);
+        }
+        else {
+            //1035 就没成功，服务端没有这条消息：补发一次 1034，回执里再拿消息 ID
+            PendingResource resource;
+            resource.type = message->_msg_type;
+            resource.peer = friendId;
+            resource.path = message->_local_path;
+            resource.name = name;
+            resource.md5 = message->_resource_md5;
+            resource.file_name = message->_file_name;
+            resource.file_size = message->_file_size;
+            resource.thumb_name = message->_thumb_name;
+            resource.unique_id = message->_msg_id;
+            _pending_resources.insert(resource.unique_id, resource);
+            mgr->UpdateChatMessage(friendId, message->_msg_id, 0, ChatMessageStatus::Sending);
+            mgr->SetResourceStateByUniqueId(friendId, message->_msg_id,
+                ResourceTransferState::Preparing, 0);
+            sendResourceRequest(resource);
+        }
+        return;
+    }
+    DownloadResource(messageId); //未下载/失败时点击即开始或重试
+}
+
+//登录或重连后：图片补齐完整资源，视频只补首帧；文件与视频本体不自动下载
+void ChatService::RetryImageDownloads()
+{
+    if (!FileService::GetInstance()->IsConnected())
+        return;
+    auto *mgr = UserMgr::GetInstance().get();
+    const int friend_count = mgr->FriendCount();
+    for (int i = 0; i < friend_count; ++i) {
+        auto friend_info = mgr->FriendAt(i);
+        if (!friend_info || !friend_info->_chat_thread)
+            continue;
+        for (const auto &message : friend_info->_chat_thread->_chat_msgs) {
+            if (!message || message->_resource_name.isEmpty())
+                continue;
+            if (message->_msg_type == ChatMsgType::Image
+                && message->_imageSource.isEmpty()) {
+                DownloadChatImage(message->_resource_name, message->_from_uid,
+                    message->_message_id, message->_thread_id);
+            }
+            else if (message->_msg_type == ChatMsgType::Video
+                && message->_imageSource.isEmpty() && !message->_thumb_name.isEmpty()) {
+                ensureVideoThumb(message->_thumb_name, message->_from_uid,
+                    message->_message_id, message->_thread_id);
+            }
+        }
+    }
+    pumpDownloads(); //队列里可能已经有等待中的任务
+}
+
+void ChatService::ensureVideoThumb(const QString &thumbName, int sender, qint64 messageId,
+    qint64 threadId)
+{
+    if (thumbName.isEmpty())
+        return;
+    const QString path = VideoThumbPath(thumbName);
+    if (!path.isEmpty() && QFileInfo::exists(path)) {
+        UserMgr::GetInstance()->SetVideoThumb(thumbName, path, QImageReader(path).size());
+        return;
+    }
+    ChatDownload task;
+    task.name = thumbName;
+    task.sender = sender;
+    task.message_id = messageId;
+    task.thread_id = threadId;
+    task.type = ChatMsgType::Video;
+    task.thumb = true;
+    enqueueDownload(task, false);
+}
+
+void ChatService::enqueueDownload(const ChatDownload &task, bool urgent)
 {
     if (task.name.isEmpty() || task.sender <= 0)
         return;
@@ -365,7 +979,7 @@ void ChatService::enqueueImageDownload(const ChatDownload &task, bool urgent)
         return;
     for (const auto &queued : _download_queue) {
         if (queued.name == task.name)
-            return; //同一张图可能被多条消息引用，只保留一个任务
+            return; //同一资源可能被多条消息引用，只保留一个任务
     }
     if (UserMgr::GetInstance()->GetDownloadFile(task.name))
         return; //头像下载可能正占用同名资源，等下一次同步再补
@@ -374,31 +988,62 @@ void ChatService::enqueueImageDownload(const ChatDownload &task, bool urgent)
         _download_queue.prepend(task);
     else
         _download_queue.append(task);
-    pumpImageDownloads();
+    pumpDownloads();
+}
+
+int ChatService::activeDownloadCount() const
+{
+    int count = 0;
+    for (auto it = _chat_downloads.constBegin(); it != _chat_downloads.constEnd(); ++it) {
+        if (!it.value().paused)
+            ++count;
+    }
+    return count;
 }
 
 //并发上限只在连接就绪时生效；未连接时队列保留，重连后由 RetryImageDownloads 统一补发
-void ChatService::pumpImageDownloads()
+void ChatService::pumpDownloads()
 {
     if (!FileService::GetInstance()->IsConnected())
         return;
 
-    while (_chat_downloads.size() < MaxConcurrentImageDownloads && !_download_queue.isEmpty()) {
+    while (activeDownloadCount() < MaxConcurrentImageDownloads && !_download_queue.isEmpty()) {
         ChatDownload task = _download_queue.takeFirst();
         if (_chat_downloads.contains(task.name))
             continue;
-        if (task.path.isEmpty())
-            task.path = ImageCachePath(task.name);
+        if (task.path.isEmpty()) {
+            task.path = task.thumb ? VideoThumbPath(task.name)
+                                   : ResourcePath(task.type, task.name);
+        }
         if (task.path.isEmpty())
             continue;
 
         //队列里等的时候，别的消息可能已经把它下载好了，直接发布不再走网络
-        QSize pixel;
-        const QString thumb = EnsureImageThumbnail(task.name, &pixel);
-        if (!thumb.isEmpty()) {
-            UserMgr::GetInstance()->FinishImageDownload(task.name, thumb, pixel);
-            continue;
+        if (task.thumb) {
+            if (QFileInfo::exists(task.path)) {
+                UserMgr::GetInstance()->SetVideoThumb(task.name, task.path,
+                    QImageReader(task.path).size());
+                continue;
+            }
         }
+        else if (task.type == ChatMsgType::Image) {
+            QSize pixel;
+            const QString thumb = EnsureImageThumbnail(task.name, &pixel);
+            if (!thumb.isEmpty()) {
+                UserMgr::GetInstance()->FinishResourceDownload(task.name,
+                    ImageCachePath(task.name), thumb, pixel);
+                continue;
+            }
+        }
+        else if (QFileInfo::exists(task.path)) {
+            const qint64 size = QFileInfo(task.path).size();
+            if (task.expected_size <= 0 || size == task.expected_size) {
+                UserMgr::GetInstance()->FinishResourceDownload(task.name, task.path, {}, {});
+                continue;
+            }
+            QFile::remove(task.path); //上次中断留下的半截文件，重新下载
+        }
+
         if (UserMgr::GetInstance()->GetDownloadFile(task.name))
             continue; //同名头像仍在下，放弃本次任务，重连/重新登录时会再排队
 
@@ -415,24 +1060,57 @@ void ChatService::pumpImageDownloads()
     }
 }
 
-//资源连接就绪后扫描所有还没有本地图片的消息，补发下载；历史消息和新通知共用这一条路径
-void ChatService::RetryImageDownloads()
+bool ChatService::ParseResourceMeta(const QString &content, QString *fileName, qint64 *size,
+    QString *thumb, QString *resource)
 {
-    if (!FileService::GetInstance()->IsConnected())
-        return;
-    auto *mgr = UserMgr::GetInstance().get();
-    const int friend_count = mgr->FriendCount();
-    for (int i = 0; i < friend_count; ++i) {
-        auto friend_info = mgr->FriendAt(i);
-        if (!friend_info || !friend_info->_chat_thread)
-            continue;
-        for (const auto &message : friend_info->_chat_thread->_chat_msgs) {
-            if (!message || message->_msg_type != ChatMsgType::Image
-                || message->_resource_name.isEmpty() || !message->_imageSource.isEmpty())
-                continue;
-            DownloadChatImage(message->_resource_name, message->_from_uid,
-                message->_message_id, message->_thread_id);
-        }
-    }
-    pumpImageDownloads(); //队列里可能已经有等待中的任务
+    const QJsonDocument document = QJsonDocument::fromJson(content.toUtf8());
+    if (!document.isObject())
+        return false;
+    const QJsonObject object = document.object();
+    if (fileName)
+        *fileName = object.value("name").toString();
+    if (size)
+        *size = object.value("size").toVariant().toLongLong();
+    if (thumb)
+        *thumb = object.value("thumb").toString();
+    if (resource)
+        *resource = object.value("resource").toString();
+    return true;
+}
+
+std::shared_ptr<TextChatData> ChatService::BuildResourceMessage(int from, int to,
+    qint64 messageId, qint64 threadId, int msgType, const QString &content,
+    const QString &resourceName, ChatMessageStatus status)
+{
+    if (msgType != 2 && msgType != 3)
+        return {};
+    QString fileName;
+    qint64 size = 0;
+    QString thumb;
+    QString resource = resourceName;
+    ParseResourceMeta(content, &fileName, &size, &thumb, &resource);
+
+    auto message = std::make_shared<TextChatData>(QString::number(messageId), QString(),
+        from, to, messageId, threadId, status);
+    message->_msg_type = msgType == 2 ? ChatMsgType::Video : ChatMsgType::File;
+    message->_resource_name = resource;
+    message->_file_name = fileName.isEmpty() ? resource : fileName;
+    message->_file_size = size;
+    message->_thumb_name = thumb;
+    message->_transfer_state = ResourceTransferState::None;
+    message->_transferProgress = -1;
+    return message;
+}
+
+QString ChatService::LocalPathForMessage(qint64 messageId)
+{
+    auto message = UserMgr::GetInstance()->FindMessage(messageId);
+    if (!message)
+        return {};
+    if (!message->_local_path.isEmpty() && QFileInfo::exists(message->_local_path))
+        return message->_local_path;
+    if (message->_resource_name.isEmpty())
+        return {};
+    const QString path = ResourcePath(message->_msg_type, message->_resource_name);
+    return QFileInfo::exists(path) ? path : QString();
 }

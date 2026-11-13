@@ -122,6 +122,18 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return msg->_msg_type == ChatMsgType::Image;
     case TransferProgressRole:
         return msg->_transferProgress;
+    case MessageIdRole:
+        return QVariant::fromValue(msg->_message_id);
+    case MsgIdRole:
+        return msg->_msg_id;
+    case MsgTypeRole:
+        return static_cast<int>(msg->_msg_type);
+    case FileNameRole:
+        return msg->_file_name;
+    case FileSizeRole:
+        return QVariant::fromValue(msg->_file_size);
+    case TransferStateRole:
+        return static_cast<int>(msg->_transfer_state);
     default: return {};
     }
 }
@@ -141,6 +153,12 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {StatusRole, "status"},
         {IsImageRole, "isImage"},
         {TransferProgressRole, "transferProgress"},
+        {MessageIdRole, "messageId"},
+        {MsgIdRole, "msgId"},
+        {MsgTypeRole, "msgType"},
+        {FileNameRole, "fileName"},
+        {FileSizeRole, "fileSize"},
+        {TransferStateRole, "transferState"},
     };
 }
 

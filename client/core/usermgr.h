@@ -39,6 +39,9 @@ public:
     static QString ResourceCachePath(int ownerUid, const QString &name); //好友头像缓存
     //本机资源统一按登录账号分层，换账号不会读到别人的图片和头像缓存
     static QString AccountRootPath(); //AppData/users/<uid>
+    //图片、视频、文件按类型分目录，资源名都是服务器下发的 <md5>.<ext>
+    static QString ResourcePath(ChatMsgType type, const QString &name);
+    static QString ResourceThumbPath(ChatMsgType type, const QString &name);
     static QString ChatImagePath(const QString &name); //本账号的聊天压缩图
     static QString ChatImageThumbPath(const QString &name); //本账号的气泡缩略图
     static QString PendingImageDir(); //输入区待上传的临时压缩图目录
@@ -51,8 +54,8 @@ public:
     void AddUploadFile(std::shared_ptr<UploadFileInfo> info);
     std::shared_ptr<UploadFileInfo> GetUploadFile(const QString &md5);
     void RemoveUploadFile(const QString &md5);
-    //资源断线时取走全部聊天图片上传记录，头像记录仍由 FileService 自己收尾
-    QList<std::shared_ptr<UploadFileInfo>> TakeImageUploads();
+    //资源断线时取走全部聊天资源上传记录，头像记录仍由 FileService 自己收尾
+    QList<std::shared_ptr<UploadFileInfo>> TakeResourceUploads();
     void SetUploadPaused(bool paused);
     bool UploadPaused() const;
     void AddDownloadFile(std::shared_ptr<DownloadFileInfo> info);
@@ -84,16 +87,33 @@ public:
     void MarkPrivateChatPending(int friend_id, bool pending);
     void UpdateChatMessage(int friend_id, const QString &msg_id, qint64 message_id,
                            ChatMessageStatus status); //回执补 ID/状态并重新排序
-    //图片资源上传进度按资源名回写：同一张图的多条消息一起更新，完成/失败同时改状态
-    void UpdateImageTransfer(const QString &resource_name, qint64 trans, qint64 total,
-                             ImageTransferState state);
-    //接收方收到 1033：按 msgid 合并或追加图片消息，避免与历史同步重复
-    void UpsertImageMessage(int friend_id, std::shared_ptr<TextChatData> message);
-    //图片下载完成/失败：按资源名更新所有引用该图片的消息
-    void UpdateImageDownloadProgress(const QString &resource_name, qint64 current, qint64 total);
-    void FinishImageDownload(const QString &resource_name, const QString &thumb_path,
-                             const QSize &pixel_size);
-    void FailImageDownload(const QString &resource_name);
+    //上传进度按资源名回写：同一资源的多条消息一起更新，完成/失败同时改消息状态
+    void UpdateResourceUploadProgress(const QString &resource_name, qint64 trans, qint64 total);
+    void FinishResourceUpload(const QString &resource_name);
+    void FailResourceUpload(const QString &resource_name);
+    std::shared_ptr<UploadFileInfo> GetUploadFileByName(const QString &name) const;
+    //接收方收到图片/视频/文件通知：按 msgid 合并或追加，避免与历史同步重复
+    void UpsertResourceMessage(int friend_id, std::shared_ptr<TextChatData> message);
+    //下载进度与结果：按资源名更新所有引用该资源的消息
+    void UpdateResourceDownloadProgress(const QString &resource_name, qint64 current, qint64 total);
+    void FinishResourceDownload(const QString &resource_name, const QString &local_path,
+                                const QString &display_path, const QSize &pixel_size);
+    void FailResourceDownload(const QString &resource_name);
+    //视频首帧单独下载：只替换预览地址，不改变视频本身的下载状态
+    void SetVideoThumb(const QString &thumb_name, const QString &local_path,
+                       const QSize &pixel_size);
+    void SetResourceState(qint64 message_id, ResourceTransferState state, int progress);
+    //消息还没拿到服务端 ID 时按客户端 msgid 更新，视频首帧就绪后用它刷新预览
+    void SetResourceStateByUniqueId(int friend_id, const QString &msg_id,
+                                    ResourceTransferState state, int progress);
+    void SetLocalVideoThumb(int friend_id, const QString &msg_id, const QString &local_path,
+                            const QSize &pixel_size);
+    std::shared_ptr<TextChatData> FindMessage(qint64 message_id, int *friend_id = nullptr) const;
+    //服务端还没分配 ID 时按客户端 msgid 找消息，视频/文件在 1035 前失败时用它重试
+    std::shared_ptr<TextChatData> FindMessageByUniqueId(const QString &msg_id,
+        int *friend_id = nullptr) const;
+    //本地文件被用户移动或删除：清掉路径并把状态退回未下载，允许重新下载
+    void MarkResourceMissing(qint64 message_id);
     void FailPendingMessages(); //断线时把发送中的消息统一标失败
 
     // 供列表模型按行读取：模型不复制数据，只引用这里的原始对象

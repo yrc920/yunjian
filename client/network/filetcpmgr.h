@@ -33,6 +33,7 @@ public:
     void CloseConnectionAsync();
     void StartUpload(const QString &md5); //按md5取UploadFileInfo开始/续传
     void StartDownload(const QString &name); //按资源名取DownloadFileInfo开始下载
+    void ResumeDownload(const QString &name); //暂停后从下一片继续
 
 private:
     friend class Singleton<FileTcpMgr>;
@@ -43,7 +44,7 @@ private:
     void handleMsg(ReqId id, int len, QByteArray data);
     void resetRecvState(); //清空半包缓冲与解析游标，断开连接时必须调用
     void sendWindow(const QString &md5); //按拥塞窗口补发待确认分片
-    void sendDownloadRequest(const QString &name);
+    void sendDownloadRequest(const QString &name, int seq = 0); //seq为0时使用记录里的当前片
 
     QTcpSocket _socket; //必须与FileTcpMgr同线程，MoveToThread里单独迁移
     QString _host;
@@ -67,6 +68,7 @@ public slots:
     void slot_close_connection();
     void slot_start_upload(QString md5);
     void slot_start_download(QString name);
+    void slot_resume_download(QString name);
 
 signals:
     //请求类信号：由主线程发出，网络线程的槽接收
@@ -75,6 +77,7 @@ signals:
     void sig_close_connection();
     void sig_start_upload(QString md5);
     void sig_start_download(QString name);
+    void sig_resume_download(QString name);
 
     //结果类信号：由网络线程发出，FileService 在主线程更新 UI
     void sig_con_success(bool success);

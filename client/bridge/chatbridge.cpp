@@ -1,6 +1,15 @@
 #include "chatbridge.h"
 
+#include <QClipboard>
+#include <QDesktopServices>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QImage>
+#include <QProcess>
+#include <QSaveFile>
+#include <QTimer>
 #include <QStringList>
 #include <QUuid>
 
@@ -84,6 +93,14 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     connect(userMgr, &UserMgr::FriendChatChanged, this, [this](int) {
         if (!_friendQuery.trimmed().isEmpty())
             rebuildFriendMatches();
+        //下载完成信号发出时 UserMgr 还持有自己的锁，排到事件循环末尾再复制文件
+        if (!_pending_saves.isEmpty())
+            QTimer::singleShot(0, this, [this] { processPendingSaves(); });
+    });
+    //换账号后消息 ID 与本地目录都换了，旧的另存记录不能继续用
+    connect(userMgr, &UserMgr::SessionCleared, this, [this] {
+        _pending_saves.clear();
+        _saved_paths.clear();
     });
 
     // 申请回执：成功后把这条记录补进「新的朋友」，失败留在浮层里提示
@@ -470,17 +487,31 @@ bool ChatBridge::sendParts(const QVariantList &parts)
     bool hasContent = false;
     for (const QVariant &part : parts) {
         const QVariantMap item = part.toMap();
-        hasContent |= item.value("kind").toString() == "image"
+        const QString kind = item.value("kind").toString();
+        hasContent |= kind == "image" || kind == "video" || kind == "file"
             || !item.value("text").toString().trimmed().isEmpty();
     }
     if (!hasContent)
         return false;
 
-    //按编辑器顺序发送：文本分帧，图片先发 1031 再由回执触发资源上传
+    //先检查整批附件都在本机，避免发到一半才失败、留下半批消息
+    for (const QVariant &part : parts) {
+        const QVariantMap item = part.toMap();
+        const QString kind = item.value("kind").toString();
+        const QString path = kind == "image" ? item.value("upload").toString()
+                                             : item.value("path").toString();
+        if ((kind == "image" && path.isEmpty()) || kind == "text")
+            continue;
+        if (!QFileInfo(path).isFile())
+            return false;
+    }
+    //按编辑器顺序发送：文本分帧，图片先发 1031，视频/文件先发 1034；
+    //回执到达后再把资源交给资源服务器
     QStringList sent_uploads; //整批成功后才删输入区的临时压缩图
     for (const QVariant &part : parts) {
         const QVariantMap item = part.toMap();
-        if (item.value("kind").toString() == "image") {
+        const QString kind = item.value("kind").toString();
+        if (kind == "image") {
             const QString upload = item.value("upload").toString();
             //source 是气泡缩略图，upload 是输入区预先压缩好的上传文件
             if (!ChatService::GetInstance()->sendImage(_currentUid, item.value("source").toString(),
@@ -488,11 +519,265 @@ bool ChatBridge::sendParts(const QVariantList &parts)
                 return false;
             if (!upload.isEmpty())
                 sent_uploads.append(upload);
-        } else if (!ChatService::GetInstance()->sendText(_currentUid, item.value("text").toString())) {
+        }
+        else if (kind == "video") {
+            if (!ChatService::GetInstance()->sendVideo(_currentUid,
+                    item.value("path").toString(), item.value("name").toString(),
+                    item.value("size").toLongLong()))
+                return false;
+        }
+        else if (kind == "file") {
+            if (!ChatService::GetInstance()->sendFile(_currentUid,
+                    item.value("path").toString(), item.value("name").toString(),
+                    item.value("size").toLongLong()))
+                return false;
+        }
+        else if (!ChatService::GetInstance()->sendText(_currentUid,
+                     item.value("text").toString())) {
             return false;
         }
     }
     for (const QString &path : sent_uploads)
         QFile::remove(path); //发送失败时保留文件，用户可以直接重试
     return true;
+}
+
+void ChatBridge::downloadResource(qint64 messageId)
+{
+    ChatService::GetInstance()->DownloadResource(messageId);
+}
+
+void ChatBridge::toggleResourceTransfer(qint64 messageId, const QString &msgId)
+{
+    ChatService::GetInstance()->ToggleResourceTransfer(messageId, msgId);
+}
+
+QString ChatBridge::resourceUrl(qint64 messageId)
+{
+    QString path = savedPath(messageId);
+    if (path.isEmpty())
+        path = ChatService::LocalPathForMessage(messageId);
+    return path.isEmpty() ? QString() : QUrl::fromLocalFile(path).toString();
+}
+
+bool ChatBridge::openResource(qint64 messageId)
+{
+    const bool hadSaved = _saved_paths.contains(messageId);
+    const QString saved = savedPath(messageId);
+    if (hadSaved && saved.isEmpty())
+        emit resourceNotice(tr("另存的文件已被移动或删除，已打开本地缓存"));
+    const QString local = saved.isEmpty() ? ChatService::LocalPathForMessage(messageId) : saved;
+    if (local.isEmpty()) {
+        UserMgr::GetInstance()->MarkResourceMissing(messageId);
+        emit resourceNotice(tr("本地文件已被移动或删除，请重新下载"));
+        return false;
+    }
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(local)); //文件用系统默认程序打开
+}
+
+//另存为：本机已有资源就直接复制；还没下载时排队，下载完成后由 processPendingSaves 收尾
+int ChatBridge::saveResourceAs(qint64 messageId, const QUrl &target)
+{
+    if (!target.isLocalFile())
+        return 0;
+    const QString destination = target.toLocalFile();
+    if (destination.isEmpty())
+        return 0;
+
+    const QString source = ChatService::LocalPathForMessage(messageId);
+    if (!source.isEmpty()) {
+        if (!copyToPath(source, destination))
+            return 0;
+        _saved_paths.insert(messageId, destination);
+        return 1;
+    }
+
+    auto message = UserMgr::GetInstance()->FindMessage(messageId);
+    if (!message || message->_resource_name.isEmpty())
+        return 0;
+    if (message->_transfer_state == ResourceTransferState::Done)
+        UserMgr::GetInstance()->MarkResourceMissing(messageId); //本地已丢失，重新下载
+    _pending_saves.insert(messageId, destination);
+    if (message->_transfer_state == ResourceTransferState::DownloadPaused)
+        ChatService::GetInstance()->ToggleResourceTransfer(messageId, message->_msg_id);
+    else
+        ChatService::GetInstance()->DownloadResource(messageId);
+    return 2;
+}
+
+//下载结束后检查排队中的另存为；成功/失败都通过信号回到界面，不静默丢失
+void ChatBridge::processPendingSaves()
+{
+    if (_pending_saves.isEmpty())
+        return;
+    auto *mgr = UserMgr::GetInstance().get();
+    for (auto it = _pending_saves.begin(); it != _pending_saves.end();) {
+        const qint64 messageId = it.key();
+        const QString destination = it.value();
+        auto message = mgr->FindMessage(messageId);
+        if (!message) {
+            it = _pending_saves.erase(it);
+            emit resourceSaved(false, destination);
+            continue;
+        }
+        if (message->_transfer_state == ResourceTransferState::Failed) {
+            it = _pending_saves.erase(it);
+            emit resourceSaved(false, destination);
+            continue;
+        }
+        if (message->_transfer_state != ResourceTransferState::Done) {
+            ++it;
+            continue;
+        }
+        const QString source = ChatService::LocalPathForMessage(messageId);
+        const bool ok = !source.isEmpty() && copyToPath(source, destination);
+        if (ok)
+            _saved_paths.insert(messageId, destination);
+        it = _pending_saves.erase(it);
+        emit resourceSaved(ok, destination);
+    }
+}
+
+//QSaveFile 先写临时文件再原子替换，复制中途失败不会破坏目标位置的原文件
+bool ChatBridge::copyToPath(const QString &source, const QString &destination)
+{
+    const QFileInfo sourceInfo(source);
+    const QFileInfo targetInfo(destination);
+    if (sourceInfo.absoluteFilePath() == targetInfo.absoluteFilePath())
+        return true;
+
+    QFile input(source);
+    if (!input.open(QIODevice::ReadOnly))
+        return false;
+    QDir().mkpath(targetInfo.absolutePath());
+    QSaveFile output(destination);
+    if (!output.open(QIODevice::WriteOnly))
+        return false;
+    while (!input.atEnd()) {
+        const QByteArray chunk = input.read(1 << 20);
+        if (output.write(chunk) != chunk.size()) {
+            output.cancelWriting();
+            return false;
+        }
+    }
+    return output.commit();
+}
+
+//已另存的位置优先；文件被移动/删除时清掉记录并返回空
+QString ChatBridge::savedPath(qint64 messageId)
+{
+    const QString path = _saved_paths.value(messageId);
+    if (path.isEmpty())
+        return {};
+    if (QFileInfo::exists(path))
+        return path;
+    _saved_paths.remove(messageId);
+    return {};
+}
+
+//在系统文件管理器中定位资源：Windows 选中文件，macOS 用 Finder 显示，Linux 打开所在目录
+bool ChatBridge::revealResource(qint64 messageId)
+{
+    const bool hasSaved = _saved_paths.contains(messageId);
+    const QString saved = savedPath(messageId);
+    if (hasSaved && saved.isEmpty()) {
+        emit resourceNotice(tr("另存的文件已被移动或删除"));
+        return false; //用户明确另存过，就不能悄悄跳回下载缓存
+    }
+    const QString path = saved.isEmpty() ? ChatService::LocalPathForMessage(messageId) : saved;
+    if (path.isEmpty()) {
+        UserMgr::GetInstance()->MarkResourceMissing(messageId);
+        emit resourceNotice(tr("本地文件已被移动或删除，请重新下载"));
+        return false;
+    }
+#if defined(Q_OS_WIN)
+    return QProcess::startDetached(QStringLiteral("explorer.exe"),
+        {QStringLiteral("/select,"), QDir::toNativeSeparators(path)});
+#elif defined(Q_OS_MACOS)
+    return QProcess::startDetached(QStringLiteral("open"), {QStringLiteral("-R"), path});
+#else
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+#endif
+}
+
+void ChatBridge::markResourceMissing(qint64 messageId)
+{
+    UserMgr::GetInstance()->MarkResourceMissing(messageId);
+}
+
+bool ChatBridge::copyText(const QString &text)
+{
+    if (text.isEmpty())
+        return false;
+    QGuiApplication::clipboard()->setText(text);
+    return true;
+}
+
+//图片复制优先用压缩图，缺失时用气泡缩略图；data URL 也能直接解码
+bool ChatBridge::copyImage(qint64 messageId, const QUrl &fallback)
+{
+    QImage image;
+    QString path = savedPath(messageId);
+    if (path.isEmpty())
+        path = ChatService::LocalPathForMessage(messageId);
+    if (!path.isEmpty())
+        image = QImage(path);
+    if (image.isNull() && !fallback.isEmpty()) {
+        if (fallback.isLocalFile()) {
+            image = QImage(fallback.toLocalFile());
+        }
+        else if (fallback.scheme() == QStringLiteral("data")) {
+            const QByteArray encoded = QByteArray::fromPercentEncoding(
+                fallback.toString().section(QLatin1Char(','), 1).toLatin1());
+            image = QImage::fromData(encoded);
+        }
+    }
+    if (image.isNull())
+        return false;
+    QGuiApplication::clipboard()->setImage(image);
+    return true;
+}
+
+QVariantList ChatBridge::mediaItems()
+{
+    QVariantList items;
+    auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
+    if (!info || !info->_chat_thread)
+        return items;
+
+    for (const auto &message : info->_chat_thread->_chat_msgs) {
+        if (!message)
+            continue;
+        if (message->_msg_type == ChatMsgType::Image) {
+            QString url = savedPath(message->_message_id);
+            if (url.isEmpty())
+                url = ChatService::LocalPathForMessage(message->_message_id);
+            if (!url.isEmpty())
+                url = QUrl::fromLocalFile(url).toString();
+            else if (!message->_imageSource.isEmpty())
+                url = message->_imageSource; //退到缩略图或 data URL
+            if (url.isEmpty())
+                continue;
+            items.append(QVariantMap{{QStringLiteral("messageId"), message->_message_id},
+                                     {QStringLiteral("type"), 1},
+                                     {QStringLiteral("url"), url},
+                                     {QStringLiteral("title"), tr("图片")}});
+        }
+        else if (message->_msg_type == ChatMsgType::Video
+                 && message->_transfer_state == ResourceTransferState::Done) {
+            QString path = savedPath(message->_message_id);
+            if (path.isEmpty())
+                path = ChatService::LocalPathForMessage(message->_message_id);
+            if (path.isEmpty())
+                continue;
+            items.append(QVariantMap{{QStringLiteral("messageId"), message->_message_id},
+                                     {QStringLiteral("type"), 2},
+                                     {QStringLiteral("url"),
+                                      QUrl::fromLocalFile(path).toString()},
+                                     {QStringLiteral("title"),
+                                      message->_file_name.isEmpty()
+                                          ? tr("视频") : message->_file_name}});
+        }
+    }
+    return items;
 }

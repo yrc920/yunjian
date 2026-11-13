@@ -98,11 +98,18 @@ bool MysqlMgr::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	return _dao.SaveChatMessages(sender_id, recv_id, thread_id, contents, messages);
 }
 
-bool MysqlMgr::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
-	const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message)
+bool MysqlMgr::SaveResourceMessage(int sender_id, int recv_id, long long thread_id,
+	const std::string& client_msg_id, int msg_type, const std::string& content,
+	ChatMessageInfo& message)
 {
-	//content 在图片消息里是资源文件名, 资源本体走 ResourceServer
-	return _dao.SaveImageMessage(sender_id, recv_id, thread_id, client_msg_id, content, message);
+	//图片 content 是资源名；视频/文件 content 是带文件名、大小与预览资源的 JSON
+	return _dao.SaveResourceMessage(sender_id, recv_id, thread_id, client_msg_id, msg_type,
+		content, message);
+}
+
+bool MysqlMgr::GetChatMessage(long long message_id, ChatMessageInfo& message)
+{
+	return _dao.GetChatMessage(message_id, message); //通知接收方前补齐消息类型与内容
 }
 
 bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int status)

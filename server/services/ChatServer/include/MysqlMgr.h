@@ -39,9 +39,12 @@ public:
 	bool SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 		const std::vector<std::pair<std::string, std::string>>& contents,
 		std::vector<ChatMessageInfo>& messages);
-	//图片消息先落库占位, 资源上传完成后由资源服务器回写状态
-	bool SaveImageMessage(int sender_id, int recv_id, long long thread_id,
-		const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message);
+	//图片/视频/文件消息先落库占位, 资源上传完成后由资源服务器回写状态
+	bool SaveResourceMessage(int sender_id, int recv_id, long long thread_id,
+		const std::string& client_msg_id, int msg_type, const std::string& content,
+		ChatMessageInfo& message);
+	//资源完成通知按消息ID取类型与内容
+	bool GetChatMessage(long long message_id, ChatMessageInfo& message);
 	//资源服务器通知: 把指定消息标记为已上传
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
 

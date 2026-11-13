@@ -90,9 +90,12 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 | `group_chat` / `group_chat_member` | 群聊资料与成员关系，本阶段只建表，群聊业务尚未接入 |
 | `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型和上传状态 |
 
-`chat_message.msg_type`：0 文本、1 图片（2/3 预留给视频与文件）。图片消息的 `content` 存资源文件名，
-`status=0` 表示资源还没上传完成；ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer
-把 `status` 改成 1。接收方通知与图片下载仍留到后续章节。
+`chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件。图片消息的 `content` 存资源文件名（md5）；
+视频与文件的 `content` 存元数据 JSON（`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`）。
+视频/文件的 `resource` 优先等于原文件名，重名时带 `(2)` 等后缀，落盘与下载都按它拼路径；
+`file_name` 始终保留上传者看到的原名用于展示。`status=0` 表示资源还没上传完成；
+ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer 把 `status` 改成 1。
+视频与文件不区分上传者/接收者，接收方收到通知只建卡片，资源本体由用户点击后下载。
 
 消息分页使用 `(thread_id, message_id)` 索引及游标 `message_id > last_id`；会话分页使用 `thread_id > last_id`。
 首次单聊先用普通查询取已有会话，缺失时直接插入 `chat_thread` + `private_chat`，由

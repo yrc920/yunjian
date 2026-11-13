@@ -32,6 +32,12 @@ public:
         return _instance;
     }
 
+    //退出时在 QGuiApplication 销毁前释放 QObject 单例：
+    //静态 shared_ptr 的析构发生在 main 返回之后，那时 Qt 应用对象已经不存在
+    static void Destroy(){
+        _instance.reset();
+    }
+
     ~Singleton() = default;
 };
 

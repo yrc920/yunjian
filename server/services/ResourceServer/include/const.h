@@ -51,14 +51,15 @@ private:
 #define DOWNLOAD_WORKER_COUNT 2 //按文件名分派的下载线程数
 
 enum MSG_IDS {
-	ID_UPLOAD_FILE_REQ = 2001, //通用文件分段上传
-	ID_UPLOAD_FILE_RSP = 2002,
-	ID_SYNC_FILE_REQ = 2003, //续传前同步服务器进度
-	ID_SYNC_FILE_RSP = 2004,
-	ID_DOWN_LOAD_FILE_REQ = 2005, //断点下载
-	ID_DOWN_LOAD_FILE_RSP = 2006,
-	ID_UPLOAD_HEAD_ICON_REQ = 2007, //头像分段上传
-	ID_UPLOAD_HEAD_ICON_RSP = 2008,
+	//沿用 1000 段系统命令编号，接在聊天协议之后；资源服务器使用自己的连接与帧头
+	ID_UPLOAD_FILE_REQ = 1037, //通用文件分段上传
+	ID_UPLOAD_FILE_RSP = 1038,
+	ID_SYNC_FILE_REQ = 1039, //续传前同步服务器进度
+	ID_SYNC_FILE_RSP = 1040,
+	ID_DOWN_LOAD_FILE_REQ = 1041, //断点下载
+	ID_DOWN_LOAD_FILE_RSP = 1042,
+	ID_UPLOAD_HEAD_ICON_REQ = 1043, //头像分段上传
+	ID_UPLOAD_HEAD_ICON_RSP = 1044,
 };
 
 #define USERTOKENPREFIX "utoken_" //与StatusServer、ChatServer共用的token前缀

@@ -225,18 +225,36 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
         return Status::OK;
     }
 
-    //聊天图片全部落盘后，把消息从“未上传”改成“已上传”
+    //资源类型、原始文件名与视频首帧都在落库时写好了，这里以库里的记录为准，
+    //不依赖上传请求再带一遍，接收方拿到的通知就能直接渲染卡片
+    ChatMessageInfo message;
+    if (!MysqlMgr::GetInstance()->GetChatMessage(request->message_id(), message)
+        || message.sender_id != request->sender()) {
+        response->set_error(ErrorCodes::RPCFailed);
+        return Status::OK;
+    }
+
+    //聊天图片/视频/文件全部落盘后，把消息从“未上传”改成“已上传”
     const bool ok = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
-        request->message_id(), request->sender(), 1);
+        message.message_id, message.sender_id, 1);
     response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
 
     //接收方在本实例在线时立即推送；资源服务器已按 uip_<receiver> 选好目标实例
     if (ok) {
-        auto session = UserMgr::GetInstance()->GetSession(request->receiver());
+        auto session = UserMgr::GetInstance()->GetSession(message.recv_id);
         if (session) {
-            session->NotifyImageRecv(request->message_id(), request->sender(),
-                request->receiver(), request->thread_id(), request->name(),
-                request->client_msg_id(), request->total_size());
+            if (message.msg_type == 1) {
+                session->NotifyImageRecv(message.message_id, message.sender_id,
+                    message.recv_id, message.thread_id, request->name(),
+                    message.client_msg_id, request->total_size());
+            }
+            else {
+                //视频/文件只发通知，接收方点击卡片后才开始下载
+                session->NotifyResourceRecv(message.message_id, message.sender_id,
+                    message.recv_id, message.thread_id, request->name(),
+                    message.client_msg_id, request->total_size(),
+                    message.msg_type, message.content);
+            }
         }
     }
     return Status::OK;

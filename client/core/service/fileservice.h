@@ -30,12 +30,17 @@ public:
     void OnSessionReady(); //聊天登录完成，可以拉取缺失头像
 
     void UploadAvatar(const QString &path); //裁剪器保存后的PNG路径
-    //图片消息资源：走通用上传通道(2001)，不改变头像的进度与暂停状态；
-    //messageId/touid/threadId/uniqueId 用于服务器最后一片写完后回写消息状态
-    void UploadChatImage(const QString &name, const QString &path, const QString &md5,
+    //聊天资源（图片/视频/文件，以及视频首帧）走通用上传通道(1037)；
+    //messageId/touid/threadId/uniqueId 用于服务器最后一片写完后回写消息状态，首帧传0
+    bool UploadChatResource(const QString &name, const QString &path, const QString &md5,
         qint64 messageId, int touid, qint64 threadId, const QString &uniqueId);
-    void SetUploadPaused(bool paused); //暂停/继续，继续时会先同步服务器进度
+    void SetUploadPaused(bool paused); //头像暂停/继续，继续时会先同步服务器进度
     void ToggleUploadPaused(); //QML按钮用
+    //视频/文件单独暂停，不影响头像与其他资源；继续前同样先同步服务器进度
+    bool PauseResourceUpload(const QString &name);
+    bool ResumeResourceUpload(const QString &name);
+    bool PauseDownload(const QString &name);
+    bool ResumeDownload(const QString &name);
 
     bool IsUploading() const { return _uploading; } //是否显示进度条
     bool IsConnected() const { return _connected; } //资源连接是否可用，聊天图片下载要先确认
@@ -46,10 +51,10 @@ public:
 signals:
     //所有状态变化走同一个信号，QML 只绑四个只读属性，不直接认识上传细节
     void uploadStateChanged();
-    //聊天图片的进度按资源名转发给 ChatService，头像上传仍走上面的状态属性
-    void chatImageProgress(const QString &name, qint64 trans, qint64 total);
-    void chatImageFinished(const QString &name);
-    void chatImageFailed(const QString &name, int error);
+    //聊天资源的进度按资源名转发给 ChatService，头像上传仍走上面的状态属性
+    void chatResourceProgress(const QString &name, qint64 trans, qint64 total);
+    void chatResourceFinished(const QString &name);
+    void chatResourceFailed(const QString &name, int error);
 
 private:
     FileService();
@@ -58,7 +63,7 @@ private:
     void CacheContactIcon(int uid, const QString &iconName); //查缓存或发起下载
     void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath); //建下载状态
     void AbortDownloads(); //断线/换账号时清掉在途下载与半截文件
-    void AbortImageUploads(); //资源断线时把在途聊天图片标记失败
+    void AbortResourceUploads(); //资源断线时把在途聊天资源标记失败
     void CancelOwnAvatarDownload(); //上传前取消本机旧头像下载
     void HandleUploadProgress(const QString &name, qint64 trans, qint64 total); //更新进度
     void HandleUploadFinished(const QString &name); //收尾

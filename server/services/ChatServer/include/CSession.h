@@ -41,6 +41,10 @@ public:
     //资源已上传完成：把消息 ID、会话与资源名推给接收方，接收方据此下载
     void NotifyImageRecv(long long message_id, int from_uid, int to_uid, long long thread_id,
         const std::string& name, const std::string& client_msg_id, long long total_size);
+    //视频/文件已上传：带上类型与 content 元数据，接收方只显示卡片，点击后才下载
+    void NotifyResourceRecv(long long message_id, int from_uid, int to_uid, long long thread_id,
+        const std::string& name, const std::string& client_msg_id, long long total_size,
+        int msg_type, const std::string& content);
     bool IsHeartbeatExpired(std::time_t& now); //判断心跳是否过期
     void UpdateHeartbeat(); //更新心跳
     void DealExceptionSession(); //处理异常连接

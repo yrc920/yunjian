@@ -6,7 +6,7 @@
 | 产物 | `bin/<实例名>/`，每份 `config/*.ini` 一个实例 |
 | 监听 | TCP `[SelfServer].Port`（客户端，8090 / 8091）；gRPC `[SelfServer].RPCPort`（服务间，50055 / 50056） |
 | 依赖 | Boost.Asio、gRPC / protobuf、jsoncpp、hiredis、mysql-connector-cpp |
-| 角色 | 承载客户端长连接；处理登录、搜索、好友申请/认证、文本与图片消息；跨实例转发 |
+| 角色 | 承载客户端长连接；处理登录、搜索、好友申请/认证、文本/图片/视频/文件消息；跨实例转发 |
 
 ## 9.1 模块构成
 
@@ -121,6 +121,8 @@ flowchart LR
 | 1017 | `DealChatTextMsg` | 文本消息 |
 | 1031 | `DealChatImgMsg` | 图片消息：只落库，资源随后由客户端上传 |
 | 1033 | `CSession::NotifyImageRecv` | 服务端推送：图片已上传完成，接收方开始下载 |
+| 1034 | `DealResourceChatMsg` | 视频/文件消息：只落库，资源随后由客户端上传 |
+| 1036 | `CSession::NotifyResourceRecv` | 服务端推送：视频/文件已上传完成，接收方显示下载卡片 |
 
 出队后释放队列锁，数据库/RPC 不持有队列锁；单条请求异常会关闭对应连接，不终止逻辑线程。
 各 handler 用 `Defer`（析构时执行 lambda）处理正常业务分支的回包。
@@ -233,7 +235,12 @@ flowchart TB
 再调用 `CSession::NotifyImageRecv` 推送 1033。接收方离线时只更新状态，下次登录按历史消息同步；
 ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 
-登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`，图片消息的 `content` 是资源文件名。
+视频/文件消息（1034）与图片同一条链路，区别在落库字段：`msg_type` 为 2/3，
+`content` 存元数据 JSON（原始文件名、字节数、资源名、首帧资源名），原始文件名不参与路径拼接。
+回 1035 后由客户端先传首帧、再传资源本体；ResourceServer 完成同样的 gRPC 通知，
+`ChatServiceImpl::NotifyResourceUploaded` 更新状态后推送 1036（离线时只更新数据库）。
+
+登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`：图片的 `content` 是资源文件名，视频/文件是元数据 JSON，客户端解析后渲染卡片，不自动下载本体。
 
 ## 9.9 多实例部署
 

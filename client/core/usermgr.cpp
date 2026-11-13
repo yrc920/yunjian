@@ -122,28 +122,59 @@ QString UserMgr::ResourceCachePath(int ownerUid, const QString &name)
     return QDir(account).filePath(QStringLiteral("contacts/%1/%2").arg(ownerUid).arg(safeName));
 }
 
-//聊天图片保留的是和服务器同一份压缩图，点开大图直接读这里
-QString UserMgr::ChatImagePath(const QString &name)
+//图片、视频、文件各占一个目录；资源名已经是 <md5>.<ext>，这里只做文件名安全处理
+QString UserMgr::ResourcePath(ChatMsgType type, const QString &name)
+{
+    if (name.isEmpty() || type == ChatMsgType::Text)
+        return {};
+    const QString account = AccountRootPath();
+    if (account.isEmpty())
+        return {};
+    const QString safeName = QFileInfo(name).fileName();
+    if (safeName.isEmpty())
+        return {};
+
+    QString folder;
+    switch (type) {
+    case ChatMsgType::Image: folder = QStringLiteral("images"); break;
+    case ChatMsgType::Video: folder = QStringLiteral("videos"); break;
+    case ChatMsgType::File: folder = QStringLiteral("files"); break;
+    default: folder = QStringLiteral("files"); break;
+    }
+    return QDir(account).filePath(folder + QLatin1Char('/') + safeName);
+}
+
+//图片缩略图由本机压缩图生成；视频首帧是发送方上传的独立资源，按原资源名缓存
+QString UserMgr::ResourceThumbPath(ChatMsgType type, const QString &name)
 {
     if (name.isEmpty())
         return {};
     const QString account = AccountRootPath();
     if (account.isEmpty())
         return {};
-    return QDir(account).filePath(QStringLiteral("images/") + QFileInfo(name).fileName());
+    const QString safeName = QFileInfo(name).fileName();
+    if (safeName.isEmpty())
+        return {};
+
+    if (type == ChatMsgType::Image) {
+        const QString base = QFileInfo(name).completeBaseName();
+        if (base.isEmpty())
+            return {};
+        return QDir(account).filePath(QStringLiteral("images/thumbs/%1_thumb.jpg").arg(base));
+    }
+    if (type == ChatMsgType::Video)
+        return QDir(account).filePath(QStringLiteral("videos/thumbs/") + safeName);
+    return {};
+}
+
+QString UserMgr::ChatImagePath(const QString &name)
+{
+    return ResourcePath(ChatMsgType::Image, name); //点开大图直接读这张压缩图
 }
 
 QString UserMgr::ChatImageThumbPath(const QString &name)
 {
-    if (name.isEmpty())
-        return {};
-    const QString account = AccountRootPath();
-    if (account.isEmpty())
-        return {};
-    const QString base = QFileInfo(name).completeBaseName();
-    if (base.isEmpty())
-        return {};
-    return QDir(account).filePath(QStringLiteral("images/thumbs/%1_thumb.jpg").arg(base));
+    return ResourceThumbPath(ChatMsgType::Image, name);
 }
 
 QString UserMgr::PendingImageDir()
@@ -235,14 +266,14 @@ void UserMgr::RemoveUploadFile(const QString &md5)
         _upload_paused = false; //没有在途任务，暂停标志复位
 }
 
-//资源连接断开时聊天图片已经发不出去，把记录整体取走，由 FileService 逐条标记失败
-QList<std::shared_ptr<UploadFileInfo>> UserMgr::TakeImageUploads()
+//资源连接断开时聊天资源已经发不出去，把记录整体取走，由 FileService 逐条标记失败
+QList<std::shared_ptr<UploadFileInfo>> UserMgr::TakeResourceUploads()
 {
-    QList<std::shared_ptr<UploadFileInfo>> images;
+    QList<std::shared_ptr<UploadFileInfo>> resources;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (auto it = _uploads.begin(); it != _uploads.end();) {
         if (it.value() && it.value()->_req_id == ID_UPLOAD_FILE_REQ) {
-            images.append(it.value());
+            resources.append(it.value());
             it = _uploads.erase(it);
         }
         else {
@@ -251,7 +282,7 @@ QList<std::shared_ptr<UploadFileInfo>> UserMgr::TakeImageUploads()
     }
     if (_uploads.isEmpty())
         _upload_paused = false;
-    return images;
+    return resources;
 }
 
 void UserMgr::SetUploadPaused(bool paused)
@@ -542,10 +573,9 @@ void UserMgr::UpdateChatMessage(int friend_id, const QString &msg_id, qint64 mes
     }
 }
 
-//图片上传是异步的：网络线程按资源名回推进度，同一张图可能被多条消息引用，
+//资源上传是异步的：网络线程按资源名回推进度，同一资源可能被多条消息引用，
 //所以遍历所有会话一次性更新，再按好友逐个通知模型
-void UserMgr::UpdateImageTransfer(const QString &resource_name, qint64 trans, qint64 total,
-                                  ImageTransferState state)
+void UserMgr::UpdateResourceUploadProgress(const QString &resource_name, qint64 trans, qint64 total)
 {
     if (resource_name.isEmpty())
         return;
@@ -553,21 +583,15 @@ void UserMgr::UpdateImageTransfer(const QString &resource_name, qint64 trans, qi
     for (const auto &info : _friend_list) {
         bool changed = false;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
-            if (!message || message->_msg_type != ChatMsgType::Image
-                || message->_resource_name != resource_name)
+            if (!message || message->_resource_name != resource_name)
                 continue;
             //只推进还在发送中的消息；同内容的旧消息已经完成，不能被这次上传重新改成发送中
             if (message->_status != ChatMessageStatus::Sending)
                 continue;
-            if (state == ImageTransferState::Uploading) {
-                const qint64 percent = total > 0 ? trans * 100 / total : 0;
-                message->_transferProgress = static_cast<int>(qBound<qint64>(0LL, percent, 100LL));
-            }
-            else {
-                message->_transferProgress = state == ImageTransferState::Finished ? 100 : -1;
-                message->_status = state == ImageTransferState::Finished
-                    ? ChatMessageStatus::Sent : ChatMessageStatus::Failed;
-            }
+            const qint64 percent = total > 0 ? trans * 100 / total : 0;
+            message->_transferProgress = static_cast<int>(qBound<qint64>(0LL, percent, 100LL));
+            if (message->_transfer_state == ResourceTransferState::Preparing)
+                message->_transfer_state = ResourceTransferState::Uploading;
             changed = true;
         }
         if (changed)
@@ -575,8 +599,60 @@ void UserMgr::UpdateImageTransfer(const QString &resource_name, qint64 trans, qi
     }
 }
 
-//接收方收到图片通知：历史里可能已经有同一 msgid 的消息，只补齐图片字段，不重复插入
-void UserMgr::UpsertImageMessage(int friend_id, std::shared_ptr<TextChatData> message)
+void UserMgr::FinishResourceUpload(const QString &resource_name)
+{
+    if (resource_name.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        bool changed = false;
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_resource_name != resource_name
+                || message->_status != ChatMessageStatus::Sending)
+                continue;
+            message->_transferProgress = 100;
+            message->_transfer_state = ResourceTransferState::Done;
+            message->_status = ChatMessageStatus::Sent;
+            changed = true;
+        }
+        if (changed)
+            emit FriendChatChanged(info->_uid);
+    }
+}
+
+void UserMgr::FailResourceUpload(const QString &resource_name)
+{
+    if (resource_name.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        bool changed = false;
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_resource_name != resource_name
+                || message->_status != ChatMessageStatus::Sending)
+                continue;
+            message->_transferProgress = -1;
+            message->_transfer_state = ResourceTransferState::Failed;
+            message->_status = ChatMessageStatus::Failed;
+            changed = true;
+        }
+        if (changed)
+            emit FriendChatChanged(info->_uid);
+    }
+}
+
+std::shared_ptr<UploadFileInfo> UserMgr::GetUploadFileByName(const QString &name) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (auto it = _uploads.cbegin(); it != _uploads.cend(); ++it) {
+        if (it.value() && it.value()->_name == name)
+            return it.value();
+    }
+    return {};
+}
+
+//接收方收到资源通知：历史里可能已经有同一 msgid 的消息，只补齐字段，不重复插入
+void UserMgr::UpsertResourceMessage(int friend_id, std::shared_ptr<TextChatData> message)
 {
     if (!message)
         return;
@@ -592,15 +668,24 @@ void UserMgr::UpsertImageMessage(int friend_id, std::shared_ptr<TextChatData> me
             existing->_message_id = message->_message_id;
         if (message->_thread_id > 0)
             existing->_thread_id = message->_thread_id;
-        existing->_msg_type = ChatMsgType::Image;
+        existing->_msg_type = message->_msg_type;
         existing->_resource_name = message->_resource_name;
+        existing->_resource_md5 = message->_resource_md5;
+        existing->_file_name = message->_file_name;
+        existing->_file_size = message->_file_size;
+        existing->_thumb_name = message->_thumb_name;
         if (!message->_imageSource.isEmpty()) {
             existing->_imageSource = message->_imageSource;
             existing->_imageWidth = message->_imageWidth;
             existing->_imageHeight = message->_imageHeight;
         }
-        if (message->_transferProgress >= 0)
+        if (!message->_local_path.isEmpty())
+            existing->_local_path = message->_local_path;
+        //已经下载/上传完成的消息不能被一条迟到通知降级回未开始
+        if (existing->_transfer_state != ResourceTransferState::Done) {
+            existing->_transfer_state = message->_transfer_state;
             existing->_transferProgress = message->_transferProgress;
+        }
         info->AppendChatMsgs({existing}); //拿到服务端 ID 后重新排序
         emit FriendChatChanged(friend_id);
         return;
@@ -608,8 +693,8 @@ void UserMgr::UpsertImageMessage(int friend_id, std::shared_ptr<TextChatData> me
     AppendFriendChatMsg(friend_id, {message});
 }
 
-//下载进度只更新还没有完成的图片消息，已经显示出来的图片不再回退
-void UserMgr::UpdateImageDownloadProgress(const QString &resource_name, qint64 current, qint64 total)
+//下载进度只更新还没有完成的资源消息，已经显示出来的图片不再回退
+void UserMgr::UpdateResourceDownloadProgress(const QString &resource_name, qint64 current, qint64 total)
 {
     if (resource_name.isEmpty())
         return;
@@ -617,13 +702,14 @@ void UserMgr::UpdateImageDownloadProgress(const QString &resource_name, qint64 c
     for (const auto &info : _friend_list) {
         bool changed = false;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
-            if (!message || message->_msg_type != ChatMsgType::Image
-                || message->_resource_name != resource_name)
+            if (!message || message->_resource_name != resource_name)
                 continue;
-            if (message->_transferProgress >= 100)
+            if (message->_transfer_state == ResourceTransferState::Done)
                 continue;
             const qint64 percent = total > 0 ? current * 100 / total : 0;
             message->_transferProgress = static_cast<int>(qBound<qint64>(0LL, percent, 100LL));
+            if (message->_transfer_state != ResourceTransferState::DownloadPaused)
+                message->_transfer_state = ResourceTransferState::Downloading;
             changed = true;
         }
         if (changed)
@@ -631,24 +717,74 @@ void UserMgr::UpdateImageDownloadProgress(const QString &resource_name, qint64 c
     }
 }
 
-//下载完成：压缩图已经在账号目录里，生成缩略图并把所有引用这张图的消息换成缩略图地址
-void UserMgr::FinishImageDownload(const QString &resource_name, const QString &thumb_path,
-                                  const QSize &pixel_size)
+//下载完成：图片把气泡换成缩略图；视频/文件只记录完整资源位置与完成状态
+void UserMgr::FinishResourceDownload(const QString &resource_name, const QString &local_path,
+                                     const QString &display_path, const QSize &pixel_size)
 {
-    if (resource_name.isEmpty() || thumb_path.isEmpty())
+    if (resource_name.isEmpty())
         return;
-    const QString url = QUrl::fromLocalFile(thumb_path).toString();
+    const QString url = display_path.isEmpty()
+        ? QString() : QUrl::fromLocalFile(display_path).toString();
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
         bool changed = false;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
-            if (!message || message->_msg_type != ChatMsgType::Image
-                || message->_resource_name != resource_name)
+            if (!message || message->_resource_name != resource_name)
+                continue;
+            if (!local_path.isEmpty())
+                message->_local_path = local_path;
+            if (!url.isEmpty()) {
+                message->_imageSource = url;
+                message->_imageWidth = pixel_size.width();
+                message->_imageHeight = pixel_size.height();
+            }
+            message->_transferProgress = 100;
+            message->_transfer_state = ResourceTransferState::Done;
+            changed = true;
+        }
+        if (changed)
+            emit FriendChatChanged(info->_uid);
+    }
+}
+
+void UserMgr::FailResourceDownload(const QString &resource_name)
+{
+    if (resource_name.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        bool changed = false;
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_resource_name != resource_name)
+                continue;
+            if (message->_transfer_state == ResourceTransferState::Done)
+                continue;
+            message->_transferProgress = -1;
+            message->_transfer_state = ResourceTransferState::Failed;
+            changed = true;
+        }
+        if (changed)
+            emit FriendChatChanged(info->_uid);
+    }
+}
+
+//视频首帧是独立资源：下载完成后只换预览，视频本体仍等用户点击下载
+void UserMgr::SetVideoThumb(const QString &thumb_name, const QString &local_path,
+                            const QSize &pixel_size)
+{
+    if (thumb_name.isEmpty() || local_path.isEmpty())
+        return;
+    const QString url = QUrl::fromLocalFile(local_path).toString();
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        bool changed = false;
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_msg_type != ChatMsgType::Video
+                || message->_thumb_name != thumb_name)
                 continue;
             message->_imageSource = url;
             message->_imageWidth = pixel_size.width();
             message->_imageHeight = pixel_size.height();
-            message->_transferProgress = 100;
             changed = true;
         }
         if (changed)
@@ -656,24 +792,114 @@ void UserMgr::FinishImageDownload(const QString &resource_name, const QString &t
     }
 }
 
-void UserMgr::FailImageDownload(const QString &resource_name)
+void UserMgr::SetResourceState(qint64 message_id, ResourceTransferState state, int progress)
 {
-    if (resource_name.isEmpty())
+    if (message_id <= 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
-        bool changed = false;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
-            if (!message || message->_msg_type != ChatMsgType::Image
-                || message->_resource_name != resource_name)
+            if (!message || message->_message_id != message_id)
                 continue;
-            if (message->_transferProgress >= 100)
-                continue;
-            message->_transferProgress = -1; //保留占位，等下次进入会话再重试
-            changed = true;
-        }
-        if (changed)
+            message->_transfer_state = state;
+            message->_transferProgress = progress;
             emit FriendChatChanged(info->_uid);
+            return;
+        }
+    }
+}
+
+void UserMgr::SetResourceStateByUniqueId(int friend_id, const QString &msg_id,
+                                         ResourceTransferState state, int progress)
+{
+    if (msg_id.isEmpty())
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto info = GetFriendById(friend_id);
+    if (!info)
+        return;
+    for (const auto &message : info->_chat_thread->_chat_msgs) {
+        if (!message || message->_msg_id != msg_id)
+            continue;
+        message->_transfer_state = state;
+        message->_transferProgress = progress;
+        emit FriendChatChanged(friend_id);
+        return;
+    }
+}
+
+void UserMgr::SetLocalVideoThumb(int friend_id, const QString &msg_id, const QString &local_path,
+                                 const QSize &pixel_size)
+{
+    if (msg_id.isEmpty() || local_path.isEmpty())
+        return;
+    const QString url = QUrl::fromLocalFile(local_path).toString();
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto info = GetFriendById(friend_id);
+    if (!info)
+        return;
+    for (const auto &message : info->_chat_thread->_chat_msgs) {
+        if (!message || message->_msg_id != msg_id)
+            continue;
+        message->_imageSource = url;
+        message->_imageWidth = pixel_size.width();
+        message->_imageHeight = pixel_size.height();
+        emit FriendChatChanged(friend_id);
+        return;
+    }
+}
+
+std::shared_ptr<TextChatData> UserMgr::FindMessage(qint64 message_id, int *friend_id) const
+{
+    if (message_id <= 0)
+        return {};
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (message && message->_message_id == message_id) {
+                if (friend_id)
+                    *friend_id = info->_uid;
+                return message;
+            }
+        }
+    }
+    return {};
+}
+
+std::shared_ptr<TextChatData> UserMgr::FindMessageByUniqueId(const QString &msg_id,
+                                                             int *friend_id) const
+{
+    if (msg_id.isEmpty())
+        return {};
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (message && message->_msg_id == msg_id) {
+                if (friend_id)
+                    *friend_id = info->_uid;
+                return message;
+            }
+        }
+    }
+    return {};
+}
+
+//本地文件被移动/改名后，消息不能继续显示“已下载”；退回未下载让用户重新拉取
+void UserMgr::MarkResourceMissing(qint64 message_id)
+{
+    if (message_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (const auto &info : _friend_list) {
+        for (const auto &message : info->_chat_thread->_chat_msgs) {
+            if (!message || message->_message_id != message_id)
+                continue;
+            message->_local_path.clear();
+            message->_transfer_state = ResourceTransferState::None;
+            message->_transferProgress = -1;
+            emit FriendChatChanged(info->_uid);
+            return;
+        }
     }
 }
 
@@ -687,6 +913,15 @@ void UserMgr::FailPendingMessages()
             if (message->_status != ChatMessageStatus::Sending)
                 continue;
             message->_status = ChatMessageStatus::Failed;
+            //视频/文件可能停在准备或上传阶段，状态一起复位，否则卡片会一直显示“准备中”
+            if (message->_msg_type == ChatMsgType::Video || message->_msg_type == ChatMsgType::File) {
+                if (message->_transfer_state == ResourceTransferState::Preparing
+                    || message->_transfer_state == ResourceTransferState::Uploading
+                    || message->_transfer_state == ResourceTransferState::UploadPaused) {
+                    message->_transfer_state = ResourceTransferState::Failed;
+                    message->_transferProgress = -1;
+                }
+            }
             changed = true;
         }
         if (changed)

@@ -2,7 +2,9 @@
 #define CHATBRIDGE_H
 
 #include <QObject>
+#include <QHash>
 #include <QString>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -135,6 +137,20 @@ public:
 
     // 业务动作
     Q_INVOKABLE bool sendParts(const QVariantList &parts);
+    //视频/文件：下载、暂停/继续、本机路径、打开与另存为
+    Q_INVOKABLE void downloadResource(qint64 messageId);
+    Q_INVOKABLE void toggleResourceTransfer(qint64 messageId, const QString &msgId = {});
+    Q_INVOKABLE QString resourceUrl(qint64 messageId); //查看器用的 file URL
+    Q_INVOKABLE bool openResource(qint64 messageId);
+    //返回值：0 失败，1 已复制到目标，2 资源未下载，已排队并在完成后自动保存
+    Q_INVOKABLE int saveResourceAs(qint64 messageId, const QUrl &target);
+    Q_INVOKABLE bool revealResource(qint64 messageId); //在系统文件管理器中定位
+    Q_INVOKABLE void markResourceMissing(qint64 messageId); //本地文件丢失时退回未下载
+    Q_INVOKABLE bool copyText(const QString &text);
+    //优先复制完整图片，缺失时退回气泡里的 data/file URL
+    Q_INVOKABLE bool copyImage(qint64 messageId, const QUrl &fallback = {});
+    //当前会话可查看的图片与已下载视频，按消息顺序排列，供查看器左右切换
+    Q_INVOKABLE QVariantList mediaItems(); //当前会话可查看的图片与已下载视频
     Q_INVOKABLE void search();
     Q_INVOKABLE void clearSearch();
     // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录
@@ -156,12 +172,18 @@ signals:
     void friendMatchesChanged();
     void applyStateChanged();
     void avatarSyncChanged();
+    //另存为的最终结果：异步下载完成或失败后回到界面提示
+    void resourceSaved(bool ok, const QString &path);
+    void resourceNotice(const QString &message); //本地文件缺失、另存位置失效等提示
 
 private:
     void setMode(int mode);
     void setPane(int pane);
     void rebuildFriendMatches();
     void setApplyState(int state, const QString &message = {});
+    void processPendingSaves(); //消息下载完成后处理排队的另存为
+    static bool copyToPath(const QString &source, const QString &destination);
+    QString savedPath(qint64 messageId); //已另存的位置，文件不存在时清掉记录并返回空
 
     FriendListModel *_friends = nullptr;
     ApplyListModel *_applies = nullptr;
@@ -191,6 +213,11 @@ private:
     QString _applyRemark;
     int _applyState = ApplyIdle;
     QString _applyMessage;
+
+    //资源还没下载完时的另存为目标：下载完成后自动复制，失败则丢弃
+    QHash<qint64, QString> _pending_saves;
+    //已经另存到用户目录的位置：打开/定位优先用它，而不是账号缓存
+    QHash<qint64, QString> _saved_paths;
 };
 
 #endif // CHATBRIDGE_H

@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <memory>
+#include <atomic>
 #include <QJsonArray>
 #include <vector>
 #include <QJsonObject>
@@ -127,11 +128,16 @@ enum class ChatMsgType : int {
     File = 3,
 };
 
-//图片资源上传的界面状态：进度写入消息行，完成/失败同时更新消息状态
-enum class ImageTransferState : int {
-    Uploading = 0,
-    Finished = 1,
-    Failed = 2,
+//图片/视频/文件在界面上的传输状态：图片只用到进度，视频与文件还要按状态显示按钮
+enum class ResourceTransferState : int {
+    None = 0, //接收方还没开始下载
+    Preparing = 1, //视频在准备首帧、消息等待落库
+    Uploading = 2,
+    UploadPaused = 3,
+    Downloading = 4,
+    DownloadPaused = 5,
+    Done = 6,
+    Failed = 7,
 };
 
 //一个单聊会话：thread_id 来自服务端，_chat_msgs 始终按 message_id 排序
@@ -227,9 +233,15 @@ struct TextChatData{
     QString _imageSource; //图片消息的本地显示地址（data/file URL），始终指向缩略图
     int _imageWidth = 0;
     int _imageHeight = 0;
-    int _transferProgress = -1; //图片传输进度 0..100（上传或下载），-1 表示不显示进度条
+    int _transferProgress = -1; //图片/视频/文件的传输进度 0..100，-1 表示不显示进度条
     ChatMsgType _msg_type = ChatMsgType::Text; //消息类型，历史同步与发送时确定
-    QString _resource_name; //图片/文件在资源服务器上的名字，文本为空
+    QString _resource_name; //图片/视频/文件在资源服务器上的名字，文本为空
+    QString _resource_md5; //资源内容的 md5，上传重试时直接复用
+    QString _file_name; //文件/视频的原始显示名
+    qint64 _file_size = 0; //文件/视频的字节数
+    QString _thumb_name; //视频首帧资源名，接收方先下载它做预览
+    QString _local_path; //完整资源在本机的位置，点开查看器/另存为时使用
+    ResourceTransferState _transfer_state = ResourceTransferState::None;
     int _from_uid;
     int _to_uid;
 };
@@ -270,7 +282,8 @@ struct UploadFileInfo {
     QSet<int> _acked; //已确认、但还没连成连续段
     int _uid = 0;
     ReqId _req_id = ID_UPLOAD_HEAD_ICON_REQ;
-    //聊天图片上传完成后回写消息状态用；头像与普通文件为0
+    std::atomic<bool> _paused{false}; //视频/文件可以单独暂停，网络线程按它决定是否继续发片
+    //聊天图片/视频/文件上传完成后回写消息状态用；头像与普通文件为0
     qint64 _chat_msg_id = 0;
     int _touid = 0;
     qint64 _thread_id = 0;
@@ -285,6 +298,7 @@ struct DownloadFileInfo {
     int _seq = 1;
     qint64 _total_size = 0;
     qint64 _current_size = 0;
+    std::atomic<bool> _paused{false}; //暂停后不再请求下一片，继续时从当前偏移续传
 };
 
 Q_DECLARE_METATYPE(std::shared_ptr<SearchInfo>)

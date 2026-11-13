@@ -34,7 +34,13 @@ public:
         NameRole,
         StatusRole,
         IsImageRole, //图片消息：没有本地文件时由气泡显示占位
-        TransferProgressRole, //图片传输进度 0..100，-1 表示不显示
+        TransferProgressRole, //资源传输进度 0..100，-1 表示不显示
+        MessageIdRole, //服务端消息 ID，视频/文件操作按它定位
+        MsgIdRole, //客户端消息 ID；1035 之前还没有服务端 ID，视频/文件重试用它定位
+        MsgTypeRole, //0 文本 / 1 图片 / 2 视频 / 3 文件
+        FileNameRole, //视频/文件的原始显示名
+        FileSizeRole, //视频/文件字节数
+        TransferStateRole, //ResourceTransferState，媒体卡片据此显示按钮
     };
 
     explicit MessageModel(QObject *parent = nullptr);

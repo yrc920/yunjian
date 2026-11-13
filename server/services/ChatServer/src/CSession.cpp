@@ -301,6 +301,26 @@ void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
     Send(rtvalue.toStyledString(), ID_NOTIFY_IMG_CHAT_MSG_REQ);
 }
 
+//视频/文件的通知与图片共用消息标识，额外带类型和落库时的元数据；
+//接收方据此先画卡片和视频首帧，真正下载要等用户点击
+void CSession::NotifyResourceRecv(long long message_id, int from_uid, int to_uid,
+    long long thread_id, const std::string& name, const std::string& client_msg_id,
+    long long total_size, int msg_type, const std::string& content)
+{
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCodes::Success;
+    rtvalue["message_id"] = Json::Int64(message_id);
+    rtvalue["thread_id"] = Json::Int64(thread_id);
+    rtvalue["fromuid"] = from_uid;
+    rtvalue["touid"] = to_uid;
+    rtvalue["msgid"] = client_msg_id; //与历史同步同一个 ID，客户端据此去重
+    rtvalue["name"] = name;
+    rtvalue["total_size"] = Json::Int64(total_size);
+    rtvalue["msg_type"] = msg_type;
+    rtvalue["content"] = content;
+    Send(rtvalue.toStyledString(), ID_NOTIFY_RESOURCE_CHAT_MSG_REQ);
+}
+
 //读取完整长度
 void CSession::asyncReadFull(std::size_t maxLength,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)

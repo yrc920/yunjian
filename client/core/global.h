@@ -48,15 +48,18 @@ enum ReqId{
     ID_IMG_CHAT_MSG_REQ = 1031, //图片聊天消息：先落库，资源随后上传
     ID_IMG_CHAT_MSG_RSP = 1032, //图片聊天消息回执
     ID_NOTIFY_IMG_CHAT_MSG_REQ = 1033, //图片上传完成通知，接收方开始下载
-    // 资源服务器使用独立的消息空间：帧头为 2 字节 ID + 4 字节长度
-    ID_UPLOAD_FILE_REQ = 2001, //通用文件分段上传
-    ID_UPLOAD_FILE_RSP = 2002,
-    ID_SYNC_FILE_REQ = 2003, //续传前同步服务器进度
-    ID_SYNC_FILE_RSP = 2004,
-    ID_DOWN_LOAD_FILE_REQ = 2005, //断点下载
-    ID_DOWN_LOAD_FILE_RSP = 2006,
-    ID_UPLOAD_HEAD_ICON_REQ = 2007, //头像分段上传
-    ID_UPLOAD_HEAD_ICON_RSP = 2008,
+    ID_RESOURCE_CHAT_MSG_REQ = 1034, //视频/文件消息：先落库，资源随后上传
+    ID_RESOURCE_CHAT_MSG_RSP = 1035, //视频/文件消息回执
+    ID_NOTIFY_RESOURCE_CHAT_MSG_REQ = 1036, //视频/文件上传完成，接收方显示下载卡片
+    // 资源服务器沿用 1000 段的系统命令编号，只是另一条连接，帧头为 2 字节 ID + 4 字节长度
+    ID_UPLOAD_FILE_REQ = 1037, //通用文件分段上传
+    ID_UPLOAD_FILE_RSP = 1038,
+    ID_SYNC_FILE_REQ = 1039, //续传前同步服务器进度
+    ID_SYNC_FILE_RSP = 1040,
+    ID_DOWN_LOAD_FILE_REQ = 1041, //断点下载
+    ID_DOWN_LOAD_FILE_RSP = 1042,
+    ID_UPLOAD_HEAD_ICON_REQ = 1043, //头像分段上传
+    ID_UPLOAD_HEAD_ICON_RSP = 1044,
 };
 
 //模块

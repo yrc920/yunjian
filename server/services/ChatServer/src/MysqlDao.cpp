@@ -753,11 +753,14 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	}
 }
 
-bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
-	const std::string& client_msg_id, const std::string& content, ChatMessageInfo& message)
+bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_id,
+	const std::string& client_msg_id, int msg_type, const std::string& content,
+	ChatMessageInfo& message)
 {
 	thread_id = EnsureChatThread(sender_id, recv_id, thread_id);
 	if (thread_id <= 0)
+		return false;
+	if (msg_type < 1 || msg_type > 3)
 		return false;
 
 	auto con = pool_->getConnection();
@@ -775,11 +778,13 @@ bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 			return false;
 
 		con->_session->startTransaction();
-		//msg_type=1 图片; status=0 表示资源还没上传完成, 由后续资源回调改成已发送
+		//status=0 表示资源还没上传完成, 由后续资源回调改成已发送；
+		//content 对图片是资源名, 对视频/文件是文件名、大小、资源名与预览资源的 JSON
 		con->_session->sql(
 			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, msg_type, status) "
-			"VALUES (?, ?, ?, ?, ?, 1, 0) ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
-			.bind(thread_id).bind(sender_id).bind(recv_id).bind(client_msg_id).bind(content).execute();
+			"VALUES (?, ?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
+			.bind(thread_id).bind(sender_id).bind(recv_id).bind(client_msg_id).bind(content)
+			.bind(msg_type).execute();
 		auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
 		if (id_row.isNull()) {
 			con->_session->rollback();
@@ -796,7 +801,7 @@ bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 		message.recv_id = recv_id;
 		message.client_msg_id = client_msg_id;
 		message.content = content;
-		message.msg_type = 1;
+		message.msg_type = msg_type;
 		message.status = 0;
 		return true;
 	}
@@ -805,7 +810,42 @@ bool MysqlDao::SaveImageMessage(int sender_id, int recv_id, long long thread_id,
 			try { con->_session->rollback(); } catch (...) {}
 			con->_healthy = false;
 		}
-		std::cerr << "Mysqlx Error saving image message: " << e.what() << std::endl;
+		std::cerr << "Mysqlx Error saving resource message: " << e.what() << std::endl;
+		return false;
+	}
+}
+
+//资源服务器只带回 message_id 和资源名，类型、原始文件名与预览信息统一以库里的记录为准
+bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
+{
+	if (message_id <= 0)
+		return false;
+
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
+
+	try {
+		auto row = con->_session->sql(
+			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type "
+			"FROM chat_message WHERE message_id = ?")
+			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
+		if (row.isNull())
+			return false;
+		message.message_id = row[0].get<int64_t>();
+		message.thread_id = row[1].get<int64_t>();
+		message.sender_id = row[2].get<int>();
+		message.recv_id = row[3].get<int>();
+		message.client_msg_id = row[4].get<std::string>();
+		message.content = row[5].get<std::string>();
+		message.status = row[6].get<int>();
+		message.msg_type = row[7].get<int>();
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false;
+		std::cerr << "Mysqlx Error getting chat message: " << e.what() << std::endl;
 		return false;
 	}
 }

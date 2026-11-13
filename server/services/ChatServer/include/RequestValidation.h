@@ -61,6 +61,43 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
             return Error_Json;
         return Success;
     }
+    //视频/文件消息：资源文件名、原始文件名、大小与可选的视频首帧资源一起落库
+    if (id == ID_RESOURCE_CHAT_MSG_REQ) {
+        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid
+            || !positiveId("touid") || root["touid"].asInt() == session_uid)
+            return UidInvalid;
+        if (!root["msg_type"].isInt()
+            || (root["msg_type"].asInt() != 2 && root["msg_type"].asInt() != 3))
+            return Error_Json;
+        if (root.isMember("thread_id")
+            && (!root["thread_id"].isInt64() || root["thread_id"].asInt64() < 0))
+            return Error_Json;
+        if (!stringField("md5") || !stringField("name") || !stringField("token")
+            || !stringField("unique_id") || !stringField("file_name"))
+            return Error_Json;
+        const auto md5 = root["md5"].asString();
+        const auto name = root["name"].asString();
+        const auto unique_id = root["unique_id"].asString();
+        const auto file_name = root["file_name"].asString();
+        if (md5.size() != 32 || name.empty() || name.size() > 128
+            || name.find('/') != std::string::npos || name.find('\\') != std::string::npos
+            || name.front() == '.' || unique_id.empty()
+            || file_name.empty() || file_name.size() > 255)
+            return Error_Json;
+        if (!root["file_size"].isInt64() || root["file_size"].asInt64() <= 0)
+            return Error_Json;
+        //视频首帧是可选的独立资源，字段存在时也必须是安全的文件名
+        if (root.isMember("thumb")) {
+            if (!root["thumb"].isString())
+                return Error_Json;
+            const auto thumb = root["thumb"].asString();
+            if (!thumb.empty()
+                && (thumb.size() > 128 || thumb.find('/') != std::string::npos
+                    || thumb.find('\\') != std::string::npos || thumb.front() == '.'))
+                return Error_Json;
+        }
+        return Success;
+    }
     //好友申请用uid表示申请人，同意好友、文本消息和心跳用fromuid表示操作者
     //请求中声明的操作者必须与服务端绑定的用户一致，不能仅凭客户端传来的uid执行操作
     const char* actor = id == ID_ADD_FRIEND_REQ ? "uid" : "fromuid";

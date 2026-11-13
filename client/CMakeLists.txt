@@ -75,10 +75,10 @@ endif()
 # Qt 安装路径两种来源（任选其一，互不覆盖）：
 #  1) Qt Creator：选择本机 Qt 6.5 Kit（三平台通用），Kit 自动注入 CMAKE_PREFIX_PATH
 #  2) 命令行/VSCode：QT_ROOT 环境变量
-find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2)
+find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2 Multimedia)
 if(NOT Qt6_FOUND AND DEFINED ENV{QT_ROOT})
     list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT}")
-    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2 Multimedia)
 endif()
 if(NOT Qt6_FOUND)
     message(FATAL_ERROR
@@ -104,6 +104,7 @@ set(CORE_SOURCES
     core/service/chatservice.cpp
     core/service/friendservice.cpp
     core/service/fileservice.cpp
+    core/videothumbnail.cpp
 )
 
 set(CORE_HEADERS
@@ -116,6 +117,7 @@ set(CORE_HEADERS
     core/service/chatservice.h
     core/service/friendservice.h
     core/service/fileservice.h
+    core/videothumbnail.h
 )
 
 set(NETWORK_SOURCES
@@ -151,12 +153,13 @@ target_include_directories(xiguchat_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/network
 )
 
-# 图片缩略图在 core/service 里用 QImage 生成，核心库因此需要 Gui；
-# 客户端本来就链接 Gui/Quick，这里不额外增加依赖
+# 图片缩略图在 core/service 里用 QImage 生成，视频首帧由 QMediaPlayer 解码；
+# 核心库因此需要 Gui 与 Multimedia，客户端本来就链接 Quick，不额外引入界面依赖
 target_link_libraries(xiguchat_core PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Network
+    Qt6::Multimedia
 )
 
 # ------------------------------------------------------------
@@ -241,6 +244,9 @@ set(QML_FILES
     qml/UserInfoPage.qml
     qml/AvatarEditor.qml
     qml/ChatBubble.qml
+    qml/MediaBubble.qml
+    qml/ContextMenu.qml
+    qml/ViewerOverlay.qml
     qml/Avatar.qml
     qml/IconButton.qml
     qml/ToolIcon.qml

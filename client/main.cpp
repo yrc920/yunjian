@@ -7,8 +7,17 @@
 #include <QUrl>
 
 #include "global.h"
+#include "authservice.h"
+#include "chatservice.h"
+#include "fileservice.h"
+#include "friendservice.h"
+#include "httpmgr.h"
+#include "sessionservice.h"
+#include "usermgr.h"
 #include "filetcpthread.h"
+#include "filetcpmgr.h"
 #include "tcpthread.h"
+#include "tcpmgr.h"
 
 int main(int argc, char *argv[])
 {
@@ -39,14 +48,30 @@ int main(int argc, char *argv[])
                       + QLatin1Char(':')
                       + settings.value(QStringLiteral("GateServer/port")).toString();
 
-    //聊天与资源各用一个网络线程：文件分片不能挤占聊天消息的发送与解析
-    TcpThread tcp_thread;
-    FileTcpThread file_tcp_thread;
+    int exitCode = 0;
+    {
+        //聊天与资源各用一个网络线程：文件分片不能挤占聊天消息的发送与解析
+        TcpThread tcp_thread;
+        FileTcpThread file_tcp_thread;
 
-    QQmlApplicationEngine engine;
-    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/XiguChat/qml/Main.qml")));
-    if (engine.rootObjects().isEmpty())
-        return 1;
+        QQmlApplicationEngine engine;
+        engine.load(QUrl(QStringLiteral("qrc:/qt/qml/XiguChat/qml/Main.qml")));
+        if (engine.rootObjects().isEmpty())
+            exitCode = 1;
+        else
+            exitCode = app.exec();
+    } //先销毁 QML 引擎与网络线程，两个网络管理器在这里被迁回主线程
 
-    return app.exec();
+    //QObject 单例必须在 QGuiApplication 销毁前释放；否则静态 shared_ptr 会在
+    //应用对象析构之后才清理，Qt 内部事件与线程数据已经失效
+    SessionService::Destroy();
+    ChatService::Destroy();
+    FileService::Destroy();
+    FriendService::Destroy();
+    AuthService::Destroy();
+    HttpMgr::Destroy();
+    TcpMgr::Destroy();
+    FileTcpMgr::Destroy();
+    UserMgr::Destroy();
+    return exitCode;
 }

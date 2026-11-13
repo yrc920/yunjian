@@ -120,6 +120,26 @@ Canvas {
         case "video":
             c.beginPath(); rounded(3, 6, 12, 12, 2); c.stroke()
             poly([15, 10, 21, 7, 21, 17, 15, 14], false); break
+        case "play":
+            c.beginPath(); c.moveTo(8, 5); c.lineTo(19, 12); c.lineTo(8, 19)
+            c.closePath(); c.fill(); break
+        case "pause":
+            c.lineWidth = 3.2
+            line(9, 6, 9, 18); line(15, 6, 15, 18); break
+        case "download":
+            line(12, 3, 12, 15)
+            poly([7, 10, 12, 15, 17, 10], false)
+            line(5, 20, 19, 20); break
+        case "save":
+            c.beginPath(); rounded(4, 4, 16, 16, 2); c.stroke()
+            line(8, 4, 8, 10); line(8, 10, 16, 10); line(16, 10, 16, 4)
+            line(8, 16, 16, 16); break
+        case "file":
+            c.beginPath(); rounded(5, 3, 14, 18, 2); c.stroke()
+            line(9, 9, 16, 9); line(9, 13, 16, 13); line(9, 17, 13, 17); break
+        case "open":
+            c.beginPath(); rounded(4, 5, 15, 15, 2); c.stroke()
+            line(11, 13, 20, 4); poly([15, 4, 20, 4, 20, 9], false); break
         }
     }
 }

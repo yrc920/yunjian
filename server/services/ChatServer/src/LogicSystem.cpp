@@ -132,6 +132,8 @@ void LogicSystem::RegisterCallBacks()
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatImgMsg, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_RESOURCE_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealResourceChatMsg, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = std::bind(&LogicSystem::CreatePrivateChat, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = std::bind(&LogicSystem::LoadChatThreads, this,
@@ -732,7 +734,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 
 	//消息先落库, content存资源文件名; 资源本体由客户端随后上传到 ResourceServer
 	ChatMessageInfo saved;
-	if (!MysqlMgr::GetInstance()->SaveImageMessage(uid, touid, thread_id, unique_id, name, saved)) {
+	if (!MysqlMgr::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id, 1, name, saved)) {
 		response["error"] = ErrorCodes::RPCFailed;
 		session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
 		return;
@@ -742,6 +744,62 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	response["message_id"] = Json::Int64(saved.message_id);
 	response["status"] = 0; //资源尚未上传; 接收方通知留到资源完成后的章节
 	session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
+}
+
+//视频/文件消息只落库，资源本体由客户端收到回执后上传；视频首帧是独立资源，
+//一起写进 content，接收方下载前就能用它做预览
+void LogicSystem::DealResourceChatMsg(std::shared_ptr<CSession> session,
+	const short&, const std::string& msg_data)
+{
+	Json::Value root;
+	Json::Reader reader;
+	reader.parse(msg_data, root);
+
+	const int uid = root["fromuid"].asInt();
+	const int touid = root["touid"].asInt();
+	const long long thread_id = root["thread_id"].asInt64();
+	const int msg_type = root["msg_type"].asInt();
+	const std::string md5 = root["md5"].asString();
+	const std::string name = root["name"].asString();
+	const std::string file_name = root["file_name"].asString();
+	const long long file_size = root["file_size"].asInt64();
+	const std::string thumb = root["thumb"].asString();
+	const std::string unique_id = root["unique_id"].asString();
+
+	Json::Value response;
+	response["error"] = ErrorCodes::Success;
+	response["fromuid"] = uid;
+	response["touid"] = touid;
+	response["msg_type"] = msg_type;
+	response["name"] = name;
+	response["unique_id"] = unique_id;
+
+	//content 保存接收方渲染卡片所需的元数据；资源名与原始文件名分开，
+	//服务器只按资源名落盘，展示名不参与路径拼接
+	Json::Value meta;
+	meta["name"] = file_name;
+	meta["size"] = Json::Int64(file_size);
+	meta["resource"] = name;
+	meta["thumb"] = thumb;
+	Json::FastWriter writer;
+	std::string content = writer.write(meta);
+	while (!content.empty()
+		&& (content.back() == '\n' || content.back() == '\r' || content.back() == ' ')) {
+		content.pop_back();
+	}
+
+	ChatMessageInfo saved;
+	if (!MysqlMgr::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id,
+		msg_type, content, saved)) {
+		response["error"] = ErrorCodes::RPCFailed;
+		session->Send(response.toStyledString(), ID_RESOURCE_CHAT_MSG_RSP);
+		return;
+	}
+
+	response["thread_id"] = Json::Int64(saved.thread_id);
+	response["message_id"] = Json::Int64(saved.message_id);
+	response["status"] = 0; //资源尚未上传，等 ResourceServer 完成通知
+	session->Send(response.toStyledString(), ID_RESOURCE_CHAT_MSG_RSP);
 }
 
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session,

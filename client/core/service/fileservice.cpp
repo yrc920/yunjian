@@ -58,7 +58,7 @@ FileService::FileService()
     connect(file, &FileTcpMgr::sig_connection_closed, this, [this] {
         _connected = false; //断线后OnSessionReady不能再触发同步
         AbortDownloads(); //在途下载已经无法继续，记录和半截文件一起清掉
-        AbortImageUploads(); //聊天图片发不出去，消息不能一直转圈
+        AbortResourceUploads(); //聊天资源发不出去，消息不能一直转圈
     });
 
     //收发帧由FileTcpMgr负责，业务层的落盘、缓存与界面刷新集中在本类
@@ -84,7 +84,7 @@ void FileService::ConnectToResource(const ServerInfo &info)
     _trans_size = 0; //进度归零，等新账号登录后重新开始
     _total_size = 0;
     AbortDownloads(); //上一个账号的在途下载不能带到新连接
-    AbortImageUploads(); //旧账号的聊天图片上传没有后续回包，直接结束
+    AbortResourceUploads(); //旧账号的聊天资源上传没有后续回包，直接结束
     _message.clear(); //个人资料页的旧提示不保留
     if (!_resourceConfigured) { //没有配置资源服务时不发连接请求
         _message = QStringLiteral("当前服务器未配置资源服务，头像仅保存在本机"); //只提示，不影响聊天
@@ -99,7 +99,7 @@ void FileService::CloseResource()
     _connected = false; //资源连接即将断开
     _sessionReady = false; //登录态也一起失效
     AbortDownloads(); //主动关闭同样要清掉在途任务
-    AbortImageUploads(); //聊天图片随连接一起结束，消息标记失败
+    AbortResourceUploads(); //聊天资源随连接一起结束，消息标记失败
     FileTcpMgr::GetInstance()->CloseConnectionAsync(); //交给网络线程关闭socket
 }
 
@@ -216,14 +216,14 @@ void FileService::AbortDownloads()
     _download_owners.clear();
 }
 
-//资源连接断开时，聊天图片已经无法继续；记录被取走后不会再有人续传，
+//资源连接断开时，聊天资源已经无法继续；记录被取走后不会再有人续传，
 //这里逐条把消息标成失败，避免气泡一直显示上传中的转圈
-void FileService::AbortImageUploads()
+void FileService::AbortResourceUploads()
 {
-    const auto uploads = UserMgr::GetInstance()->TakeImageUploads();
+    const auto uploads = UserMgr::GetInstance()->TakeResourceUploads();
     for (const auto &info : uploads) {
         if (info)
-            emit chatImageFailed(info->_name, 2);
+            emit chatResourceFailed(info->_name, 2);
     }
 }
 
@@ -282,7 +282,7 @@ void FileService::UploadAvatar(const QString &path)
     info->_path = path; //FileTcpMgr 按偏移重新打开这个文件
     info->_total_size = file_info.size();
     info->_uid = UserMgr::GetInstance()->GetUid();
-    info->_req_id = ID_UPLOAD_HEAD_ICON_REQ; //头像走 2007
+    info->_req_id = ID_UPLOAD_HEAD_ICON_REQ; //头像走 1043
     UserMgr::GetInstance()->AddUploadFile(info);
 
     _uploadMd5 = md5; //业务层自己的副本，用于暂停/失败清理
@@ -308,19 +308,19 @@ void FileService::UploadAvatar(const QString &path)
     FileTcpMgr::GetInstance()->StartUpload(md5); //网络线程读第一片
 }
 
-//聊天图片走通用上传通道(2001)，与头像的上传状态互不影响
-void FileService::UploadChatImage(const QString &name, const QString &path, const QString &md5,
+//聊天资源（图片、视频、文件、视频首帧）走通用上传通道(1037)，与头像状态互不影响
+bool FileService::UploadChatResource(const QString &name, const QString &path, const QString &md5,
     qint64 messageId, int touid, qint64 threadId, const QString &uniqueId)
 {
     const QFileInfo file_info(path);
     if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0) {
-        emit chatImageFailed(name, 1); //本地压缩图没落盘，消息直接标失败
-        return;
+        emit chatResourceFailed(name, 1); //本地文件没落盘，消息直接标失败
+        return false;
     }
 
     //同一内容已经在传（例如连续发送同一张图），复用这次上传，避免两路分片互相覆盖进度
     if (UserMgr::GetInstance()->GetUploadFile(md5))
-        return;
+        return false;
 
     auto info = std::make_shared<UploadFileInfo>();
     info->_md5 = md5;
@@ -338,10 +338,11 @@ void FileService::UploadChatImage(const QString &name, const QString &path, cons
     //资源服务器没连上时不阻塞聊天：本地文件已保存，消息标失败等下一轮重发
     if (!_resourceConfigured || !_connected) {
         UserMgr::GetInstance()->RemoveUploadFile(md5);
-        emit chatImageFailed(name, 2);
-        return;
+        emit chatResourceFailed(name, 2);
+        return false;
     }
     FileTcpMgr::GetInstance()->StartUpload(md5);
+    return true;
 }
 
 void FileService::SetUploadPaused(bool paused)
@@ -373,6 +374,52 @@ void FileService::ToggleUploadPaused()
     SetUploadPaused(!_paused);
 }
 
+//视频/文件的暂停只影响这一条资源，头像上传不受影响
+bool FileService::PauseResourceUpload(const QString &name)
+{
+    auto info = UserMgr::GetInstance()->GetUploadFileByName(name);
+    if (!info || info->_req_id != ID_UPLOAD_FILE_REQ)
+        return false;
+    info->_paused.store(true); //窗口里已发出的分片仍会回包，回包后不再补发
+    return true;
+}
+
+//继续前先问服务器写到哪一片：暂停期间可能有在途分片已经落盘，按服务器序号续传
+bool FileService::ResumeResourceUpload(const QString &name)
+{
+    auto info = UserMgr::GetInstance()->GetUploadFileByName(name);
+    if (!info || info->_req_id != ID_UPLOAD_FILE_REQ)
+        return false;
+    info->_paused.store(false);
+
+    QJsonObject frame;
+    frame["uid"] = UserMgr::GetInstance()->GetUid();
+    frame["token"] = UserMgr::GetInstance()->GetToken();
+    frame["md5"] = info->_md5;
+    FileTcpMgr::GetInstance()->SendData(ID_SYNC_FILE_REQ,
+        QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    return true;
+}
+
+bool FileService::PauseDownload(const QString &name)
+{
+    auto info = UserMgr::GetInstance()->GetDownloadFile(name);
+    if (!info)
+        return false;
+    info->_paused.store(true); //当前在途片写完后停在本地偏移，继续时从下一片开始
+    return true;
+}
+
+bool FileService::ResumeDownload(const QString &name)
+{
+    auto info = UserMgr::GetInstance()->GetDownloadFile(name);
+    if (!info)
+        return false;
+    info->_paused.store(false);
+    FileTcpMgr::GetInstance()->ResumeDownload(name);
+    return true;
+}
+
 int FileService::Progress() const
 {
     if (_total_size <= 0) //还没有总大小，无法算百分比
@@ -393,7 +440,7 @@ void FileService::HandleUploadProgress(const QString &name, qint64 trans, qint64
         return;
     }
     if (!name.isEmpty())
-        emit chatImageProgress(name, trans, total); //其余资源都是聊天图片
+        emit chatResourceProgress(name, trans, total); //其余资源都是聊天图片/视频/文件
 }
 
 void FileService::HandleUploadFinished(const QString &name)
@@ -408,7 +455,7 @@ void FileService::HandleUploadFinished(const QString &name)
         return;
     }
     if (!name.isEmpty())
-        emit chatImageFinished(name); //聊天图片完成，消息状态改成已发送
+        emit chatResourceFinished(name); //聊天资源完成，消息状态改成已发送
 }
 
 void FileService::HandleUploadFailed(const QString &name, int error)
@@ -432,7 +479,7 @@ void FileService::HandleUploadFailed(const QString &name, int error)
         return;
     }
     if (!name.isEmpty())
-        emit chatImageFailed(name, error); //聊天图片失败，消息标记为发送失败
+        emit chatResourceFailed(name, error); //聊天资源失败，消息标记为发送失败
 }
 
 void FileService::HandleDownloadFinished(const QString &name, const QString &path)
