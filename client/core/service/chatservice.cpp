@@ -55,36 +55,52 @@ ChatService::ChatService()
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_download_finished, qApp,
             [this](const QString &name, const QString &) {
-        if (!_chat_downloads.contains(name))
-            return;
-        _chat_downloads.remove(name);
-        QSize pixel;
-        const QString thumb = EnsureImageThumbnail(name, &pixel);
-        if (thumb.isEmpty()) {
-            UserMgr::GetInstance()->FailImageDownload(name);
-            return;
+        if (_chat_downloads.contains(name)) {
+            _chat_downloads.remove(name);
+            QSize pixel;
+            const QString thumb = EnsureImageThumbnail(name, &pixel);
+            if (thumb.isEmpty())
+                UserMgr::GetInstance()->FailImageDownload(name);
+            else
+                UserMgr::GetInstance()->FinishImageDownload(name, thumb, pixel);
         }
-        UserMgr::GetInstance()->FinishImageDownload(name, thumb, pixel);
+        pumpImageDownloads(); //腾出一个并发位，继续下一张
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_download_failed, qApp,
             [this](const QString &name, int) {
         if (_chat_downloads.remove(name) > 0)
             UserMgr::GetInstance()->FailImageDownload(name);
+        pumpImageDownloads();
     });
     QObject::connect(file_tcp, &FileTcpMgr::sig_connection_closed, qApp, [this] {
         //资源连接断开后这些下载不会再有回包，清掉记录并删掉半截文件
         for (auto it = _chat_downloads.constBegin(); it != _chat_downloads.constEnd(); ++it) {
             UserMgr::GetInstance()->RemoveDownloadFile(it.key());
-            QFile::remove(ImageCachePath(it.key()));
+            if (!it.value().path.isEmpty())
+                QFile::remove(it.value().path);
             UserMgr::GetInstance()->FailImageDownload(it.key());
         }
         _chat_downloads.clear();
+        _download_queue.clear(); //重连后由 RetryImageDownloads 按消息重新排队
     });
     //登录时图片通知可能先于资源连接到达，连接就绪后统一补发一次；
     //排到事件循环末尾，确保 FileService 已经把 _connected 置为 true
     QObject::connect(file_tcp, &FileTcpMgr::sig_con_success, qApp, [this](bool success) {
         if (success)
             QTimer::singleShot(0, qApp, [this] { RetryImageDownloads(); });
+    });
+    //换账号前把上一个账号的待上传图、在途下载和排队任务一起作废，
+    //否则新账号可能继续按旧资源名下载，文件会落到新账号目录里
+    QObject::connect(UserMgr::GetInstance().get(), &UserMgr::SessionCleared,
+                     UserMgr::GetInstance().get(), [this] {
+        _pending_images.clear();
+        for (auto it = _chat_downloads.constBegin(); it != _chat_downloads.constEnd(); ++it) {
+            UserMgr::GetInstance()->RemoveDownloadFile(it.key());
+            if (!it.value().path.isEmpty())
+                QFile::remove(it.value().path);
+        }
+        _chat_downloads.clear();
+        _download_queue.clear();
     });
 }
 
@@ -325,33 +341,78 @@ void ChatService::HandleImageNotify(const QJsonObject &data)
     }
     mgr->UpsertImageMessage(sender, message);
 
-    if (thumb.isEmpty())
-        DownloadChatImage(name, sender, messageId, threadId);
+    if (thumb.isEmpty()) {
+        //对方刚发来的图优先下载，插到历史图片前面
+        enqueueImageDownload(ChatDownload{name, {}, sender, messageId, threadId}, true);
+    }
 }
 
+//历史消息都走这一个入口：本地没有图时排队，有图时直接生成缩略图，不再请求服务器
 void ChatService::DownloadChatImage(const QString &name, int sender, qint64 messageId, qint64 threadId)
 {
     if (name.isEmpty() || sender <= 0)
         return;
-    if (UserMgr::GetInstance()->GetDownloadFile(name) || _chat_downloads.contains(name))
-        return; //同一资源只保留一次下载，完成后所有引用它的消息一起更新
-    if (!FileService::GetInstance()->IsConnected())
-        return; //资源连接就绪后由 RetryImageDownloads 补发，避免请求被网络层直接丢弃
+    ChatDownload task{name, {}, sender, messageId, threadId};
+    task.path = ImageCachePath(name);
+    enqueueImageDownload(task, false);
+}
 
-    const QString target = ImageCachePath(name);
-    if (target.isEmpty())
+void ChatService::enqueueImageDownload(const ChatDownload &task, bool urgent)
+{
+    if (task.name.isEmpty() || task.sender <= 0)
         return;
-    QDir().mkpath(QFileInfo(target).absolutePath());
+    if (_chat_downloads.contains(task.name))
+        return;
+    for (const auto &queued : _download_queue) {
+        if (queued.name == task.name)
+            return; //同一张图可能被多条消息引用，只保留一个任务
+    }
+    if (UserMgr::GetInstance()->GetDownloadFile(task.name))
+        return; //头像下载可能正占用同名资源，等下一次同步再补
 
-    auto info = std::make_shared<DownloadFileInfo>();
-    info->_name = name;
-    info->_client_path = target;
-    info->_owner_uid = sender; //资源在发送方的目录下
-    info->_seq = 1;
-    UserMgr::GetInstance()->AddDownloadFile(info);
+    if (urgent)
+        _download_queue.prepend(task);
+    else
+        _download_queue.append(task);
+    pumpImageDownloads();
+}
 
-    _chat_downloads.insert(name, ChatDownload{sender, messageId, threadId});
-    FileTcpMgr::GetInstance()->StartDownload(name);
+//并发上限只在连接就绪时生效；未连接时队列保留，重连后由 RetryImageDownloads 统一补发
+void ChatService::pumpImageDownloads()
+{
+    if (!FileService::GetInstance()->IsConnected())
+        return;
+
+    while (_chat_downloads.size() < MaxConcurrentImageDownloads && !_download_queue.isEmpty()) {
+        ChatDownload task = _download_queue.takeFirst();
+        if (_chat_downloads.contains(task.name))
+            continue;
+        if (task.path.isEmpty())
+            task.path = ImageCachePath(task.name);
+        if (task.path.isEmpty())
+            continue;
+
+        //队列里等的时候，别的消息可能已经把它下载好了，直接发布不再走网络
+        QSize pixel;
+        const QString thumb = EnsureImageThumbnail(task.name, &pixel);
+        if (!thumb.isEmpty()) {
+            UserMgr::GetInstance()->FinishImageDownload(task.name, thumb, pixel);
+            continue;
+        }
+        if (UserMgr::GetInstance()->GetDownloadFile(task.name))
+            continue; //同名头像仍在下，放弃本次任务，重连/重新登录时会再排队
+
+        QDir().mkpath(QFileInfo(task.path).absolutePath());
+        auto info = std::make_shared<DownloadFileInfo>();
+        info->_name = task.name;
+        info->_client_path = task.path;
+        info->_owner_uid = task.sender; //资源在发送方的目录下
+        info->_seq = 1;
+        UserMgr::GetInstance()->AddDownloadFile(info);
+
+        _chat_downloads.insert(task.name, task);
+        FileTcpMgr::GetInstance()->StartDownload(task.name);
+    }
 }
 
 //资源连接就绪后扫描所有还没有本地图片的消息，补发下载；历史消息和新通知共用这一条路径
@@ -373,4 +434,5 @@ void ChatService::RetryImageDownloads()
                 message->_message_id, message->_thread_id);
         }
     }
+    pumpImageDownloads(); //队列里可能已经有等待中的任务
 }

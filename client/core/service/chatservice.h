@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QList>
 #include <QSize>
 #include <QString>
 #include "singleton.h"
@@ -21,6 +22,7 @@ public:
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉待上传记录
     //接收方收到 1033：补一条图片消息，本地没有压缩图时发起下载
     void HandleImageNotify(const QJsonObject &data);
+    //历史消息或通知里的图片没有本地文件时排入下载队列，由连接状态与并发上限依次放行
     void DownloadChatImage(const QString &name, int sender, qint64 messageId, qint64 threadId);
     void RetryImageDownloads(); //资源连接就绪后补发等待中的图片下载
     //本机压缩图，与服务器保存的是同一份（长边 1600），点开大图直接读它；
@@ -46,11 +48,18 @@ private:
 
     //一次接收方图片下载：完成后按资源名找到所有引用它的消息
     struct ChatDownload {
+        QString name;
+        QString path; //半截文件位置，断线/换账号时要删掉
         int sender = 0;
         qint64 message_id = 0;
         qint64 thread_id = 0;
     };
-    QHash<QString, ChatDownload> _chat_downloads; //资源名 -> 下载中的消息
+    //登录会一次拉到很多历史图片，排队后最多同时下两个，避免占满资源连接、进度条一起乱跳
+    static constexpr int MaxConcurrentImageDownloads = 2;
+    QHash<QString, ChatDownload> _chat_downloads; //正在下载的资源
+    QList<ChatDownload> _download_queue; //等待下载的资源，实时通知插到队首
+    void enqueueImageDownload(const ChatDownload &task, bool urgent);
+    void pumpImageDownloads(); //按并发上限从队列取任务
 };
 
 #endif // CHATSERVICE_H

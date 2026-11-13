@@ -116,7 +116,7 @@ SessionService::SessionService() : _ready(false)
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
                 threadId, status);
             //图片消息的 content 是资源文件名；重新登录后用本机缩略图显示，
-            //本机没有压缩图时自动下载，避免离线消息一直停在占位
+            //本机没有压缩图时排入下载队列，界面先显示占位和进度
             if (item.value("msg_type").toInt(0) == static_cast<int>(ChatMsgType::Image)) {
                 message->_msg_type = ChatMsgType::Image;
                 message->_resource_name = item.value("content").toString();

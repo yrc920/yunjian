@@ -2,7 +2,6 @@
 
 #include "global.h"
 
-#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -82,7 +81,7 @@ QString UserMgr::GetToken() const
     return _token;
 }
 
-//账号数据根目录：users/<网关摘要>/<uid>/
+//账号数据根目录：users/<uid>/
 //头像、好友头像缓存、聊天图片和临时上传图都放在这里，本地登录多个账号也不会互相串
 QString UserMgr::AccountRootPath()
 {
@@ -96,12 +95,7 @@ QString UserMgr::AccountRootPath()
     if (root.isEmpty())
         return {};
 
-    const QUrl gateway(gate_url_prefix);
-    const QString endpoint = gateway.host().toLower() + QLatin1Char(':')
-        + QString::number(gateway.port(gateway.scheme() == QStringLiteral("https") ? 443 : 80));
-    const QString scope = QString::fromLatin1(
-        QCryptographicHash::hash(endpoint.toUtf8(), QCryptographicHash::Sha256).toHex());
-    return QDir(root).filePath(QStringLiteral("users/%1/%2").arg(scope).arg(uid));
+    return QDir(root).filePath(QStringLiteral("users/%1").arg(uid));
 }
 
 QString UserMgr::LocalAvatarPath()
@@ -773,6 +767,7 @@ std::shared_ptr<ApplyInfo> UserMgr::ApplyAt(int index) const
 void UserMgr::ClearSession()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
+    emit SessionCleared(); //在 uid 被清掉之前通知，业务层还能按旧账号删除半截文件
     const bool hadIcon = !GetIcon().isEmpty();
     emit ApplyListAboutToChange();
     emit FriendListAboutToChange();

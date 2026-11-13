@@ -184,11 +184,12 @@
   聊天图片最多 8 片在途，头像固定 1 片；`seq` 从 1 开始，收到 2008/2002 后按确认序号补发；
 - 进度按“连续确认到的分片”计算，乱序回包不会让进度条回跳；全部确认后发 `sig_upload_finished`；
 - 聊天图片由 `ChatService` 把输入区压缩图（长边 1600 的 JPEG/PNG）复制到本机缓存后复用 `2001`
-  通道，与头像上传的状态互不影响；本机缓存 `users/<网关>/<uid>/images/<md5>.<ext>` 与服务器
+  通道，与头像上传的状态互不影响；本机缓存 `users/<uid>/images/<md5>.<ext>` 与服务器
   保存的是同一份，气泡用的缩略图单独放在 `images/thumbs/`，不会覆盖压缩图；`FileService`
   按资源名把进度与完成/失败转发给消息行，上传完成后消息状态变为已发送，进度条隐藏；
 - 下载：`DownloadFileInfo` 保存本地路径与 seq，`seq == 1` 覆盖写，否则追加；每片回包发出
   `sig_download_progress`，接收方聊天图片由 `ChatService` 写回消息进度，完成后生成缩略图；
+  历史图片与 1033 通知统一进入下载队列，最多同时下两张，避免登录时几十张图一起抢连接；
 - 暂停：头像窗口为 1，置 `UserMgr::_upload_paused` 后当前分片回包即停止；聊天图片不受影响；
 - 继续：向服务器发 2003，按返回的 `seq` 重建连续确认位置后继续。
 
@@ -197,7 +198,7 @@
 - `UploadAvatar`：校验 PNG、计算 MD5，建立上传状态并启动第一片；
 - `OnSessionReady`：登录完成后拉取本机、好友与好友申请里缺失的头像，已有缓存直接使用；
 - 下载完成后，本机头像写回 `LocalAvatarPath`，好友/申请人头像写回
-  `AppDataLocation/users/<网关哈希>/<登录uid>/contacts/<ownerUid>/<name>` 并刷新对应列表；
+  `AppDataLocation/users/<登录uid>/contacts/<ownerUid>/<name>` 并刷新对应列表；
 - 新头像开始上传前取消本机旧头像的下载，避免服务端以 `seq=1` 截断文件后
   旧下载把本机头像覆盖成残缺内容。
 - 同一个 uid 可能同时出现在好友列表和「新的朋友」：`UserMgr::SetContactIcon` 会同时替换

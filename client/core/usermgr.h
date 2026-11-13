@@ -35,10 +35,10 @@ public:
     int GetUid(); //获取用户ID
     void SetToken(const QString &token); //资源服务器用同一个会话令牌校验身份
     QString GetToken() const;
-    static QString LocalAvatarPath(); //当前网关与账号对应的头像文件
+    static QString LocalAvatarPath(); //当前账号的头像文件
     static QString ResourceCachePath(int ownerUid, const QString &name); //好友头像缓存
-    //本机资源统一按「网关 + 登录账号」分层，换账号不会读到别人的图片和头像缓存
-    static QString AccountRootPath(); //AppData/users/<网关摘要>/<uid>
+    //本机资源统一按登录账号分层，换账号不会读到别人的图片和头像缓存
+    static QString AccountRootPath(); //AppData/users/<uid>
     static QString ChatImagePath(const QString &name); //本账号的聊天压缩图
     static QString ChatImageThumbPath(const QString &name); //本账号的气泡缩略图
     static QString PendingImageDir(); //输入区待上传的临时压缩图目录
@@ -107,6 +107,7 @@ public:
     void ClearSession();
 
 signals:
+    void SessionCleared();            //换账号前清空会话，业务层据此丢弃在途资源任务
     void UserIconChanged();
     void FriendListAboutToChange();
     void ApplyListAboutToChange();
