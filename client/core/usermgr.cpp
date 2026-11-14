@@ -118,6 +118,50 @@ bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &d
     return changed;
 }
 
+//未读只对"对方发来的消息"累加；正在看的会话由 SetActivePeer 直接清零，不计数
+void UserMgr::IncUnread(int uid)
+{
+    if (uid <= 0 || uid == _active_peer)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    ++_unread[uid];
+    emit UnreadChanged();
+}
+
+void UserMgr::ClearUnread(int uid)
+{
+    if (uid <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (_unread.remove(uid) > 0)
+        emit UnreadChanged();
+}
+
+int UserMgr::UnreadCount(int uid) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _unread.value(uid, 0);
+}
+
+int UserMgr::UnreadTotal() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    int total = 0;
+    for (auto count : _unread)
+        total += count;
+    return total;
+}
+
+//切换当前会话：进入时清零未读，离开时置0；同一会话重复调用不会重复通知
+void UserMgr::SetActivePeer(int uid)
+{
+    if (_active_peer == uid)
+        return;
+    _active_peer = uid;
+    if (uid > 0)
+        ClearUnread(uid);
+}
+
 //所有好友标签去重后按名称排序，空标签不会出现在筛选条里
 QStringList UserMgr::AllTags() const
 {
@@ -595,6 +639,8 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
         if (!info)
             continue;
         info->_chat_thread->_thread_id = item.value("thread_id").toVariant().toLongLong();
+        //会话最后活动时间只用于首屏排序，拉回历史后会被真实消息时间覆盖
+        info->_last_time = item.value("time").toVariant().toLongLong();
     }
 }
 
@@ -1101,6 +1147,9 @@ void UserMgr::ClearSession()
     emit ApplyListChanged();
     emit FriendListChanged();
     emit FriendTagsChanged(); //换账号后筛选条不能留着上一个账号的标签
+    _unread.clear(); //未读属于上一次登录，换账号必须清掉
+    _active_peer = 0;
+    emit UnreadChanged();
     if (hadIcon)
         emit UserIconChanged();
 }

@@ -41,6 +41,7 @@ public:
         FileNameRole, //视频/文件的原始显示名
         FileSizeRole, //视频/文件字节数
         TransferStateRole, //ResourceTransferState，媒体卡片据此显示按钮
+        TimeTextRole, //时间条文案；与上一条间隔不足 5 分钟时为空串，界面不渲染
     };
 
     explicit MessageModel(QObject *parent = nullptr);

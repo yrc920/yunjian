@@ -2,6 +2,7 @@
 
 #include "usermgr.h"
 #include "userdata.h"
+#include "timeformat.h"
 
 MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
 {
@@ -121,6 +122,18 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
     const auto &msg = friend_info->_chat_thread->_chat_msgs.at(index.row());
     switch (role) {
     case TextRole: return msg->_msg_content;
+    case TimeTextRole: {
+        if (msg->_time <= 0)
+            return {};
+        //与上一条间隔不到 5 分钟就沿用上一条的时间条，避免每句都挂一个时间
+        if (index.row() > 0) {
+            const auto &prev = friend_info->_chat_thread->_chat_msgs.at(index.row() - 1);
+            if (prev && prev->_time > 0
+                && msg->_time - prev->_time < TimeFormat::kSeparatorSeconds)
+                return {};
+        }
+        return TimeFormat::messageTime(msg->_time);
+    }
     case SelfRole: return msg->_from_uid == UserMgr::GetInstance()->GetUid();
     case FromUidRole: return msg->_from_uid;
     case ImageSourceRole: return msg->_imageSource;
@@ -182,6 +195,7 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {FileNameRole, "fileName"},
         {FileSizeRole, "fileSize"},
         {TransferStateRole, "transferState"},
+        {TimeTextRole, "timeText"},
     };
 }
 

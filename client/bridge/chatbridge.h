@@ -45,6 +45,7 @@ class ChatBridge : public QObject
     Q_PROPERTY(QString currentSubtitle READ currentSubtitle NOTIFY currentChanged)
     Q_PROPERTY(QStringList tagOptions READ tagOptions NOTIFY tagFilterChanged)
     Q_PROPERTY(QString tagFilter READ tagFilter NOTIFY tagFilterChanged)
+    Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -103,6 +104,9 @@ public:
     QString tagFilter() const { return _tagFilter; }
     Q_INVOKABLE void setTagFilter(const QString &tag);
     Q_INVOKABLE void clearTagFilter();
+
+    // 左侧栏「会话」徽标用的总未读数
+    int unreadTotal() const;
 
     // 自己：myName 用于显示（昵称优先），myUserName 用于申请文案（用户名）
     QString myIcon() const;
@@ -206,6 +210,8 @@ signals:
     void remarkSaved(bool ok, int uid);
     //标签选项或当前筛选变化：联系人页的筛选条与列表一起刷新
     void tagFilterChanged();
+    //未读总数变化：左侧栏「会话」徽标刷新
+    void unreadChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
     void resourceSaved(bool ok, const QString &path);
     void resourceNotice(const QString &message); //本地文件缺失、另存位置失效等提示

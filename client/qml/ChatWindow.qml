@@ -128,6 +128,8 @@ Item {
                 SideButton {
                     kind: "chat"
                     active: bridge.mode === ChatBridge.ChatMode
+                    //会话徽标显示所有未读之和，与联系人徽标共用同一套样式
+                    badge: bridge.unreadTotal
                     onClicked: bridge.showChatMode()
                 }
                 SideButton {
@@ -721,14 +723,35 @@ Item {
                         anchors.rightMargin: 24
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
-                        Text {
+
+                        // 名字行：右侧留出时间位置，名字过长时先省略名字
+                        Item {
                             width: parent.width
-                            text: model.displayName
-                            textFormat: Text.PlainText
-                            color: Theme.textPrimary
-                            font.pixelSize: 14
-                            font.bold: friendRow.chosen
-                            elide: Text.ElideRight
+                            height: nameLabel.implicitHeight
+
+                            Text {
+                                id: nameLabel
+                                anchors.left: parent.left
+                                anchors.right: timeLabel.left
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: model.displayName
+                                textFormat: Text.PlainText
+                                color: Theme.textPrimary
+                                font.pixelSize: 14
+                                font.bold: friendRow.chosen
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                id: timeLabel
+                                anchors.right: parent.right
+                                anchors.baseline: nameLabel.baseline
+                                text: friendRow.chatMode ? model.lastTime : ""
+                                textFormat: Text.PlainText
+                                color: Theme.textHint
+                                font.pixelSize: 10
+                                visible: text.length > 0
+                            }
                         }
                         Text {
                             visible: friendRow.chatMode
@@ -739,6 +762,24 @@ Item {
                             elide: Text.ElideRight
                             maximumLineCount: 1
                             textFormat: Text.PlainText
+                        }
+                    }
+
+                    // 未读数：贴在头像右上角，与左侧栏徽标同一配色
+                    Rectangle {
+                        visible: friendRow.chatMode && model.unread > 0
+                        x: friendAvatar.x + friendAvatar.width - 9
+                        y: friendAvatar.y - 2
+                        width: Math.max(16, unreadLabel.implicitWidth + 8)
+                        height: 16
+                        radius: 8
+                        color: Theme.accent
+                        Text {
+                            id: unreadLabel
+                            anchors.centerIn: parent
+                            text: model.unread > 99 ? "99+" : model.unread
+                            color: Theme.primaryText
+                            font.pixelSize: 9
                         }
                     }
                     MouseArea {

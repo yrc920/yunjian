@@ -93,6 +93,14 @@ public:
     qint64 LastMessageId(int friend_id) const; //当前最大消息ID, 作为翻页游标
     bool HasPendingPrivateChat(int friend_id) const; //是否正在等待 1026 回包
     void MarkPrivateChatPending(int friend_id, bool pending);
+    //未读会话数：收到对方消息时累加，打开该会话时清零
+    void IncUnread(int uid);
+    void ClearUnread(int uid);
+    int UnreadCount(int uid) const;
+    int UnreadTotal() const;
+    //当前正在看的会话；设置后该会话的未读立即清零，收到新消息也不再计数
+    void SetActivePeer(int uid);
+    int ActivePeer() const { return _active_peer; }
     void UpdateChatMessage(int friend_id, const QString &msg_id, qint64 message_id,
                            ChatMessageStatus status); //回执补 ID/状态并重新排序
     //上传进度按资源名回写：同一资源的多条消息一起更新，完成/失败同时改消息状态
@@ -146,6 +154,7 @@ signals:
     void FriendListChanged();        // 登录拿到好友列表、通过好友申请
     void ApplyListChanged();         // 好友申请列表变化
     void FriendChatChanged(int uid); // 某个好友的消息变化
+    void UnreadChanged(); // 未读数变化：会话行与左侧栏徽标一起刷新
     void FriendIconChanged(int uid); // 好友头像下载完成，只刷新对应行
     void ApplyIconChanged(int uid);  // 好友申请里同一个人头像变化，只刷新申请行
 
@@ -162,6 +171,8 @@ private:
     QMap<int, bool> _pending_private_chats; //正在等待建会话回包的好友, 防止重复请求
     QMap<QString, std::shared_ptr<UploadFileInfo>> _uploads; //按md5索引
     QMap<QString, std::shared_ptr<DownloadFileInfo>> _downloads; //按资源名索引
+    QMap<int, int> _unread; //uid -> 未读条数，只在当前登录会话内有效
+    int _active_peer = 0; //正在看的会话对方 uid，0 表示不在会话里
     bool _upload_paused = false;
 };
 

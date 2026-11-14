@@ -287,7 +287,7 @@ void CSession::NotifyOffline(int uid)
 //图片已经完整落在资源服务器上，接收方收到后先查本地缓存，没有就发起断点下载
 void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
     long long thread_id, const std::string& name, const std::string& client_msg_id,
-    long long total_size)
+    long long total_size, long long created_at)
 {
     Json::Value rtvalue;
     rtvalue["error"] = ErrorCodes::Success;
@@ -298,6 +298,7 @@ void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
     rtvalue["msgid"] = client_msg_id; //与历史同步同一个 ID，客户端据此去重
     rtvalue["name"] = name;
     rtvalue["total_size"] = Json::Int64(total_size);
+    rtvalue["time"] = Json::Int64(created_at); //落库时间，接收方时间条与列表排序都用它
     Send(rtvalue.toStyledString(), ID_NOTIFY_IMG_CHAT_MSG_REQ);
 }
 
@@ -305,7 +306,7 @@ void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
 //接收方据此先画卡片和视频首帧，真正下载要等用户点击
 void CSession::NotifyResourceRecv(long long message_id, int from_uid, int to_uid,
     long long thread_id, const std::string& name, const std::string& client_msg_id,
-    long long total_size, int msg_type, const std::string& content)
+    long long total_size, int msg_type, const std::string& content, long long created_at)
 {
     Json::Value rtvalue;
     rtvalue["error"] = ErrorCodes::Success;
@@ -318,6 +319,7 @@ void CSession::NotifyResourceRecv(long long message_id, int from_uid, int to_uid
     rtvalue["total_size"] = Json::Int64(total_size);
     rtvalue["msg_type"] = msg_type;
     rtvalue["content"] = content;
+    rtvalue["time"] = Json::Int64(created_at); //落库时间，接收方时间条与列表排序都用它
     Send(rtvalue.toStyledString(), ID_NOTIFY_RESOURCE_CHAT_MSG_REQ);
 }
 

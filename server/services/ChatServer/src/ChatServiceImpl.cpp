@@ -135,6 +135,7 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 		element["message_id"] = Json::Int64(msg.message_id());
 		element["thread_id"] = Json::Int64(request->thread_id());
 		element["status"] = msg.status();
+		element["time"] = Json::Int64(msg.time());
 		text_array.append(element);
 	}
 	rtvalue["text_array"] = text_array;
@@ -251,14 +252,14 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
             if (message.msg_type == 1) {
                 session->NotifyImageRecv(message.message_id, message.sender_id,
                     message.recv_id, message.thread_id, request->name(),
-                    message.client_msg_id, request->total_size());
+                    message.client_msg_id, request->total_size(), message.created_at);
             }
             else {
                 //视频/文件只发通知，接收方点击卡片后才开始下载
                 session->NotifyResourceRecv(message.message_id, message.sender_id,
                     message.recv_id, message.thread_id, request->name(),
                     message.client_msg_id, request->total_size(),
-                    message.msg_type, message.content);
+                    message.msg_type, message.content, message.created_at);
             }
         }
     }

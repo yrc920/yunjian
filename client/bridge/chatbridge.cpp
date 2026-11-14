@@ -43,6 +43,9 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
             _tagFilter.clear();
         emit tagFilterChanged();
     });
+    //未读总数变化：左侧栏徽标跟着刷新
+    connect(UserMgr::GetInstance().get(), &UserMgr::UnreadChanged,
+            this, &ChatBridge::unreadChanged);
 
     auto *profileService = ProfileService::GetInstance().get();
     connect(profileService, &ProfileService::profileUpdated, this,
@@ -423,6 +426,11 @@ void ChatBridge::clearTagFilter()
     setTagFilter(QString());
 }
 
+int ChatBridge::unreadTotal() const
+{
+    return UserMgr::GetInstance()->UnreadTotal();
+}
+
 void ChatBridge::clearProfileMessages()
 {
     if (_profileMessage.isEmpty() && _remarkMessage.isEmpty())
@@ -543,6 +551,8 @@ void ChatBridge::openChat(int uid)
 
     setMode(ChatMode);
     setPane(ChatPage);
+    // 进入会话即视为已读；之后的推送在 UserMgr 里会跳过这个会话
+    UserMgr::GetInstance()->SetActivePeer(uid);
 }
 
 void ChatBridge::openProfile(int uid)
@@ -612,6 +622,11 @@ void ChatBridge::setMode(int mode)
     _mode = mode;
     //标签筛选只作用于联系人列表；聊天模式必须看到全部会话
     _friends->setFilterEnabled(mode == ContactMode);
+    //会话按最近消息排序，联系人保持加好友顺序
+    _friends->setSortByRecent(mode == ChatMode);
+    //离开会话页后不再把新消息当成"正在看"，未读恢复累加
+    if (mode != ChatMode)
+        UserMgr::GetInstance()->SetActivePeer(0);
     emit modeChanged();
 }
 
@@ -620,6 +635,9 @@ void ChatBridge::setPane(int pane)
     if (_pane == pane)
         return;
     _pane = pane;
+    // 只有真正停在会话页才算"正在看"，切到资料页/申请页后新消息重新计入未读
+    if (pane != ChatPage)
+        UserMgr::GetInstance()->SetActivePeer(0);
     emit paneChanged();
 }
 

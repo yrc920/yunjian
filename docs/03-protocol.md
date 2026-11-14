@@ -166,13 +166,13 @@
 
 `thread_id` 可为 0；服务端会按两人关系找到或创建线程。
 
-**1018 文本消息回执** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status}]}`
+**1018 文本消息回执** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status, time}]}`
 
-`status`：1=已发送，2=发送失败。
+`status`：1=已发送，2=发送失败。`time` 是服务端落库时间（UNIX 秒）。
 
-**1019 文本消息投递** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status}]}`
+**1019 文本消息投递** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status, time}]}`
 
-接收方收到的消息 `status=3`（未读）。
+接收方收到的消息 `status=3`（未读）。`time` 与发送方回执中的值相同，跨实例转发也原样带走。
 
 **1025 创建单聊** `{fromuid:int, touid:int}`
 
@@ -180,13 +180,17 @@
 
 **1027 拉会话列表** `{fromuid:int, thread_id:int64}` —— `thread_id` 是上一页最后一条，首屏传 0。
 
-**1028 会话列表回包** `{error, thread_list:[{thread_id, uid, name, nick, icon, sex}], load_more:bool}`
+**1028 会话列表回包** `{error, thread_list:[{thread_id, uid, name, nick, icon, sex, time}], load_more:bool}`
+
+`time` 是会话最后活动时间（UNIX 秒，来自 `chat_thread.updated_at`）。客户端登录首屏按它排序，
+避免历史消息还没拉回来时列表先按加好友顺序显示、随后又跳一次；历史拉回后改用最后一条消息时间。
 
 **1029 拉历史消息** `{fromuid:int, thread_id:int64, message_id:int64}` —— 取 `message_id` 之后的消息，首屏传 0。
 
-**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status}], load_more:bool}`
+**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status, time}], load_more:bool}`
 
 `msg_type`：0=文本，1=图片（`content` 是资源文件名），2=视频，3=文件（2/3 的 `content` 是元数据 JSON）。
+`time` 是 `chat_message.created_at` 的 UNIX 秒值，客户端按本地时区格式化成时间条，并据此排序会话。
 
 **1031 图片消息** `{fromuid:int, touid:int, thread_id:int64, md5:string, name:string, token:string, unique_id:string}`
 
@@ -201,9 +205,10 @@
 `status=0`；客户端据此回填消息 ID 与线程 ID，然后向 ResourceServer 发送 `1037` 上传资源。
 1037 的每个分片确认都会回推进度，上传完成时消息状态改为已发送。
 
-**1033 图片完成通知** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size}`
+**1033 图片完成通知** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, time}`
 
-`msgid` 是发送方的客户端消息 ID，与历史同步一致，接收方据此去重。接收方先查本机压缩图，
+`msgid` 是发送方的客户端消息 ID，与历史同步一致，接收方据此去重。`time` 是该消息的落库时间，
+接收方用它画时间条并参与会话排序。接收方先查本机压缩图，
 命中则直接显示缩略图；否则把消息插入会话并向 ResourceServer 发送 `1041` 断点下载，
 进度写回同一条消息，完成后生成缩略图。
 
@@ -222,10 +227,11 @@
 再把视频本体分片上传，两者都完成后才由资源服务器通知接收方。
 
 **1036 视频/文件完成通知**
-`{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, msg_type, content}`
+`{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, msg_type, content, time}`
 
 `content` 与历史同步里的一致，接收方据此渲染文件名、大小与首帧；`name` 就是原文件名，
-下载端直接按这个名字落盘。收到 1036 时**不自动下载**
+下载端直接按这个名字落盘。`time` 是消息落库时间，用于时间条与会话排序。
+收到 1036 时**不自动下载**
 资源本体：视频与文件都先显示卡片和下载按钮，由用户点击后再向 ResourceServer 发 `1041`；
 视频首帧缩略图较小，会在后台自动下载用于预览。
 

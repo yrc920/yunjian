@@ -552,6 +552,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 		item["status"] = status;
 		item["fromuid"] = message.sender_id;
 		item["touid"] = message.recv_id;
+		item["time"] = Json::Int64(message.created_at); //欢迎消息也参与会话排序
 		array.append(item);
 	};
 	//同意方视角：申请方的留言是收到的未读，自己的默认句是已发送
@@ -690,6 +691,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		item["thread_id"] = Json::Int64(message.thread_id);
 		item["message_id"] = Json::Int64(message.message_id);
 		item["status"] = 1;
+		item["time"] = Json::Int64(message.created_at); //发送方按服务端时间显示
 		rtvalue["text_array"].append(item);
 	}
 	notify["text_array"] = rtvalue["text_array"];
@@ -732,6 +734,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		text_msg->set_status(3);
 		text_msg->set_fromuid(uid);
 		text_msg->set_touid(touid);
+		text_msg->set_time(message.created_at); //跨实例也按落库时间显示，不用转发时刻
 	}
 
 	auto forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, text_msg_req, rtvalue);
@@ -773,6 +776,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	response["thread_id"] = Json::Int64(saved.thread_id);
 	response["message_id"] = Json::Int64(saved.message_id);
 	response["status"] = 0; //资源尚未上传; 接收方通知留到资源完成后的章节
+	response["time"] = Json::Int64(saved.created_at);
 	session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
 }
 
@@ -829,6 +833,7 @@ void LogicSystem::DealResourceChatMsg(std::shared_ptr<CSession> session,
 	response["thread_id"] = Json::Int64(saved.thread_id);
 	response["message_id"] = Json::Int64(saved.message_id);
 	response["status"] = 0; //资源尚未上传，等 ResourceServer 完成通知
+	response["time"] = Json::Int64(saved.created_at);
 	session->Send(response.toStyledString(), ID_RESOURCE_CHAT_MSG_RSP);
 }
 
@@ -884,6 +889,8 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
 		item["nick"] = thread.peer_nick;
 		item["icon"] = thread.peer_icon;
 		item["sex"] = thread.peer_sex;
+		//会话最后活动时间：客户端首屏排序用，历史消息拉回来后改用消息时间
+		item["time"] = Json::Int64(thread.updated_at);
 		response["thread_list"].append(item);
 	}
 	session->Send(response.toStyledString(), ID_LOAD_CHAT_THREAD_RSP);
@@ -917,6 +924,7 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 		item["msgid"] = message.client_msg_id;
 		item["content"] = message.content;
 		item["msg_type"] = message.msg_type; //0 文本, 1 图片; 客户端据此决定渲染方式
+		item["time"] = Json::Int64(message.created_at); //UNIX 秒, 客户端按本地时区分层显示
 		//历史消息按"自己发的/对方发的"给默认状态, 库里 status 暂未维护已读
 		item["status"] = message.sender_id == uid ? 1 : 3;
 		response["text_array"].append(item);

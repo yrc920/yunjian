@@ -757,8 +757,9 @@ bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
 		//多取一条用来判断还有没有下一页, 返回前再截掉
 		auto res = con->_session->sql(
 			"SELECT pc.thread_id, CASE WHEN pc.user1_id = ? THEN pc.user2_id ELSE pc.user1_id END, "
-			"u.name, u.nick, u.icon, u.sex "
+			"u.name, u.nick, u.icon, u.sex, UNIX_TIMESTAMP(ct.updated_at) "
 			"FROM private_chat pc JOIN user u ON u.uid = CASE WHEN pc.user1_id = ? THEN pc.user2_id ELSE pc.user1_id END "
+			"JOIN chat_thread ct ON ct.thread_id = pc.thread_id "
 			"WHERE (pc.user1_id = ? OR pc.user2_id = ?) AND pc.thread_id > ? "
 			"ORDER BY pc.thread_id ASC LIMIT ?")
 			.bind(uid).bind(uid).bind(uid).bind(uid).bind(last_thread_id).bind(limit + 1).execute();
@@ -775,6 +776,7 @@ bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
 			info.peer_nick = row[3].get<std::string>();
 			info.peer_icon = row[4].get<std::string>();
 			info.peer_sex = row[5].get<int>();
+			info.updated_at = row[6].isNull() ? 0 : row[6].get<int64_t>();
 			threads.push_back(std::move(info));
 			row = res.fetchOne();
 		}
@@ -805,8 +807,10 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 		if (member.isNull())
 			return false;
 		//按消息ID升序增量读取; 多取一条判断下一页
+		//时间取 UNIX 时间戳: 库里是 TIMESTAMP, 直接读字符串还要处理会话时区
 		auto res = con->_session->sql(
-			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type "
+			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type, "
+			"UNIX_TIMESTAMP(created_at) "
 			"FROM chat_message WHERE thread_id = ? AND message_id > ? "
 			"ORDER BY message_id ASC LIMIT ?")
 			.bind(thread_id).bind(last_message_id).bind(limit + 1).execute();
@@ -825,6 +829,7 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 			info.content = row[5].get<std::string>();
 			info.status = row[6].get<int>();
 			info.msg_type = row[7].get<int>();
+			info.created_at = row[8].get<int64_t>();
 			messages.push_back(std::move(info));
 			row = res.fetchOne();
 		}
@@ -908,6 +913,11 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 			info.recv_id = recv_id;
 			info.client_msg_id = client_id;
 			info.content = content;
+			//重发同一条时库里保留原始时间, 客户端展示与排序都按这个值
+			auto time_row = con->_session->sql(
+				"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
+				.bind(static_cast<int64_t>(info.message_id)).execute().fetchOne();
+			info.created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
 			messages.push_back(std::move(info));
 		}
 		//会话列表按更新时间排序时需要这个时间戳, 消息写入和会话刷新放在同一事务
@@ -964,6 +974,11 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 			return false;
 		}
 		const long long message_id = id_row[0].get<int64_t>();
+		//重发同一条时库里保留原始时间, 这里按 message_id 读回来, 不用本地时间冒充
+		auto time_row = con->_session->sql(
+			"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
+			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
+		const long long created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
 		con->_session->sql("UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
 			.bind(thread_id).execute();
 		con->_session->commit();
@@ -976,6 +991,7 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 		message.content = content;
 		message.msg_type = msg_type;
 		message.status = 0;
+		message.created_at = created_at;
 		return true;
 	}
 	catch (mysqlx::Error& e) {
@@ -1001,7 +1017,8 @@ bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
 
 	try {
 		auto row = con->_session->sql(
-			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type "
+			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type, "
+			"UNIX_TIMESTAMP(created_at) "
 			"FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
 		if (row.isNull())
@@ -1014,6 +1031,7 @@ bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
 		message.content = row[5].get<std::string>();
 		message.status = row[6].get<int>();
 		message.msg_type = row[7].get<int>();
+		message.created_at = row[8].get<int64_t>();
 		return true;
 	}
 	catch (mysqlx::Error& e) {

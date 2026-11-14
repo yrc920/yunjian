@@ -173,12 +173,35 @@ Item {
         delegate: Item {
             id: messageRow
             width: ListView.view.width
-            height: loader.item ? loader.item.implicitHeight : 0
+            height: messageContent.height
 
-            Loader {
-                id: loader
+            Column {
+                id: messageContent
                 width: parent.width
-                sourceComponent: model.msgType >= 2 ? mediaComponent : bubbleComponent
+                spacing: 0
+
+                // 时间条：与上一条间隔超过 5 分钟才出现，居中一行浅色小字
+                Item {
+                    width: parent.width
+                    height: model.timeText.length > 0 ? 30 : 0
+                    visible: height > 0
+                    Text {
+                        anchors.centerIn: parent
+                        width: parent.width - 40
+                        text: model.timeText
+                        textFormat: Text.PlainText
+                        color: Theme.textHint
+                        font.pixelSize: 10
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                    }
+                }
+
+                Loader {
+                    id: loader
+                    width: parent.width
+                    sourceComponent: model.msgType >= 2 ? mediaComponent : bubbleComponent
+                }
             }
 
             Component {

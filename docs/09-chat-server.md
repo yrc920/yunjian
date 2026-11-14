@@ -285,9 +285,13 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 
 1. 解析 `{fromuid, touid, thread_id, text_array:[{content, msgid}]}`；
 2. 先按 `thread_id` 找到/创建单聊线程，把消息写入 `chat_message`，拿到 `message_id`；
-3. 构造 1018 回执：`thread_id`、`message_id`，发送方状态 1；写库失败时状态 2；
+3. 构造 1018 回执：`thread_id`、`message_id`、`time`，发送方状态 1；写库失败时状态 2；
 4. 查 `uip_<touid>` → 本实例直投 1019 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
 5. 目标离线时消息已持久化，不推送；下次登录按 1027/1029 同步。
+
+`time` 是 `chat_message.created_at` 的 UNIX 秒值。写入不显式传时间，插入后按 `message_id`
+读回：重发同一条（唯一键命中）时拿到的是库里原来的时间。跨实例转发把同一个值写入
+`TextChatData.time`，接收方不会因为转发延迟看到偏晚的时间。
 
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。

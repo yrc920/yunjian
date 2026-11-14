@@ -45,6 +45,8 @@ struct ChatThreadInfo {
 	std::string peer_nick; //对方昵称
 	std::string peer_icon; //对方头像
 	int peer_sex = 0; //对方性别
+	//会话最后活动时间(UNIX 秒), 客户端登录首屏排序用; 打开会话拉历史后以消息时间为准
+	long long updated_at = 0;
 };
 
 //一条聊天消息: message_id 来自 chat_message 自增主键, 决定会话内的显示顺序
@@ -57,4 +59,6 @@ struct ChatMessageInfo {
 	std::string content; //消息正文; 图片消息这里存资源文件名
 	int status = 0; //消息状态: 图片落库时为0(资源未上传), 文本不使用
 	int msg_type = 0; //消息类型: 0 文本, 1 图片, 2 视频, 3 文件
+	//落库时间, UNIX 时间戳(秒)。用秒而不是格式化字符串, 客户端按本地时区分层显示
+	long long created_at = 0;
 };

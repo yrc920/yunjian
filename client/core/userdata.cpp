@@ -26,6 +26,9 @@ void FriendInfo::AppendChatMsgs(const std::vector<std::shared_ptr<TextChatData> 
             (*existing)->_thread_id = text->_thread_id;
             (*existing)->_status = text->_status;
             (*existing)->_msg_content = text->_msg_content;
+            //回执带服务端落库时间，覆盖发送时用的本地时间；为 0 时保留原值
+            if (text->_time > 0)
+                (*existing)->_time = text->_time;
         }
     }
     //有服务端 ID 的消息按 ID 升序；尚未确认的排在最后，拿到回执后自然归位

@@ -221,6 +221,8 @@ message TextChatData {
   int32 fromuid = 5;
   // 接收者用户 ID
   int32 touid = 6;
+  // 落库时间（UNIX 秒），跨实例转发时原样带走，接收方时间条与排序都用它
+  int64 time = 7;
 }
 
 // 跨实例转发文本消息的响应

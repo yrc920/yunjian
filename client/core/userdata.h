@@ -186,6 +186,8 @@ struct FriendInfo {
     QString _back;
     QStringList _tags; //自己给这个好友打的分组标签，只在本地视角使用
     QString _last_msg;
+    //会话最后活动时间（UNIX 秒），登录首屏排序用；历史拉回后以最后一条消息时间为准
+    qint64 _last_time = 0;
     std::shared_ptr<ChatThreadData> _chat_thread;
 };
 
@@ -253,6 +255,8 @@ struct TextChatData{
     ResourceTransferState _transfer_state = ResourceTransferState::None;
     int _from_uid;
     int _to_uid;
+    //服务端落库时间（UNIX 秒）。0 表示老数据或本地占位，界面按"刚刚"兜底
+    qint64 _time = 0;
 };
 
 struct TextChatMsg{
@@ -268,6 +272,8 @@ struct TextChatMsg{
                     ? msg_obj["thread_id"].toVariant().toLongLong() : thread_id,
                 static_cast<ChatMessageStatus>(msg_obj["status"].toInt(
                     static_cast<int>(ChatMessageStatus::Sent))));
+            //实时消息也带服务端落库时间，时间条与列表排序都靠它
+            msg_ptr->_time = msg_obj["time"].toVariant().toLongLong();
             _chat_msgs.push_back(msg_ptr);
         }
     }

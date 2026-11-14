@@ -105,6 +105,7 @@ set(CORE_SOURCES
     core/service/friendservice.cpp
     core/service/profileservice.cpp
     core/service/fileservice.cpp
+    core/timeformat.cpp
     core/videothumbnail.cpp
 )
 
@@ -119,6 +120,7 @@ set(CORE_HEADERS
     core/service/friendservice.h
     core/service/profileservice.h
     core/service/fileservice.h
+    core/timeformat.h
     core/videothumbnail.h
 )
 

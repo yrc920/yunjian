@@ -101,10 +101,21 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 
 | 表 | 用途 |
 | --- | --- |
-| `chat_thread` | 单聊/群聊共用的全局会话 ID 和类型 |
+| `chat_thread` | 单聊/群聊共用的全局会话 ID 和类型；`updated_at` 在每次写消息时刷新 |
 | `private_chat` | 两个按 uid 升序保存的单聊参与者；唯一索引避免重复会话 |
 | `group_chat` / `group_chat_member` | 群聊资料与成员关系，本阶段只建表，群聊业务尚未接入 |
-| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型和上传状态 |
+| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态与 `created_at` |
+
+时间字段有两个用途，都按 UNIX 秒下发：
+
+- `chat_message.created_at`：消息落库时间，决定聊天内的时间条与客户端会话排序；
+  重发同一条消息（唯一键命中）时保留原值，不会因为重试而改时间。
+- `chat_thread.updated_at`：会话最后活动时间，登录首屏用它排序，
+  避免历史消息还没拉回来时列表先按加好友顺序显示、随后又跳一次。
+
+SQL 里统一用 `UNIX_TIMESTAMP(created_at)` 取值，避免把数据库时区的字符串直接下发给客户端。
+写入不显式传时间：用列的 `CURRENT_TIMESTAMP` 默认值，插入后按 `message_id` 读回时间戳——
+这样重发同一条（唯一键命中、没有真正插入）时拿到的是库里原来的时间，而不是这次重试的时刻。
 
 `chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件。图片消息的 `content` 存资源文件名（md5）；
 视频与文件的 `content` 存元数据 JSON（`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`）。

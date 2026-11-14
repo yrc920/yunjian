@@ -302,10 +302,11 @@ bool ChatService::sendText(int uid, const QString &text)
         }
 
         emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, payload);
-        mgr->AppendFriendChatMsg(uid, {
-            std::make_shared<TextChatData>(msgId, content, from, uid, 0, mgr->ThreadId(uid),
-                ChatMessageStatus::Sending)
-        });
+        auto pending = std::make_shared<TextChatData>(msgId, content, from, uid, 0,
+            mgr->ThreadId(uid), ChatMessageStatus::Sending);
+        //先按本机时间占位，回执带回服务端时间后原地覆盖，避免发送中这一行没有时间
+        pending->_time = QDateTime::currentSecsSinceEpoch();
+        mgr->AppendFriendChatMsg(uid, {pending});
     }
     return true;
 }

@@ -47,10 +47,21 @@ SessionService::SessionService() : _ready(false)
             [](std::shared_ptr<TextChatMsg> msg) {
                 if (!msg)
                     return;
+                auto *mgr = UserMgr::GetInstance().get();
                 const int peerUid = msg->_from_uid == UserMgr::GetInstance()->GetUid()
                     ? msg->_to_uid : msg->_from_uid;
                 if (msg->_thread_id > 0)
                     UserMgr::GetInstance()->SetThreadId(peerUid, msg->_thread_id);
+                //只有对方发来的才计未读；1018 回包与自己的消息不算
+                bool incoming = false;
+                for (const auto &chat : msg->_chat_msgs) {
+                    if (chat && chat->_from_uid != mgr->GetUid()) {
+                        incoming = true;
+                        break;
+                    }
+                }
+                if (incoming)
+                    mgr->IncUnread(peerUid);
                 UserMgr::GetInstance()->AppendFriendChatMsg(peerUid, msg->_chat_msgs);
             });
     connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [](const QJsonObject &data) {
@@ -84,6 +95,10 @@ SessionService::SessionService() : _ready(false)
     });
     //对方图片上传完成：补消息并下载资源，界面先在会话里显示占位和进度
     connect(tcp, &TcpMgr::sig_image_notify, this, [](const QJsonObject &data) {
+        //对方图片已上传：先计未读，再交给聊天服务建气泡
+        const int from = data.value("fromuid").toInt();
+        if (from > 0 && from != UserMgr::GetInstance()->GetUid())
+            UserMgr::GetInstance()->IncUnread(from);
         ChatService::GetInstance()->HandleImageNotify(data);
     });
     //视频/文件回执与上传完成通知：卡片先出现，资源等用户点击后再下载
@@ -91,6 +106,9 @@ SessionService::SessionService() : _ready(false)
         ChatService::GetInstance()->HandleResourceRsp(data);
     });
     connect(tcp, &TcpMgr::sig_resource_notify, this, [](const QJsonObject &data) {
+        const int from = data.value("fromuid").toInt();
+        if (from > 0 && from != UserMgr::GetInstance()->GetUid())
+            UserMgr::GetInstance()->IncUnread(from);
         ChatService::GetInstance()->HandleResourceNotify(data);
     });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
@@ -124,6 +142,8 @@ SessionService::SessionService() : _ready(false)
                 item.value("content").toString(), item.value("fromuid").toInt(),
                 item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
                 threadId, status);
+            //落库时间：历史补拉与实时消息用同一套字段，界面据此画时间条与排序
+            message->_time = item.value("time").toVariant().toLongLong();
             //图片消息的 content 是资源文件名；视频/文件的 content 是元数据 JSON。
             //图片自动补全，视频只补首帧，视频/文件本体等用户点击下载
             const int msgType = item.value("msg_type").toInt(0);
