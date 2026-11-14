@@ -145,6 +145,15 @@ void FileService::TryStartResourceSync()
     }
 }
 
+//好友换上新的头像文件名：老图还留在缓存目录里但已经不指向它，
+//直接按新文件名查缓存或下载，下载完成后 SetContactIcon 会把界面换成新图
+void FileService::RefreshContactIcon(int uid, const QString &iconName)
+{
+    if (uid <= 0 || iconName.isEmpty())
+        return;
+    CacheContactIcon(uid, iconName);
+}
+
 void FileService::CacheContactIcon(int uid, const QString &iconName)
 {
     if (uid <= 0 || !isRemoteResource(iconName)) //没有归属，或图标不是待下载的资源名

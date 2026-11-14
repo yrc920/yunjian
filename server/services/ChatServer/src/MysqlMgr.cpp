@@ -28,15 +28,27 @@ bool MysqlMgr::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 }
 
 bool MysqlMgr::AddFriendApply(const int& from, const int& to, const std::string& desc,
-	const std::string& back_name)
+	const std::string& back_name, const std::vector<std::string>& tags)
 {
 	//调用数据库访问对象的AddFriendApply方法, 将添加好友申请的请求转发给数据库访问对象处理
-	return _dao.AddFriendApply(from, to, desc, back_name);
+	return _dao.AddFriendApply(from, to, desc, back_name, tags);
 }
 
 bool MysqlMgr::AddFriend(const int& from, const int& to, std::string back_name,
-	std::string& apply_desc) {
-	return _dao.AddFriend(from, to, back_name, apply_desc);
+	const std::vector<std::string>& tags, std::string& apply_desc,
+	std::string& reverse_back, std::vector<std::string>& reverse_tags) {
+	return _dao.AddFriend(from, to, back_name, tags, apply_desc, reverse_back, reverse_tags);
+}
+
+bool MysqlMgr::UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc)
+{
+	return _dao.UpdateUserProfile(uid, nick, sex, desc);
+}
+
+int MysqlMgr::UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
+	const std::vector<std::string>& tags)
+{
+	return _dao.UpdateFriendRemark(self_id, friend_id, remark, tags);
 }
 
 std::shared_ptr<UserInfo> MysqlMgr::GetUser(int uid)
@@ -68,6 +80,11 @@ bool MysqlMgr::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> 
 {
 	//调用数据库访问对象的GetFriendList方法, 将获取好友列表的请求转发给数据库访问对象处理
 	return _dao.GetFriendList(self_id, user_info);
+}
+
+bool MysqlMgr::GetFriendIds(int uid, std::vector<int>& friend_ids)
+{
+	return _dao.GetFriendIds(uid, friend_ids);
 }
 
 long long MysqlMgr::GetOrCreatePrivateChat(int user1, int user2)

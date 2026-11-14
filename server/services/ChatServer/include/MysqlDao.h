@@ -11,6 +11,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <map>
 class SqlConnection; //封装MySQL连接对象, 包含连接对象和上次操作时间(前置声明)
 class MySqlPool; //MySQL连接池, 提供获取和归还连接的接口(前置声明)
 
@@ -26,8 +27,18 @@ public:
 	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
 	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
-		const std::string& back_name); //添加好友申请、申请留言与备注
-	bool AddFriend(const int& from, const int& to, std::string back_name, std::string& apply_desc);
+		const std::string& back_name, const std::vector<std::string>& tags); //添加好友申请、留言、备注与标签
+	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签
+	bool AddFriend(const int& from, const int& to, std::string back_name,
+		const std::vector<std::string>& tags, std::string& apply_desc,
+		std::string& reverse_back, std::vector<std::string>& reverse_tags);
+	//更新本人可编辑的资料字段; 昵称与签名的长度由调用方按字符数校验
+	bool UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc);
+	//修改自己给好友设的备注与标签: 返回 1 已更新, 0 不是好友, -1 数据库错误
+	int UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
+		const std::vector<std::string>& tags);
+	//好友表与申请表各有一个 tags 列: 启动时幂等补列, 不需要部署环境手工建表
+	bool EnsureFriendTagColumns();
 
 	std::shared_ptr<UserInfo> GetUser(int uid); //根据用户ID获取用户信息
 	std::shared_ptr<UserInfo> GetUser(const std::string& name); //根据用户名获取用户信息
@@ -38,6 +49,8 @@ public:
 	bool GetSentApplyList(int from_uid,
 		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int offset, int limit);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
+	//取某人的好友 uid 列表, 资料变更后按它决定推给谁
+	bool GetFriendIds(int uid, std::vector<int>& friend_ids);
 	//取单聊会话, 没有则创建; 非好友返回0. 依赖 private_chat 的 (user1_id,user2_id) 唯一键去重
 	long long GetOrCreatePrivateChat(int user1, int user2);
 	//按会话ID升序分页取会话列表, has_more 表示还有下一页

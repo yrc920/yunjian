@@ -32,6 +32,14 @@ public:
 
     void SetUserInfo(std::shared_ptr<UserInfo> user_info); //设置用户信息
     std::shared_ptr<UserInfo> GetUserInfo();
+    //本人资料修改成功: 更新昵称/性别/签名并通知界面
+    void UpdateMyProfile(const QString &nick, int sex, const QString &desc);
+    //好友备注与标签修改成功: 只改自己这一侧，界面刷新对应行
+    bool UpdateFriendRelation(int uid, const QString &remark, const QStringList &tags);
+    //好友文字资料刷新成功: 昵称、签名与性别随时会变；sex<0 表示这次没有性别信息
+    bool UpdateFriendProfile(int uid, const QString &nick, const QString &desc, int sex = -1);
+    //所有好友标签的并集，按名称排序，供联系人页筛选条使用
+    QStringList AllTags() const;
     int GetUid(); //获取用户ID
     void SetToken(const QString &token); //资源服务器用同一个会话令牌校验身份
     QString GetToken() const;
@@ -129,6 +137,10 @@ public:
 signals:
     void SessionCleared();            //换账号前清空会话，业务层据此丢弃在途资源任务
     void UserIconChanged();
+    void UserProfileChanged();        //本人昵称/性别/签名变化，资料页与侧栏据此刷新
+    void FriendRelationChanged(int uid); //备注或标签变化，列表只刷新对应行
+    void FriendProfileChanged(int uid);  //好友昵称/签名变化，来自 1050 资料刷新
+    void FriendTagsChanged();         //标签集合变化，联系人页筛选条重算
     void FriendListAboutToChange();
     void ApplyListAboutToChange();
     void FriendListChanged();        // 登录拿到好友列表、通过好友申请

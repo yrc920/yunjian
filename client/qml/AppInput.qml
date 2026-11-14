@@ -4,6 +4,8 @@ import QtQuick
 Rectangle {
     id: root
     property alias text: input.text
+    // 与服端表的字符上限保持一致，超出部分直接输入不进去
+    property alias maximumLength: input.maximumLength
     property string placeholder: ""
     property bool password: false
     property bool reveal: false

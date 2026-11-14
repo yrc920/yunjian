@@ -11,7 +11,8 @@ Item {
     readonly property int indexWidth: 280
     readonly property int listHeaderHeight: 78
 
-    readonly property int friendCount: bridge.friends.count
+    readonly property int friendCount: bridge.friends.totalCount
+    readonly property int visibleFriendCount: bridge.friends.count
     readonly property int pendingCount: bridge.applies.pendingCount
     readonly property int chatCount: bridge.friends.chatCount
     // 联系人空态：没有好友也没有待处理申请时才显示引导卡
@@ -20,6 +21,13 @@ Item {
     // 有好友或有申请时，列表顶部保留「新的朋友」入口
     readonly property bool newFriendEntryVisible: bridge.mode === ChatBridge.ContactMode
         && (friendCount > 0 || pendingCount > 0)
+    // 标签条只在联系人模式且有标签时出现；筛选只影响列表，不影响入口与空态判断
+    readonly property bool tagBarVisible: bridge.mode === ChatBridge.ContactMode
+        && bridge.tagOptions.length > 0
+    readonly property bool tagEmptyVisible: tagBarVisible && bridge.tagFilter.length > 0
+        && visibleFriendCount === 0
+    property bool tagFilterOpen: false //标签「更多」浮层是否展开
+    onTagBarVisibleChanged: if (!tagBarVisible) tagFilterOpen = false
     property bool functionMenuOpen: false
 
     readonly property string emptyTitle: friendCount === 0
@@ -346,14 +354,192 @@ Item {
                 onClicked: bridge.clearFriendSearch()
             }
 
+            // 联系人页的标签筛选：只占一行，放不下的标签收进「更多」浮层。
+            // 放在搜索框与列表之间，不随列表滚动，切走再回来仍能看见当前分组。
+            Item {
+                id: contactTagBar
+                visible: root.tagBarVisible
+                x: 12
+                y: searchArea.y + searchArea.height + 8
+                width: parent.width - 24
+                height: visible ? 30 : 0
+
+                // 用文字度量估每个标签的宽度，决定这一行能放几个，避免依赖滚动
+                TextMetrics {
+                    id: tagMetrics
+                    font.pixelSize: Theme.fontSmall
+                }
+
+                readonly property int moreWidth: 52
+                function chipWidth(text) {
+                    tagMetrics.text = text
+                    return Math.max(34, tagMetrics.boundingRect.width + 24)
+                }
+                // 完整放得下的标签数；预留「更多」的位置，避免它压住最后一个
+                function countVisibleTags() {
+                    const options = bridge.tagOptions
+                    let used = chipWidth("全部") + 7
+                    let count = 0
+                    for (let i = 0; i < options.length; ++i) {
+                        const width = chipWidth(options[i]) + 7
+                        const reserve = (i < options.length - 1) ? moreWidth + 7 : 0
+                        if (used + width + reserve > contactTagBar.width)
+                            break
+                        used += width
+                        ++count
+                    }
+                    return count
+                }
+
+                readonly property var shownTags: {
+                    const list = bridge.tagOptions.slice(0, countVisibleTags())
+                    // 当前筛选的标签被挤出可视区时用它替换最后一个，保证筛选状态看得见
+                    const current = bridge.tagFilter
+                    if (current.length > 0 && list.indexOf(current) < 0) {
+                        if (list.length > 0)
+                            list[list.length - 1] = current
+                        else
+                            list.push(current)
+                    }
+                    return list
+                }
+                readonly property bool overflow: shownTags.length < bridge.tagOptions.length
+
+                Row {
+                    id: tagRow
+                    width: parent.width
+                    height: parent.height
+                    spacing: 7
+
+                    // 「全部」固定在最前，空串表示不筛选
+                    Rectangle {
+                        readonly property bool chosen: bridge.tagFilter.length === 0
+                        width: allLabel.implicitWidth + 24
+                        height: 28
+                        anchors.verticalCenter: parent.verticalCenter
+                        radius: 5
+                        color: chosen ? Theme.selected : Theme.panelAlt
+                        border.width: 1
+                        border.color: chosen ? Theme.primary : "transparent"
+                        Text {
+                            id: allLabel
+                            anchors.centerIn: parent
+                            text: "全部"
+                            color: chosen ? Theme.textPrimary : Theme.textSecondary
+                            font.pixelSize: Theme.fontSmall
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.tagFilterOpen = false
+                                bridge.clearTagFilter()
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: contactTagBar.shownTags
+                        delegate: Rectangle {
+                            readonly property bool chosen: bridge.tagFilter === modelData
+                            width: tagLabel.implicitWidth + 24
+                            height: 28
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: 5
+                            color: chosen ? Theme.selected : Theme.panelAlt
+                            border.width: 1
+                            border.color: chosen ? Theme.primary : "transparent"
+                            Text {
+                                id: tagLabel
+                                anchors.centerIn: parent
+                                text: modelData
+                                textFormat: Text.PlainText
+                                color: chosen ? Theme.textPrimary : Theme.textSecondary
+                                font.pixelSize: Theme.fontSmall
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.tagFilterOpen = false
+                                    bridge.setTagFilter(modelData)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 「更多」固定在最右，浮层里能看到完整标签列表
+                Rectangle {
+                    visible: contactTagBar.overflow
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: contactTagBar.moreWidth
+                    height: 28
+                    radius: 5
+                    color: root.tagFilterOpen ? Theme.selected : Theme.panelAlt
+                    border.width: 1
+                    border.color: root.tagFilterOpen ? Theme.primary : "transparent"
+                    Text {
+                        anchors.centerIn: parent
+                        text: "更多"
+                        color: root.tagFilterOpen ? Theme.textPrimary : Theme.textSecondary
+                        font.pixelSize: Theme.fontSmall
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.tagFilterOpen = !root.tagFilterOpen
+                    }
+                }
+            }
+
+            // 标签浮层的空白遮罩：点列表区域即可收起，不影响浮层本身
+            MouseArea {
+                visible: root.tagFilterOpen
+                anchors.top: contactTagBar.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                z: 20
+                onClicked: root.tagFilterOpen = false
+            }
+
+            TagFilterPopover {
+                id: tagFilterPopover
+                visible: root.tagFilterOpen
+                x: contactTagBar.x
+                y: contactTagBar.y + contactTagBar.height + 4
+                width: contactTagBar.width
+                z: 26
+                controller: bridge
+                onTagChosen: (tag) => {
+                    root.tagFilterOpen = false
+                    bridge.setTagFilter(tag)
+                }
+                onDismissed: root.tagFilterOpen = false
+                onVisibleChanged: if (visible) forceActiveFocus()
+            }
+
+            // 筛选后没有匹配的好友：给一句提示，但不影响「新的朋友」入口与空态引导
+            Text {
+                visible: root.tagEmptyVisible
+                anchors.top: contactTagBar.bottom
+                anchors.topMargin: 40
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "「" + bridge.tagFilter + "」下还没有好友"
+                textFormat: Text.PlainText
+                color: Theme.textHint
+                font.pixelSize: Theme.fontSmall
+            }
+
             // 会话与联系人共用同一个好友模型；聊天模式下没有 thread_id 的条目高度为0，
             // 所以统计会话数量用 friends.chatCount，而不是列表行数
             ListView {
                 id: friendsList
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: searchArea.bottom
-                anchors.topMargin: 17
+                anchors.top: root.tagBarVisible ? contactTagBar.bottom : searchArea.bottom
+                anchors.topMargin: root.tagBarVisible ? 10 : 17
                 anchors.bottom: parent.bottom
                 clip: true
                 model: bridge.friends
@@ -455,7 +641,11 @@ Item {
                         x: 22
                         y: 74
                         visible: root.friendCount > 0
-                        text: "全部联系人"
+                        //筛选时标题直接说明当前分组与命中数量，避免"全部"与结果不符
+                        text: bridge.tagFilter.length > 0
+                            ? "「" + bridge.tagFilter + "」· " + root.visibleFriendCount + " 位"
+                            : "全部联系人"
+                        textFormat: Text.PlainText
                         font.pixelSize: 11
                         color: Theme.textHint
                     }
@@ -477,7 +667,7 @@ Item {
                         : bridge.pane === ChatBridge.FriendInfoPage && bridge.profile.uid === model.uid
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
-                    Accessible.name: model.name
+                    Accessible.name: model.displayName
                     Accessible.onPressAction: activate()
                     Keys.onSpacePressed: activate()
                     Keys.onReturnPressed: activate()
@@ -522,7 +712,7 @@ Item {
                         radius: 11
                         anchors.verticalCenter: parent.verticalCenter
                         source: model.icon
-                        name: model.name
+                        name: model.displayName
                     }
                     Column {
                         anchors.left: friendAvatar.right
@@ -533,7 +723,7 @@ Item {
                         spacing: 6
                         Text {
                             width: parent.width
-                            text: model.name
+                            text: model.displayName
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
                             font.pixelSize: 14
@@ -689,6 +879,7 @@ Item {
                 bridge: bridge
                 currentUid: bridge.currentUid
                 title: bridge.currentName
+                subtitle: bridge.currentSubtitle
                 messages: bridge.messages
                 onProfileRequested: bridge.openProfile(bridge.currentUid)
                 onMediaViewRequested: (items, index) => viewer.openPlaylist(items, index)
@@ -704,6 +895,12 @@ Item {
                 visible: bridge.pane === ChatBridge.FriendInfoPage
                 profile: bridge.profile
                 onChatRequested: bridge.openChat(bridge.profile.uid)
+                onEditRelationRequested: profileDialogs.openRemark(bridge.profile.uid,
+                                                                  bridge.profile.displayName,
+                                                                  bridge.profile.name,
+                                                                  bridge.profile.icon,
+                                                                  bridge.profile.remark,
+                                                                  bridge.profile.tags || [])
             }
             ApplyFriendPage {
                 anchors.fill: parent
@@ -718,6 +915,7 @@ Item {
                 visible: bridge.pane === ChatBridge.UserInfoPage
                 controller: bridge
                 onEditAvatarRequested: avatarEditor.chooseImage()
+                onEditProfileRequested: profileDialogs.openSelf()
             }
         }
     }
@@ -786,6 +984,13 @@ Item {
     // 好友表单是覆盖层，打开时禁用底层 Row；头像编辑器独立于页面，避免切页被销毁
     FriendDialogs {
         id: dialogs
+        anchors.fill: parent
+        controller: bridge
+    }
+
+    // 资料编辑与备注编辑共用一套弹层，和好友表单一样覆盖整个聊天区
+    ProfileDialogs {
+        id: profileDialogs
         anchors.fill: parent
         controller: bridge
     }

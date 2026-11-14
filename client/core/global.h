@@ -60,6 +60,13 @@ enum ReqId{
     ID_DOWN_LOAD_FILE_RSP = 1042,
     ID_UPLOAD_HEAD_ICON_REQ = 1043, //头像分段上传
     ID_UPLOAD_HEAD_ICON_RSP = 1044,
+    ID_UPDATE_PROFILE_REQ = 1045, //修改本人资料：昵称、性别、个性签名
+    ID_UPDATE_PROFILE_RSP = 1046, //修改本人资料回包，带更新后的字段
+    ID_UPDATE_FRIEND_REMARK_REQ = 1047, //修改好友备注与标签
+    ID_UPDATE_FRIEND_REMARK_RSP = 1048, //备注与标签修改回包
+    ID_GET_PROFILE_REQ = 1049, //按uid拉取好友最新资料
+    ID_GET_PROFILE_RSP = 1050, //最新资料回包
+    ID_NOTIFY_PROFILE_CHANGED = 1051, //好友资料变更推送（昵称/签名/头像/性别）
 };
 
 //模块

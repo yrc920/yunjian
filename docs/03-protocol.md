@@ -90,8 +90,16 @@
 | 1034 | `ID_RESOURCE_CHAT_MSG_REQ` | C → S | 发送视频/文件消息（先落库，资源随后上传） |
 | 1035 | `ID_RESOURCE_CHAT_MSG_RSP` | S → C | 视频/文件消息回执（含消息 ID 与线程 ID） |
 | 1036 | `ID_NOTIFY_RESOURCE_CHAT_MSG_REQ` | S → C | 视频/文件已上传完成，接收方显示下载卡片 |
+| 1045 | `ID_UPDATE_PROFILE_REQ` | C → S | 修改本人昵称、性别、个性签名 |
+| 1046 | `ID_UPDATE_PROFILE_RSP` | S → C | 修改资料回包（带最终落库字段） |
+| 1047 | `ID_UPDATE_FRIEND_REMARK_REQ` | C → S | 修改自己给某个好友设的备注与标签 |
+| 1048 | `ID_UPDATE_FRIEND_REMARK_RSP` | S → C | 备注与标签修改回包 |
+| 1049 | `ID_GET_PROFILE_REQ` | C → S | 按 uid 拉取好友最新资料 |
+| 1050 | `ID_GET_PROFILE_RSP` | S → C | 最新资料回包（昵称/签名/头像/性别） |
+| 1051 | `ID_NOTIFY_PROFILE_CHANGED` | S → C | 好友资料变更推送（昵称/签名/头像/性别） |
 
-> 1012 与 1016 为历史预留空位，当前未使用。
+> 1012 与 1016 为历史预留空位，当前未使用。1045–1048 与资源服务器的 1037–1044 不冲突：
+> 后四者走 ResourceServer 的另一条连接，这里只用于 ChatServer 长连接。
 
 ### 载荷定义
 
@@ -112,7 +120,9 @@
      "direction":0}                  // 0 别人申请我，1 我申请别人
   ],
   "friend_list": [                  // 好友列表
-    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "back":""}
+    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "back":"", "tags":[]}
+    // back 是本人给对方设的备注，空串表示没设，客户端按备注 > 昵称 > 用户名显示
+    // tags 是本人给对方打的分组，只影响自己这一侧的联系人筛选
   ],
   "thread_list": [                  // 已建立的单聊会话
     {"thread_id":0, "uid":0, "name":"", "nick":"", "icon":"", "sex":0}
@@ -128,9 +138,11 @@
 **1008 搜索回包** `{error, uid, name, email, nick, desc, sex, icon}`
 （按用户名查询时不含 `icon`）
 
-**1009 好友申请** `{uid:int, applyname:string, bakname:string, touid:int}`
+**1009 好友申请** `{uid:int, applyname:string, bakname:string, touid:int, tags:[string]}`
 
-`applyname` 是申请留言（为空时服务端用默认句），`bakname` 是备注名。
+`applyname` 是申请留言（为空时服务端用默认句），`bakname` 是备注名，`tags` 是给对方打的分组。
+`bakname` 留空表示不设备注；`tags` 留空或省略表示不分组，最多 10 个、单个不超过 12 字符。
+两者都存进 `friend_apply`，同意后复制到申请方那行 `friend`，之后可在好友资料页修改。
 
 **1010 好友申请回执** `{error:int}` —— 非 0 表示申请没有写入，客户端保留输入并提示重试。
 
@@ -140,12 +152,14 @@
 
 **1013 同意好友申请** `{fromuid:int, touid:int, back:string}`（`back` 为备注名，同意方不填欢迎语）
 
-**1014 同意回包** `{error, name, nick, icon, sex, uid, thread_id, welcome_msgs}`
+**1014 同意回包** `{error, name, nick, icon, sex, uid, thread_id, welcome_msgs, back}`
 
-`welcome_msgs` 项为 `{msgid, content, message_id, thread_id, status, fromuid, touid}`；同意方视角：申请方留言（status=3）、同意方默认句（status=1）。
+`back` 是同意方自己填的备注；`welcome_msgs` 项为 `{msgid, content, message_id, thread_id, status, fromuid, touid}`；
+同意方视角：申请方留言（status=3）、同意方默认句（status=1）。
 
-**1015 同意通知** `{error, fromuid, touid, name, nick, icon, sex, thread_id, welcome_msgs}`
+**1015 同意通知** `{error, fromuid, touid, name, nick, icon, sex, thread_id, welcome_msgs, back, tags}`
 
+`back` 与 `tags` 是申请方当初填的备注与分组，通过后直接回传，申请方不必重新登录才看到；
 `welcome_msgs` 项同上；申请方视角：自己的留言（status=1）、同意方默认句（status=3）。
 
 **1017 文本消息** `{fromuid:int, touid:int, thread_id:int64, text_array:[{content:string, msgid:string}]}`
@@ -214,6 +228,44 @@
 下载端直接按这个名字落盘。收到 1036 时**不自动下载**
 资源本体：视频与文件都先显示卡片和下载按钮，由用户点击后再向 ResourceServer 发 `1041`；
 视频首帧缩略图较小，会在后台自动下载用于预览。
+
+**1045 修改本人资料** `{nick:string, sex:int, desc:string}`
+
+请求体不带 uid：操作者身份只取会话绑定的 uid，客户端无法借此修改别人的资料。
+`nick` 与 `desc` 允许为空（昵称为空时界面回落到用户名），长度按 UTF-8 字符数限制：
+昵称 20 字符、签名 60 字符；`sex` 只接受 0 未知 / 1 男 / 2 女。
+
+**1046 修改资料回包** `{error, uid, nick, sex, desc}`
+
+成功后服务端会同步刷新 `ubaseinfo_<uid>` 与 `nameinfo_<name>` 两份缓存，
+回包字段就是最终落库值，客户端直接用它刷新本地资料。错误码：1001 字段不合法、1011 会话无效、1002 数据库失败。
+
+**1047 修改好友备注与标签** `{touid:int, remark:string, tags:[string]}`
+
+只写自己这一侧的 `friend.back` 与 `friend.tags`，对方看到的仍是对方自己的备注与分组。
+`remark` 为空表示清除备注，长度上限与昵称相同（20 字符）；`tags` 是整组替换，
+空数组表示清空分组，最多 10 个、单个不超过 12 字符。不是好友时返回 1011，数据库失败返回 1002。
+
+**1048 备注与标签修改回包** `{error, touid, remark, tags:[string]}`
+
+两个字段都是服务端确认后的值，客户端据此更新好友列表、聊天标题、资料页与筛选条。
+
+**1049 拉取好友最新资料** `{touid:int}`
+
+只读请求，不要求对方在线或已是好友（搜索结果也会用到）。服务端优先读
+`ubaseinfo_<uid>` 缓存，未命中再查库并回填。用于聊天标题与资料页刷新昵称和个性签名。
+
+**1050 最新资料回包** `{error, uid, name, nick, desc, sex, icon}`
+
+不返回邮箱与密码；`error=1011` 表示 uid 无效。客户端在打开会话与资料页时各拉一次，
+失败时静默保留本地缓存，不打断当前页面。
+
+**1051 好友资料变更推送** `{error, uid, name, nick, desc, sex, icon}`
+
+好友改了昵称、签名或头像后由服务端主动下发，客户端整体覆盖本地缓存：
+文字字段立即刷新列表与聊天标题，`icon` 与本地文件名不同时再走一次头像下载。
+推送只发给在线好友；离线好友不做补偿，下次登录从 1006 回包拿到最新资料。
+自己的资料仍以 1046 回包为准，不会收到自己的推送。
 
 ---
 

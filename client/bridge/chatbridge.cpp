@@ -16,6 +16,7 @@
 #include "chatservice.h"
 #include "sessionservice.h"
 #include "friendservice.h"
+#include "profileservice.h"
 #include "fileservice.h"
 #include "usermgr.h"
 #include "userdata.h"
@@ -27,6 +28,41 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     _messages = new MessageModel(this);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
             this, &ChatBridge::myProfileChanged);
+    //昵称/性别/签名改完后个人资料页与侧栏显示名一起刷新
+    connect(UserMgr::GetInstance().get(), &UserMgr::UserProfileChanged,
+            this, &ChatBridge::myProfileChanged);
+    //备注与标签只影响自己这一侧：会话列表刷新对应行，打开中的资料页与聊天标题同步跟随
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendRelationChanged, this,
+            [this](int uid) { refreshFriendSnapshot(uid); });
+    //好友改了昵称或签名：标题、副标题与资料页一起刷新
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendProfileChanged, this,
+            [this](int uid) { refreshFriendSnapshot(uid); });
+    //标签并集变化后筛选条重算；当前选中的标签被删空时退回"全部"
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendTagsChanged, this, [this] {
+        if (!_tagFilter.isEmpty() && !tagOptions().contains(_tagFilter))
+            _tagFilter.clear();
+        emit tagFilterChanged();
+    });
+
+    auto *profileService = ProfileService::GetInstance().get();
+    connect(profileService, &ProfileService::profileUpdated, this,
+            [this](bool ok, const QString &message) {
+                _profileSaving = false;
+                _profileMessage = message;
+                emit profileStateChanged();
+                emit profileSaved(ok);
+            });
+    //备注刷新由 UserMgr::FriendRelationChanged 统一处理，这里只结束等待状态
+    connect(profileService, &ProfileService::remarkUpdated, this,
+            [this](bool ok, int uid, const QString &, const QStringList &, const QString &message) {
+                _remarkSaving = false;
+                _remarkMessage = message;
+                emit remarkStateChanged();
+                emit remarkSaved(ok, uid);
+            });
+    //1050 的资料可能比本地缓存新，界面快照与标题按它重建一次
+    connect(profileService, &ProfileService::profileLoaded, this,
+            [this](int uid) { refreshFriendSnapshot(uid); });
     //头像同步只影响个人资料页的一小块状态，不复用聊天列表的刷新信号
     connect(FileService::GetInstance().get(), &FileService::uploadStateChanged,
             this, &ChatBridge::avatarSyncChanged);
@@ -247,8 +283,10 @@ void ChatBridge::rebuildFriendMatches()
             auto info = mgr->FriendAt(row);
             if (!info)
                 continue;
+            // 备注也要参与匹配：用户可能只记得自己给对方起的名字
             if (!info->_name.contains(query, Qt::CaseInsensitive)
-                && !info->_nick.contains(query, Qt::CaseInsensitive))
+                && !info->_nick.contains(query, Qt::CaseInsensitive)
+                && !info->_back.contains(query, Qt::CaseInsensitive))
                 continue;
 
             // 摘要与好友列表保持一致；图片消息只显示占位
@@ -262,6 +300,8 @@ void ChatBridge::rebuildFriendMatches()
                 {QStringLiteral("uid"), info->_uid},
                 {QStringLiteral("name"), info->_name},
                 {QStringLiteral("nick"), info->_nick},
+                {QStringLiteral("displayName"), DisplayName(info->_back, info->_nick,
+                                                            info->_name)},
                 {QStringLiteral("icon"), info->_icon},
                 {QStringLiteral("lastText"), lastText},
             });
@@ -272,7 +312,8 @@ void ChatBridge::rebuildFriendMatches()
 }
 
 void ChatBridge::applyTo(int uid, const QString &name, const QString &nick,
-                         const QString &icon, const QString &verify, const QString &remark)
+                         const QString &icon, const QString &verify, const QString &remark,
+                         const QStringList &tags)
 {
     if (uid <= 0)
         return;
@@ -282,7 +323,7 @@ void ChatBridge::applyTo(int uid, const QString &name, const QString &nick,
     }
 
     // 先交给协议层，确认真的发出去了再记下目标；失败时不覆盖上一次在途申请
-    if (!FriendService::GetInstance()->applyFriend(uid, verify, remark)) {
+    if (!FriendService::GetInstance()->applyFriend(uid, verify, remark, tags)) {
         setApplyState(ApplyFailed, tr("上一次申请还在发送，请稍候"));
         return;
     }
@@ -293,6 +334,7 @@ void ChatBridge::applyTo(int uid, const QString &name, const QString &nick,
     _applyIcon = icon;
     _applyVerify = verify;
     _applyRemark = remark;
+    _applyTags = tags;
     setApplyState(ApplySending, tr("正在发送申请…"));
 }
 
@@ -303,7 +345,8 @@ void ChatBridge::retryApply()
         setApplyState(ApplyIdle);
         return;
     }
-    applyTo(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify, _applyRemark);
+    applyTo(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify, _applyRemark,
+            _applyTags);
 }
 
 void ChatBridge::setApplyState(int state, const QString &message)
@@ -318,6 +361,76 @@ void ChatBridge::setApplyState(int state, const QString &message)
 void ChatBridge::authApply(int uid, const QString &remark)
 {
     FriendService::GetInstance()->authFriend(uid, remark);
+}
+
+void ChatBridge::saveMyProfile(const QString &nick, int sex, const QString &desc)
+{
+    if (_profileSaving)
+        return;
+    if (!SessionService::GetInstance()->isReady()) {
+        _profileMessage = tr("聊天服务尚未连接，请稍后再试");
+        emit profileStateChanged();
+        return;
+    }
+    //昵称与签名去掉首尾空白；签名内部允许换行，原样保留
+    if (!ProfileService::GetInstance()->updateProfile(nick.trimmed(), sex, desc.trimmed())) {
+        _profileMessage = tr("上一次保存还在进行，请稍候");
+        emit profileStateChanged();
+        return;
+    }
+    _profileSaving = true;
+    _profileMessage.clear();
+    emit profileStateChanged();
+}
+
+void ChatBridge::saveFriendRemark(int uid, const QString &remark, const QStringList &tags)
+{
+    if (uid <= 0 || _remarkSaving)
+        return;
+    if (!SessionService::GetInstance()->isReady()) {
+        _remarkMessage = tr("聊天服务尚未连接，请稍后再试");
+        emit remarkStateChanged();
+        return;
+    }
+    //空备注表示清除；标签提交的是编辑后的完整集合，空数组表示清空分组
+    if (!ProfileService::GetInstance()->updateFriendRelation(uid, remark.trimmed(), tags)) {
+        _remarkMessage = tr("上一次保存还在进行，请稍候");
+        emit remarkStateChanged();
+        return;
+    }
+    _remarkSaving = true;
+    _remarkMessage.clear();
+    emit remarkStateChanged();
+}
+
+QStringList ChatBridge::tagOptions() const
+{
+    return UserMgr::GetInstance()->AllTags();
+}
+
+void ChatBridge::setTagFilter(const QString &tag)
+{
+    const QString next = tag.trimmed();
+    if (_tagFilter == next)
+        return;
+    _tagFilter = next;
+    _friends->setTagFilter(_tagFilter);
+    emit tagFilterChanged();
+}
+
+void ChatBridge::clearTagFilter()
+{
+    setTagFilter(QString());
+}
+
+void ChatBridge::clearProfileMessages()
+{
+    if (_profileMessage.isEmpty() && _remarkMessage.isEmpty())
+        return;
+    _profileMessage.clear();
+    _remarkMessage.clear();
+    emit profileStateChanged();
+    emit remarkStateChanged();
 }
 
 QString ChatBridge::myIcon() const
@@ -358,6 +471,7 @@ QVariantMap ChatBridge::myProfile() const
     return {{QStringLiteral("uid"), info->_uid},
             {QStringLiteral("name"), info->_name},
             {QStringLiteral("nick"), info->_nick},
+            {QStringLiteral("desc"), info->_desc},
             {QStringLiteral("icon"), myIcon()},
             {QStringLiteral("sex"), info->_sex}};
 }
@@ -417,7 +531,11 @@ void ChatBridge::openChat(int uid)
 
     _currentUid = uid;
     ChatService::GetInstance()->ensurePrivateChat(uid);
-    _currentName = info->_nick.isEmpty() ? info->_name : info->_nick;
+    //标题与列表共用同一条显示名规则：备注 > 昵称 > 用户名
+    _currentName = DisplayName(info->_back, info->_nick, info->_name);
+    _currentSubtitle = info->_desc;
+    //好友可能刚改过签名，打开会话时拉一次最新资料；失败继续用本地缓存
+    ProfileService::GetInstance()->requestProfile(uid);
 
     // 消息模型切到这个人，随后触发的 countChanged 会让界面滚到底
     _messages->setFriend(uid);
@@ -434,23 +552,50 @@ void ChatBridge::openProfile(int uid)
         return;
 
     closeAddFriend();
+    rebuildProfile(info);
+    //资料页同样拉一次最新昵称与签名
+    ProfileService::GetInstance()->requestProfile(uid);
 
-    // 界面只认这一份快照，字段缺失时 QML 侧有兜底
+    setMode(ContactMode);
+    setPane(FriendInfoPage);
+}
+
+//按当前数据重建资料页快照；字段缺失时 QML 侧有兜底
+void ChatBridge::rebuildProfile(const std::shared_ptr<FriendInfo> &info)
+{
+    if (!info)
+        return;
+
+    const QString display = DisplayName(info->_back, info->_nick, info->_name);
     _profile = {
-        {QStringLiteral("uid"), uid},
+        {QStringLiteral("uid"), info->_uid},
         {QStringLiteral("name"), info->_name},
         {QStringLiteral("icon"), info->_icon},
         {QStringLiteral("nick"), info->_nick},
         {QStringLiteral("remark"), info->_back},
         {QStringLiteral("desc"), info->_desc},
         {QStringLiteral("sex"), info->_sex},
-        {QStringLiteral("initial"), info->_name.isEmpty() ? QStringLiteral("?")
-                                                         : info->_name.left(1)},
+        {QStringLiteral("tags"), QVariant::fromValue(info->_tags)},
+        {QStringLiteral("displayName"), display},
+        {QStringLiteral("initial"), display.isEmpty() ? QStringLiteral("?") : display.left(1)},
     };
     emit profileChanged();
+}
 
-    setMode(ContactMode);
-    setPane(FriendInfoPage);
+//好友关系侧数据变化：会话标题、副标题与资料页快照都要跟着更新
+void ChatBridge::refreshFriendSnapshot(int uid)
+{
+    auto info = UserMgr::GetInstance()->GetFriendById(uid);
+    if (!info)
+        return;
+
+    if (_currentUid == uid) {
+        _currentName = DisplayName(info->_back, info->_nick, info->_name);
+        _currentSubtitle = info->_desc;
+        emit currentChanged();
+    }
+    if (_pane == FriendInfoPage && _profile.value(QStringLiteral("uid")).toInt() == uid)
+        rebuildProfile(info);
 }
 
 void ChatBridge::openApplyList()
@@ -465,6 +610,8 @@ void ChatBridge::setMode(int mode)
     if (_mode == mode)
         return;
     _mode = mode;
+    //标签筛选只作用于联系人列表；聊天模式必须看到全部会话
+    _friends->setFilterEnabled(mode == ContactMode);
     emit modeChanged();
 }
 

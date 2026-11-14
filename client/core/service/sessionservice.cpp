@@ -344,8 +344,10 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     }
     auto *mgr = UserMgr::GetInstance().get();
     mgr->SetToken(_pending.Token); //资源服务器校验同一个utoken
-    mgr->SetUserInfo(std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
-        data["nick"].toString(), data["icon"].toString(), data["sex"].toInt()));
+    auto self_info = std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
+        data["nick"].toString(), data["icon"].toString(), data["sex"].toInt());
+    self_info->_desc = data["desc"].toString(); //个性签名只在资料页展示，单独补上
+    mgr->SetUserInfo(self_info);
     mgr->AppendApplyList(data["apply_list"].toArray());
     mgr->AppendFriendList(data["friend_list"].toArray());
     mgr->SetChatThreads(data["thread_list"].toArray());

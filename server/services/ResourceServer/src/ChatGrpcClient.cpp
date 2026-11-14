@@ -79,3 +79,33 @@ bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int rece
 	}
 	return response.error() == 0;
 }
+
+//头像变更广播: 只带 uid, 好友列表与分发都在 ChatServer 侧完成
+bool ChatGrpcClient::BroadcastProfileChanged(int uid)
+{
+	if (_stubs.empty() || uid <= 0)
+		return false;
+
+	std::string server_name;
+	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(uid), server_name))
+		return false;
+
+	auto iter = _stubs.find(server_name);
+	if (iter == _stubs.end()) {
+		std::cerr << "no chatserver config for instance: " << server_name << std::endl;
+		return false;
+	}
+
+	grpc::ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+
+	message::BroadcastProfileReq request;
+	request.set_uid(uid);
+	message::BroadcastProfileRsp response;
+	const grpc::Status status = iter->second->BroadcastProfile(&context, request, &response);
+	if (!status.ok()) {
+		std::cerr << "BroadcastProfile failed: " << status.error_message() << std::endl;
+		return false;
+	}
+	return response.error() == 0;
+}

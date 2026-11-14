@@ -20,6 +20,8 @@ public:
 	//返回 true 表示目标 ChatServer 已处理；false 时调用方回退到直接写库
 	bool NotifyImageReady(long long message_id, int sender, int receiver, long long thread_id,
 		const std::string& name, const std::string& client_msg_id, long long total_size);
+	//头像换了之后，让该用户所在 ChatServer 把新资料推给他的在线好友
+	bool BroadcastProfileChanged(int uid);
 
 private:
 	ChatGrpcClient();

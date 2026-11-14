@@ -123,15 +123,18 @@ Rectangle {
                 spacing: 10
 
                 Row {
+                    id: resultRow
                     width: parent.width
                     spacing: 10
+                    // 陌生人还没有备注，显示名取昵称，没有昵称才用用户名
+                    readonly property string displayName: root.result.nick || root.result.name || ""
 
                     Avatar {
                         width: 38
                         height: 38
                         radius: 10
                         source: root.result.icon || ""
-                        name: root.result.name || ""
+                        name: resultRow.displayName
                         textSize: 15
                     }
                     Column {
@@ -141,17 +144,20 @@ Rectangle {
 
                         Text {
                             width: parent.width
-                            text: root.result.name || ""
+                            text: resultRow.displayName
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
                             font.pixelSize: 13
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
+                        // 昵称展示在上方，这里补用户名与 ID，避免同名时认错人
                         Text {
-                            text: "ID  " + (root.result.uid || "")
+                            text: "@" + (root.result.name || "") + "  ·  ID  " + (root.result.uid || "")
+                            textFormat: Text.PlainText
                             color: Theme.textSecondary
                             font.pixelSize: 10
+                            elide: Text.ElideRight
                         }
                     }
                 }
@@ -175,7 +181,7 @@ Rectangle {
                     visible: root.controller.searchState === ChatBridge.SearchStranger
                         && !root.sending && !root.sent && !root.failed
                     text: "添加到通讯录"
-                    onClicked: root.applyRequested(root.result.uid || 0, root.result.name || "")
+                    onClicked: root.applyRequested(root.result.uid || 0, resultRow.displayName)
                 }
 
                 // 已经是好友：直接进入会话

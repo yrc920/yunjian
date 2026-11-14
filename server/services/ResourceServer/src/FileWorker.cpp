@@ -178,4 +178,10 @@ void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)
 
 	Json::Value name_root = base_root; //用户名索引缓存内容相同
 	RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, name_root.toStyledString());
+
+	//头像文件名变了, 让 ChatServer 把新资料推给在线好友; 失败只记日志,
+	//好友下次登录仍会从 1006 回包里拿到新的 icon 文件名
+	if (!ChatGrpcClient::GetInstance()->BroadcastProfileChanged(uid)) {
+		std::cerr << "broadcast avatar change failed, uid: " << uid << std::endl;
+	}
 }

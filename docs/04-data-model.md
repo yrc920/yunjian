@@ -24,7 +24,7 @@
 | `pwd` | varchar(255) | Argon2id 哈希串（`$argon2id$v=19$...`，约 98 字符） |
 | `nick` | varchar(255) | 昵称 |
 | `desc` | varchar(255) | 个性签名（SQL 中需反引号转义：`` `desc` ``） |
-| `sex` | int | 性别：0 未知 / 1 女 / 2 男（客户端以 1 显示女性图标） |
+| `sex` | int | 性别：0 未知 / 1 男 / 2 女（以客户端 `UserInfoPage`、`FriendInfoPage` 的显示规则为准） |
 | `icon` | varchar(255) | 头像：默认值为 Qt 资源路径（如 `:/res/head_1.jpg`）；上传后保存资源文件名（`<md5>.png`），由 ResourceServer 写入 |
 
 ### 表 `friend`
@@ -34,12 +34,26 @@
 | `id` | int unsigned, AUTO_INCREMENT | 主键 |
 | `self_id` | int | 关系持有者 uid |
 | `friend_id` | int | 好友 uid |
-| `back` | varchar(255) | 备注名 |
+| `back` | varchar(255), 默认空串 | 本人给好友设的备注；空串表示没设 |
+| `tags` | varchar(512), 默认 `'[]'` | 本人给好友打的分组标签，JSON 字符串数组 |
 
 唯一索引 `(self_id, friend_id)`。好友关系是**双向两行**：A 同意 B 的申请时，
 `AddFriend` 会分别插入 `(A,B)` 与 `(B,A)`，用 `INSERT IGNORE` 避免重复。
 两条 INSERT 固定按 `self_id` 升序执行：两个用户同时互相同意时写入的是同一对行，
 顺序一致才不会形成 AB/BA 循环等待。
+
+`back` 是**单方面**的：A 的这行只影响 A 看到的名字，与 B 自己设的备注无关。
+加好友与同意好友时都不写默认备注，留空就是空串；之后由 1047 单独修改。
+客户端显示名统一按 **备注 > 昵称 > 用户名** 回落，因此空备注不会让列表出现空白。
+
+`tags` 与 `back` 同一层级、同样单方面：A 给 B 打的标签只影响 A 的联系人分组，
+不会出现在 B 的列表里。选 JSON 数组而不是逗号分隔，是因为标签可能带逗号或引号，
+标准转义比自定义分隔符可靠；写入时开启 `emitUTF8`，汉字按原文存，避免 `\uXXXX`
+把每个字撑到 6 字节。最多 10 个、单个 12 字符，512 字节足够。
+
+> 标签没有独立的关系表：好友数量是个人量级，按标签筛选在客户端完成，
+> 用不上多对多查询；一列 JSON 让 `SELECT friend_id, back, tags` 一次取回整份好友列表。
+> 两张表的 `tags` 列都由服务启动时的 `EnsureFriendTagColumns` 幂等补齐，不需要手工建表。
 
 ### 表 `friend_apply`
 
@@ -51,9 +65,11 @@
 | `status` | smallint, 默认 0 | 0 待处理 / 1 已同意 |
 | `descs` | varchar(255), 默认空串 | 申请留言；同意后作为申请方的第一条欢迎消息 |
 | `back_name` | varchar(255), 默认空串 | 申请方给对方设置的备注；同意后用于反向好友记录 |
+| `tags` | varchar(512), 默认 `'[]'` | 申请方给对方选的分组；同意后复制到反向好友记录的 `tags` |
 
 唯一索引 `(from_uid, to_uid)`；`AddFriendApply` 用
-`ON DUPLICATE KEY UPDATE descs = VALUES(descs), back_name = VALUES(back_name)` 更新重复申请。
+`ON DUPLICATE KEY UPDATE descs = VALUES(descs), back_name = VALUES(back_name), tags = VALUES(tags)` 更新重复申请。
+重新申请会整组覆盖上一次的留言、备注和标签，不会残留旧分组。
 
 ### 表 `user_id`
 
@@ -171,7 +187,8 @@ flowchart LR
 
 有三处需要注意：
 
-1. 缓存**无 TTL、无失效**：修改资料后需主动失效或手工删键，仅重启进程不会清空 Redis。
+1. 缓存**无 TTL**：只能靠写入方主动覆盖。目前有两个写入点——头像上传完成后由 ResourceServer
+   重写两份键，本人修改资料后由 ChatServer 重写两份键；其余路径不会自动失效。
 2. 资料缓存读写均不使用 `pwd`，已有 Redis 键中的历史字段不会因更新程序自动删除。
 3. `GetBaseInfo` 在 `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient` 三处重复实现，
    逻辑完全一致——是明确的重复代码，应收敛到 `UserMgr` 或独立的 `UserCache` 组件。
@@ -203,6 +220,32 @@ flowchart LR
 
 `UserMgr`（单例）持有 token、好友列表、申请列表与分页游标
 （`_chat_loaded` / `_contact_loaded`，每页 13 条），是 UI 层唯一的数据源。
+`UserInfo` 额外带 `_desc`（个性签名），`AuthInfo` / `AuthRsp` 带 `_back`（本人给对方设的备注），
+两者都只在登录/通过申请时由服务端下发。
+
+### 三个名字与显示名规则
+
+用户名、昵称、备注职责不同，不能互相替代：
+
+| 字段 | 唯一性 | 可见范围 | 修改方 |
+| --- | --- | --- | --- |
+| `name` 用户名 | 全局唯一 | 所有人 | 注册后不可改 |
+| `nick` 昵称 | 可重复 | 所有人 | 本人（1045） |
+| `back` 备注 | 只在自己这一行 | 仅本人 | 本人（1047） |
+
+显示名统一按 **备注 > 昵称 > 用户名** 回落，由 `userdata.h` 的 `DisplayName()` 实现：
+会话列表、联系人、聊天标题、气泡名字、资料页都走同一条规则。
+服务端只下发三个原始字段，不参与显示名拼接。
+
+### 标签与联系人筛选
+
+标签是"我给好友打的分组"，与备注同级：单方面、只在自己这一侧生效、一个好友可以有多个。
+客户端在 `FriendInfo::_tags` 持有 `QStringList`，`UserMgr::AllTags()` 汇总去重后供联系人页
+生成筛选条；筛选由 `FriendListModel` 在行视图层完成，不改变 `UserMgr` 里的原始顺序。
+
+会话模式会关闭筛选（`setFilterEnabled(false)`），否则会话列表会被联系人页选中的标签一起过滤。
+筛选后列表为空时只在列表区域给提示，不改变"新的朋友"入口与空态引导的判断——
+那些判断统一用 `totalCount`，与筛选结果无关。
 
 ---
 
@@ -213,4 +256,5 @@ flowchart LR
 | 客户端本地消息缓存 | 尚未接入 SQLite；当前登录时从服务端按会话拉取历史消息 |
 | 离线消息 | 消息正文已持久化；离线期间不推送，下一次登录的历史同步可取回 |
 | 消息送达状态 | `chat_message.status` 已预留，送达/已读回执闭环尚未实现 |
+| 好友标签 | 只用于联系人分组与筛选；没有"按标签群发"、没有标签重命名（改名等价于逐个好友改） |
 | 群聊 | 表结构已预留，群聊创建、成员授权和广播业务尚未实现 |

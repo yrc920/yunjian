@@ -6,6 +6,7 @@
 #include <json/reader.h>
 #include "RedisMgr.h" 
 #include "MysqlMgr.h"
+#include "LogicSystem.h"
 
 ChatServiceImpl::ChatServiceImpl() {}
 
@@ -67,6 +68,10 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context,
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
 	rtvalue["thread_id"] = Json::Int64(request->thread_id());
+	rtvalue["back"] = request->back(); //申请方当初给对方设的备注
+	rtvalue["tags"] = Json::arrayValue;
+	for (const auto& tag : request->tags())
+		rtvalue["tags"].append(tag);
 	//把proto里的欢迎消息还原成本实例客户端认识的JSON结构
 	rtvalue["welcome_msgs"] = Json::arrayValue;
 	for (const auto &msg : request->welcome_msgs()) {
@@ -256,6 +261,48 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
                     message.msg_type, message.content);
             }
         }
+    }
+    return Status::OK;
+}
+
+//资源服务器换完头像只知道 uid, 不知道好友列表: 交给逻辑层查好友并按实例分发。
+//这条路径与客户端改资料(1045)汇合在同一个推送方法里, 头像和昵称走同一套通知。
+Status ChatServiceImpl::BroadcastProfile(ServerContext* context,
+    const BroadcastProfileReq* request, BroadcastProfileRsp* response)
+{
+    response->set_error(ErrorCodes::Success);
+    if (request->uid() <= 0) {
+        response->set_error(ErrorCodes::UidInvalid);
+        return Status::OK;
+    }
+
+    LogicSystem::GetInstance()->NotifyFriendsProfileChanged(request->uid());
+    return Status::OK;
+}
+
+//跨实例资料变更: 只推给 touids 里在本实例在线的那些人, 离线的跳过
+Status ChatServiceImpl::NotifyProfileChanged(ServerContext* context,
+    const ProfileChangedReq* request, ProfileChangedRsp* response)
+{
+    response->set_error(ErrorCodes::Success);
+    if (request->fromuid() <= 0 || request->touids_size() == 0) {
+        response->set_error(ErrorCodes::Error_Json);
+        return Status::OK;
+    }
+
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCodes::Success;
+    rtvalue["uid"] = request->fromuid();
+    rtvalue["nick"] = request->nick();
+    rtvalue["desc"] = request->desc();
+    rtvalue["icon"] = request->icon();
+    rtvalue["sex"] = request->sex();
+    const std::string notify_text = rtvalue.toStyledString();
+
+    for (int i = 0; i < request->touids_size(); ++i) {
+        auto session = UserMgr::GetInstance()->GetSession(request->touids(i));
+        if (session)
+            session->Send(notify_text, ID_NOTIFY_PROFILE_CHANGED);
     }
     return Status::OK;
 }

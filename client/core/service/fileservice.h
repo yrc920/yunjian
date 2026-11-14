@@ -47,6 +47,8 @@ public:
     bool IsPaused() const { return _paused; } //按钮文案用
     int Progress() const; //0..100
     QString Message() const { return _message; } //个人资料页提示
+    // 好友换了头像：按新的文件名查缓存或重新下载，内部与登录时补拉走同一条路径
+    void RefreshContactIcon(int uid, const QString &iconName);
 
 signals:
     //所有状态变化走同一个信号，QML 只绑四个只读属性，不直接认识上传细节

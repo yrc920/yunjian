@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstdint>
 #include <algorithm>
+#include <json/json.h>
+#include <json/writer.h>
 
 MysqlDao::MysqlDao()
 {
@@ -22,6 +24,80 @@ MysqlDao::MysqlDao()
 	}
 	//初始化MySQL连接池对象, 连接池大小为5
 	pool_.reset(new MySqlPool(host, xport_num, user, pwd, schema, 5));
+	//标签存在关系表的列里, 首次启动补齐; 失败只记日志, 不影响登录与聊天
+	EnsureFriendTagColumns();
+}
+
+namespace {
+//标签以 JSON 数组存一列: 标签里可能带逗号或引号, 用标准转义避免自定义分隔符的歧义
+std::string TagsToJson(const std::vector<std::string>& tags)
+{
+	Json::Value array(Json::arrayValue);
+	for (const auto& tag : tags)
+		array.append(tag);
+	Json::StreamWriterBuilder builder;
+	builder["indentation"] = ""; //紧凑输出, 这一列只存数据不给人看
+	//中文按 UTF-8 原样写, 默认的 \uXXXX 转义会把一个汉字撑到 6 字节, 接近列宽上限
+	builder["emitUTF8"] = true;
+	return Json::writeString(builder, array);
+}
+
+//解析 tags 列; 空串、非法 JSON 或非数组都按"没有标签"处理, 不让脏数据影响好友列表
+std::vector<std::string> JsonToTags(const std::string& text)
+{
+	std::vector<std::string> tags;
+	if (text.empty())
+		return tags;
+
+	Json::Value array;
+	Json::Reader reader;
+	if (!reader.parse(text, array) || !array.isArray())
+		return tags;
+
+	for (const auto& item : array) {
+		if (!item.isString())
+			continue;
+		const auto tag = item.asString();
+		if (!tag.empty())
+			tags.push_back(tag);
+	}
+	return tags;
+}
+}
+
+//好友表与申请表各补一列 tags.json: 先查 information_schema, 缺列才 ALTER, 重复启动不会报错
+bool MysqlDao::EnsureFriendTagColumns()
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+
+	try {
+		//表名是固定字面量, 不来自外部输入
+		auto ensure = [&con](const std::string& table) {
+			auto res = con->_session->sql(
+				"SELECT COUNT(*) FROM information_schema.columns "
+				"WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'tags'")
+				.bind(table).execute().fetchOne();
+			if (!res.isNull() && res[0].get<int>() > 0)
+				return;
+			//512 字节够 10 个 12 字的中文标签再加 JSON 符号
+			con->_session->sql("ALTER TABLE " + table +
+				" ADD COLUMN tags VARCHAR(512) NOT NULL DEFAULT '[]'").execute();
+		};
+		ensure("friend");
+		ensure("friend_apply");
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false;
+		std::cerr << "ensure tags columns failed: " << e.what() << std::endl;
+		return false;
+	}
 }
 
 MysqlDao::~MysqlDao() {
@@ -164,7 +240,7 @@ bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 }
 
 bool MysqlDao::AddFriendApply(const int& from, const int& to, const std::string& desc,
-	const std::string& back_name)
+	const std::string& back_name, const std::vector<std::string>& tags)
 {
 	auto con = pool_->getConnection(); //从连接池中获取一个可用的MySQL会话对象
 	//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
@@ -177,12 +253,13 @@ bool MysqlDao::AddFriendApply(const int& from, const int& to, const std::string&
 		});
 
 	try {
-		//申请留言和申请方给对方的备注都保存在申请记录里，同意时直接读取，不另建表
+		//申请留言、备注和分组标签都保存在申请记录里，同意时一次性复制到好友关系行
 		con->_session->sql(
-			"INSERT INTO friend_apply (from_uid, to_uid, descs, back_name) VALUES (?, ?, ?, ?) "
-			"ON DUPLICATE KEY UPDATE descs = VALUES(descs), back_name = VALUES(back_name)")
-			.bind(from).bind(to).bind(desc).bind(back_name).execute();
-
+			"INSERT INTO friend_apply (from_uid, to_uid, descs, back_name, tags) "
+			"VALUES (?, ?, ?, ?, ?) "
+			"ON DUPLICATE KEY UPDATE descs = VALUES(descs), back_name = VALUES(back_name), "
+			"tags = VALUES(tags)")
+			.bind(from).bind(to).bind(desc).bind(back_name).bind(TagsToJson(tags)).execute();
 		return true;
 	}
 	catch (mysqlx::Error& e) {
@@ -193,7 +270,8 @@ bool MysqlDao::AddFriendApply(const int& from, const int& to, const std::string&
 }
 
 bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
-	std::string& apply_desc) {
+	const std::vector<std::string>& tags, std::string& apply_desc,
+	std::string& reverse_back, std::vector<std::string>& reverse_tags) {
 	auto con = pool_->getConnection();
 	if (con == nullptr)
 		return false;
@@ -209,7 +287,7 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
         //from是当前同意申请的用户，to是原申请人，所以查找申请时要按to到from的方向匹配
         //FOR UPDATE在事务内锁住这条申请，后面的状态修改和双向好友写入与它一起提交或回滚
         auto apply = con->_session->sql(
-            "SELECT status, descs, back_name FROM friend_apply "
+            "SELECT status, descs, back_name, tags FROM friend_apply "
             "WHERE from_uid = ? AND to_uid = ? FOR UPDATE")
             .bind(to).bind(from).execute().fetchOne();
         if (apply.isNull()) { //没有对应申请时不允许直接建立好友关系
@@ -217,7 +295,9 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
             return false;
         }
         apply_desc = apply[1].get<std::string>();
-        const std::string reverse_back = apply[2].get<std::string>();
+        //reverse_back / reverse_tags 是申请方当初给通过方设的备注与分组，回传给申请方用于本地显示
+        reverse_back = apply[2].isNull() ? std::string() : apply[2].get<std::string>();
+        reverse_tags = JsonToTags(apply[3].isNull() ? std::string() : apply[3].get<std::string>());
         //申请已确认时再次设为1不会产生额外状态变化，后续INSERT IGNORE也可避免重复插入好友关系
         con->_session->sql("UPDATE friend_apply SET status = 1 WHERE from_uid = ? AND to_uid = ?")
             .bind(to).bind(from).execute();
@@ -232,15 +312,21 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 		const int higher_friend = from_is_lower ? from : to;
 		const std::string& higher_back = from_is_lower ? reverse_back : back_name;
 
-		//第一条: uid 较小的一方作为 self_id
-		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, back) "
-			"VALUES (?, ?, ?) ")
-			.bind(lower_self).bind(lower_friend).bind(lower_back).execute();
+		//标签跟随各自方向: 同意方填的归同意方这行, 申请时填的归申请方那行
+		const std::string my_tags = TagsToJson(tags);
+		const std::string peer_tags = TagsToJson(reverse_tags);
+		const std::string& lower_tags = from_is_lower ? my_tags : peer_tags;
+		const std::string& higher_tags = from_is_lower ? peer_tags : my_tags;
 
-		//第二条: uid 较大的一方作为 self_id, 备注跟随各自的方向
-		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, back) "
-			"VALUES (?, ?, ?) ")
-			.bind(higher_self).bind(higher_friend).bind(higher_back).execute();
+		//第一条: uid 较小的一方作为 self_id
+		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, `back`, tags) "
+			"VALUES (?, ?, ?, ?) ")
+			.bind(lower_self).bind(lower_friend).bind(lower_back).bind(lower_tags).execute();
+
+		//第二条: uid 较大的一方作为 self_id, 备注与标签跟随各自的方向
+		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, `back`, tags) "
+			"VALUES (?, ?, ?, ?) ")
+			.bind(higher_self).bind(higher_friend).bind(higher_back).bind(higher_tags).execute();
 
 		//提交事务
 		con->_session->commit();
@@ -261,6 +347,63 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 		}
 		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
 		return false;
+	}
+}
+
+//更新本人可编辑的资料字段; 昵称与签名的长度由调用方按字符数校验
+bool MysqlDao::UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+
+	try {
+		//desc 是MySQL保留字, 必须用反引号包起来; 三个字段一起写, 空串表示清空
+		con->_session->sql("UPDATE user SET nick = ?, sex = ?, `desc` = ? WHERE uid = ?")
+			.bind(nick).bind(sex).bind(desc).bind(uid).execute();
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
+		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
+		return false;
+	}
+}
+
+//修改自己给好友设的备注与标签: 返回 1 已更新, 0 不是好友, -1 数据库错误
+//备注和标签在同一行, 一条 UPDATE 就能整组替换, 不会出现只改成功一半
+int MysqlDao::UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
+	const std::vector<std::string>& tags)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return -1;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+
+	try {
+		//备注没变化时 UPDATE 的影响行数为 0, 不能据此判断关系是否存在, 所以先单独查一次
+		auto row = con->_session->sql("SELECT 1 FROM friend WHERE self_id = ? AND friend_id = ?")
+			.bind(self_id).bind(friend_id).execute().fetchOne();
+		if (row.isNull())
+			return 0;
+
+		//这里只改 self_id 自己这一行, 对方看到的仍然是他给我设的备注与标签
+		con->_session->sql("UPDATE friend SET `back` = ?, tags = ? "
+			"WHERE self_id = ? AND friend_id = ?")
+			.bind(remark).bind(TagsToJson(tags)).bind(self_id).bind(friend_id).execute();
+		return 1;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
+		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
+		return -1;
 	}
 }
 
@@ -436,6 +579,34 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 	}
 }
 
+//取好友 uid 列表: 资料变更推送只需要 id, 不重复查用户资料
+bool MysqlDao::GetFriendIds(int uid, std::vector<int>& friend_ids)
+{
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return false;
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+
+	try {
+		auto res = con->_session->sql("SELECT friend_id FROM friend WHERE self_id = ?")
+			.bind(uid).execute();
+		auto row = res.fetchOne();
+		while (!row.isNull()) {
+			friend_ids.push_back(row[0].get<int>());
+			row = res.fetchOne();
+		}
+		return true;
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false;
+		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
+		return false;
+	}
+}
+
 bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info_list)
 {
 	auto con = pool_->getConnection();
@@ -447,14 +618,16 @@ bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> 
 		});
 
 	try {
-		//执行查询语句, 获取好友id与备注
-		auto res = con->_session->sql("select friend_id, `back` from friend where self_id = ? ")
+		//备注与标签都在关系行里, 一次查回来, 不再逐好友查第二张表
+		auto res = con->_session->sql("select friend_id, `back`, tags from friend where self_id = ? ")
 			.bind(self_id).execute();
 
 		auto row = res.fetchOne();
 		//遍历结果集
 		while (!row.isNull()) {
 			auto friend_id = row[0].get<int>();
+			//备注是本人给好友起的名字, 允许为空; 空串表示没设, 由客户端回落到昵称或用户名
+			const std::string back = row[1].isNull() ? std::string() : row[1].get<std::string>();
 			//再一次查询friend_id对应的信息
 			auto user_info = GetUser(friend_id);
 			if (user_info == nullptr) {
@@ -462,8 +635,8 @@ bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> 
 				continue;
 			}
 
-			//保持原逻辑: 备注字段直接使用好友昵称
-			user_info->back = user_info->name;
+			user_info->back = back;
+			user_info->tags = JsonToTags(row[2].isNull() ? std::string() : row[2].get<std::string>());
 			user_info_list.push_back(user_info);
 			row = res.fetchOne();
 		}

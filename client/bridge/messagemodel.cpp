@@ -45,6 +45,23 @@ MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
                 emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
         }
     });
+    // 备注、昵称或签名变化后，气泡上的名字按新的显示名重绘；头像与内容不变
+    auto refreshNames = [this] {
+        const int rows = rowCount();
+        for (int row = 0; row < rows; ++row)
+            emit dataChanged(index(row, 0), index(row, 0), {NameRole});
+    };
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendRelationChanged, this,
+            [this, refreshNames](int uid) {
+        if (uid == _uid)
+            refreshNames();
+    });
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendProfileChanged, this,
+            [this, refreshNames](int uid) {
+        if (uid == _uid)
+            refreshNames();
+    });
+    connect(UserMgr::GetInstance().get(), &UserMgr::UserProfileChanged, this, refreshNames);
 }
 
 // 切换当前会话；uid 为 0 时清空列表
@@ -112,9 +129,15 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
     case AvatarRole:
     case NameRole: {
         auto self = UserMgr::GetInstance()->GetUserInfo();
-        if (self && msg->_from_uid == self->_uid)
-            return role == AvatarRole ? UserMgr::GetInstance()->GetIcon() : self->_name;
-        return role == AvatarRole ? friend_info->_icon : friend_info->_name;
+        if (self && msg->_from_uid == self->_uid) {
+            //自己的气泡用昵称优先；昵称为空时回落到用户名
+            return role == AvatarRole ? UserMgr::GetInstance()->GetIcon()
+                                      : DisplayName(QString(), self->_nick, self->_name);
+        }
+        //对方气泡与好友列表保持同一条规则：备注 > 昵称 > 用户名
+        return role == AvatarRole ? friend_info->_icon
+                                  : DisplayName(friend_info->_back, friend_info->_nick,
+                                                friend_info->_name);
     }
     case StatusRole:
         return static_cast<int>(msg->_status);

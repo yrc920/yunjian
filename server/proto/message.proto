@@ -91,6 +91,10 @@ service ChatService {
   rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
   // 资源服务器在聊天图片/视频/文件完整落盘后通知 ChatServer 把消息标记为已上传
   rpc NotifyImageUploaded (NotifyImageUploadedReq) returns (NotifyImageUploadedRsp) {}
+  // 资源服务器改了头像后，让用户所在实例把新资料推给他的在线好友
+  rpc BroadcastProfile (BroadcastProfileReq) returns (BroadcastProfileRsp) {}
+  // 跨实例：把某人的资料变更推给对端实例上的若干好友（批量，一次一个实例）
+  rpc NotifyProfileChanged (ProfileChangedReq) returns (ProfileChangedRsp) {}
 }
 
 // 好友申请通知
@@ -171,6 +175,10 @@ message AuthFriendReq {
   int64 thread_id = 3;
   // 两条欢迎消息（申请方留言 + 通过方默认句），按 message_id 升序
   repeated TextChatData welcome_msgs = 4;
+  // 申请方当初给通过方设的备注，通过后回传给申请方，避免要重新登录才看到
+  string back = 5;
+  // 申请方当初选的分组标签，通过后随通知带回
+  repeated string tags = 6;
 }
 
 // 好友申请通过的响应
@@ -267,4 +275,35 @@ message NotifyImageUploadedRsp {
   int32 error = 1;
   // 回显消息 ID
   int64 message_id = 2;
+}
+
+// 资料变更广播请求：资源服务器换了头像后，请该用户所在实例查好友并分发
+message BroadcastProfileReq {
+  // 改了资料的 uid，实例名由资源服务器按 uip_<uid> 找到
+  int32 uid = 1;
+}
+
+// 资料变更广播响应
+message BroadcastProfileRsp {
+  // 业务错误码，0 表示已经进入分发流程；用户不在本实例或查询失败返回非 0
+  int32 error = 1;
+}
+
+// 跨实例资料变更通知：一次携带同一实例上的多个好友，避免逐个建立 RPC
+message ProfileChangedReq {
+  // 改了资料的人，客户端据此定位是哪位好友
+  int32 fromuid = 1;
+  // 需要收到通知的好友，必须在本实例上
+  repeated int32 touids = 2;
+  // 变更后的资料字段，客户端整体覆盖本地缓存
+  string nick = 3;
+  string desc = 4;
+  string icon = 5;
+  int32 sex = 6;
+}
+
+// 跨实例资料变更响应
+message ProfileChangedRsp {
+  // 业务错误码，0 表示通知已投递；实例不在线或参数非法返回非 0
+  int32 error = 1;
 }

@@ -19,6 +19,7 @@ public:
         UidRole = Qt::UserRole + 1,
         NameRole,
         NickRole,
+        DisplayNameRole, // 昵称优先、回落用户名；申请阶段还没有备注
         IconRole,
         DescRole,
         StatusRole,

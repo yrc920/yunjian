@@ -1,5 +1,6 @@
 #include "friendservice.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>
@@ -96,9 +97,10 @@ bool FriendService::searchUser(const QString &query)
     return true;
 }
 
-// 发起好友申请：applyname 是申请留言（默认欢迎语），bakname 是给对方设的备注
+// 发起好友申请：applyname 是申请留言（默认欢迎语），bakname 是给对方设的备注，
+// tags 是给对方打的分组；三者都会随申请一起保存
 bool FriendService::applyFriend(int touid, const QString &applyName,
-                                const QString &backName)
+                                const QString &backName, const QStringList &tags)
 {
     if (touid <= 0 || _applying)
         return false;
@@ -110,6 +112,10 @@ bool FriendService::applyFriend(int touid, const QString &applyName,
     body["applyname"] = applyName;
     body["bakname"] = backName;
     body["touid"] = touid;
+    QJsonArray tag_array;
+    for (const auto &tag : tags)
+        tag_array.append(tag);
+    body["tags"] = tag_array;
 
     emit TcpMgr::GetInstance()->sig_send_data(
         ReqId::ID_ADD_FRIEND_REQ,

@@ -21,8 +21,9 @@ public:
 
     // query 纯数字按 uid 查，否则按用户名查
     bool searchUser(const QString &query);
-    // 发出好友申请；返回 false 表示当前连接或上一次申请还没结束
-    bool applyFriend(int touid, const QString &applyName, const QString &backName);
+    // 发出好友申请；tags 是申请方给对方打的分组，通过后直接生效
+    bool applyFriend(int touid, const QString &applyName, const QString &backName,
+                     const QStringList &tags);
     void authFriend(int touid, const QString &backName);
 
 signals:

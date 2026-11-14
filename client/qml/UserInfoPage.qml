@@ -8,6 +8,7 @@ Item {
     property bool avatarSaved: false
     readonly property var profile: controller ? controller.myProfile : ({})
     signal editAvatarRequested()
+    signal editProfileRequested()
 
     Rectangle {
         anchors.fill: parent
@@ -84,17 +85,32 @@ Item {
             }
 
             Spacer { gap: 24 }
-            AppButton {
-                id: changeAvatarButton
-                objectName: "changeAvatarButton"
-                width: 146
-                height: 42
-                text: "更换头像"
-                iconName: "image"
-                onClicked: {
-                    root.avatarSaved = false
-                    forceActiveFocus()
-                    root.editAvatarRequested()
+            // 头像与文字资料分开编辑：头像是资源上传流程，其余字段保存后立即生效
+            Row {
+                width: parent.width
+                spacing: 12
+                AppButton {
+                    id: changeAvatarButton
+                    objectName: "changeAvatarButton"
+                    width: 146
+                    height: 42
+                    text: "更换头像"
+                    iconName: "image"
+                    onClicked: {
+                        root.avatarSaved = false
+                        forceActiveFocus()
+                        root.editAvatarRequested()
+                    }
+                }
+                AppButton {
+                    objectName: "editProfileButton"
+                    width: 146
+                    height: 42
+                    text: "编辑资料"
+                    onClicked: {
+                        forceActiveFocus()
+                        root.editProfileRequested()
+                    }
                 }
             }
             Text {
@@ -161,7 +177,8 @@ Item {
                 model: [
                     { label: "用户名", value: root.profile.name || "未设置" },
                     { label: "昵称", value: root.profile.nick || "未设置" },
-                    { label: "性别", value: root.profile.sex === 1 ? "男" : (root.profile.sex === 2 ? "女" : "未设置") }
+                    { label: "性别", value: root.profile.sex === 1 ? "男" : (root.profile.sex === 2 ? "女" : "未设置") },
+                    { label: "个性签名", value: root.profile.desc || "未设置" }
                 ]
                 delegate: Item {
                     width: details.width

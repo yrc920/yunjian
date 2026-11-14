@@ -193,8 +193,9 @@ flowchart TB
 
 ### 申请（1009）
 
-1. 解析 `{uid, applyname, bakname, touid}`，`applyname` 是申请留言（为空时用默认句）；
-2. `MysqlMgr::AddFriendApply(uid, touid, welcome, bakname)`：把申请留言写 `friend_apply.descs`，备注写 `friend_apply.back_name`；重复申请用 `ON DUPLICATE KEY UPDATE` 覆盖；
+1. 解析 `{uid, applyname, bakname, touid, tags}`，`applyname` 是申请留言（为空时用默认句）；
+2. `MysqlMgr::AddFriendApply(uid, touid, welcome, bakname, tags)`：把申请留言写 `friend_apply.descs`、
+   备注写 `back_name`、分组写 `tags`（JSON 数组）；重复申请用 `ON DUPLICATE KEY UPDATE` 整组覆盖；
 3. 回 1010，`error` 表示申请是否已经落库；
 4. 查 `uip_<touid>`；
 5. 本实例 → 构造 1011 通知（`name` 是申请人资料名，`desc` 是申请留言）；跨实例 → `NotifyAddFriend`。
@@ -204,15 +205,76 @@ flowchart TB
 ### 同意（1013）
 
 1. 解析 `{fromuid, touid, back}`；
-2. `AddFriend(uid, touid, back_name, apply_desc)` 开启事务并锁定对方向自己的好友申请，无申请则失败；
+2. `AddFriend(uid, touid, back_name, my_tags, apply_desc, reverse_back, reverse_tags)` 开启事务并锁定对方向自己的好友申请，无申请则失败；
+   `reverse_back` 与 `reverse_tags` 是申请方当初填的备注与分组，随回包/通知带回给申请方，避免重新登录才看到；
 3. 同一事务内把申请状态置 1，再双向插入 `friend` 表（`INSERT IGNORE`）；两条插入固定按 `self_id` 升序执行，
    两个用户同时互相同意时不会出现 AB/BA 的锁顺序；
 4. 创建或复用 `private_chat` 线程；线程创建失败不回滚好友关系，聊天在首次打开/发送时再建；
 5. `AddFriend` 在事务内读取 `friend_apply.descs` 并返回给逻辑层；逻辑层随后按“申请方留言 → 同意方默认句”写入两条 `chat_message`，申请方在前；欢迎消息写失败只记录日志，不回滚好友关系；
 6. 回 1014（附对方资料、`thread_id`、`welcome_msgs`）；
-7. 通知对方 1015（本实例直投 / 跨实例 `NotifyAuthFriend`），带同样的 `thread_id` 与申请方视角的 `welcome_msgs`。
+7. 通知对方 1015（本实例直投 / 跨实例 `NotifyAuthFriend`），带同样的 `thread_id`、
+   申请方视角的 `welcome_msgs`，以及 `back` 与 `tags`（申请方当初填的备注与分组）。
 
 > 好友关系写库失败才回滚并返回错误。欢迎消息属于附加内容，写失败只记录日志，不回滚好友关系。
+
+### 资料、备注与标签（1045 / 1047 / 1049）
+
+三个入口都以**会话绑定的 uid** 作为操作者，请求体里不带 uid/fromuid，客户端无法修改他人数据。
+
+**1045 修改本人资料** `{nick, sex, desc}`：
+
+1. `RequestValidation` 先校验三个字段类型与 `sex ∈ [0,2]`；
+2. handler 按 UTF-8 字符数再校验长度（昵称 20、签名 60），避免绕过界面写入超长内容；
+3. `MysqlMgr::UpdateUserProfile` 一次更新 `nick / sex / desc`（`desc` 是保留字，SQL 里加反引号）；
+4. 重新读库，用完整资料覆盖 `ubaseinfo_<uid>` 与 `nameinfo_<name>` 两份缓存；
+5. 回 1046，带最终落库值，客户端直接刷新本地资料。
+
+**1047 修改好友备注与标签** `{touid, remark, tags}`：
+
+1. 备注长度上限与昵称一致（20 字符），允许空串表示清除；标签在 `RequestValidation` 里已校验
+   数量（≤10）与单个长度（≤12 字符），这里整组序列化成 JSON 数组；
+2. `UpdateFriendRemark` 先 `SELECT 1 FROM friend WHERE self_id = ? AND friend_id = ?` 确认关系，
+   再一条 `UPDATE` 同时写 `back` 与 `tags`。不能只看 UPDATE 的影响行数：值没变化时影响行数为 0，
+   会被误判成"不是好友"；
+3. 返回 1 已更新 / 0 不是好友 / -1 数据库错误，分别映射为成功、`UidInvalid(1011)`、`RPCFailed(1002)`；
+4. 只写自己这一行，不通知对方；回包带回服务端确认后的备注与标签。
+
+**1009 申请时带标签**：`tags` 与 `back_name` 一起写 `friend_apply`。同意时 `AddFriend` 在同一事务里
+读回这两列，按方向分别写入两条 `friend` 记录——申请方的备注与标签写进申请方那行，
+同意方自己填的写进同意方那行。申请被拒绝时标签留在 `friend_apply` 里，不会出现在任何好友列表。
+
+**1049 拉取好友最新资料** `{touid}`：走 `GetBaseInfo`（优先读 `ubaseinfo_`，未命中查库回填），
+只回 `uid / name / nick / desc / sex / icon`，不含邮箱与密码。不要求对方在线或已是好友。
+客户端在打开会话与资料页时各拉一次，用来刷新昵称和个性签名。
+
+> `friend` 与 `friend_apply` 的 `tags` 列由启动时的 `EnsureFriendTagColumns` 幂等补齐：
+> 先查 `information_schema.columns`，缺列才 `ALTER TABLE ... ADD COLUMN`。启动流程里预热
+> `MysqlMgr`，让这一步在启动阶段完成，而不是落到第一个登录请求上。
+
+### 资料变更推送（1051）
+
+改资料的入口有两个，最后汇到同一个推送方法 `LogicSystem::NotifyFriendsProfileChanged(uid)`：
+
+| 入口 | 触发点 | 路径 |
+| --- | --- | --- |
+| 客户端改昵称/签名（1045） | `UpdateProfile` 写库并刷缓存后 | 逻辑层直接调用 |
+| 客户端换头像（1043） | `FileWorker::UpdateAvatarInfo` 写完 `user.icon` 后 | 资源服务器 gRPC `BroadcastProfile` → 用户所在实例 |
+
+推送流程：
+
+1. 从 `user` 表读一次完整资料，保证推送内容与落库值一致（头像可能是资源服务器写的）；
+2. `GetFriendIds` 取好友 uid 列表，逐个查 `uip_<uid>`：没有位置键说明对方离线，直接跳过；
+3. 在本实例的好友直接 `session->Send(1051)`；
+4. 跨实例的好友按**目标实例分组**，一个实例只发一次 `NotifyProfileChanged`，请求里带
+   `fromuid`、这批 `touids` 与四个字段；对端只投递给本实例在线的那几个；
+5. 推送不写库、不重试：失败时好友下次登录从 1006 回包拿到最新资料。
+
+> 推送放在回包之前同步执行。好友数量是个人量级，跨实例 RPC 有 3 秒截止时间，
+> 正常情况下用户感知不到；如果将来好友规模变大，应改为投递到逻辑队列异步分发。
+
+gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实例，带上 uid 即可）与
+`NotifyProfileChanged`（实例间批量转发）。两者都在 `services/ChatServer` 与
+`services/ResourceServer` 的 `ChatGrpcClient` 中对接。
 
 **单聊会话创建（1025 / 首次发消息）**：先普通查询已有 `private_chat`，没有则直接插入
 `chat_thread` + `private_chat`，由 `uk_private_users` 唯一键决定谁创建成功；撞键的一方回滚后
@@ -273,3 +335,5 @@ ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 - 心跳阈值 20 秒、扫描周期 60 秒，半开连接最多接近 80 秒才回收，计数更新存在延迟。
 - 消息已落库；跨实例 RPC 失败时本次实时投递失败，但消息不会丢，需等下次登录同步，没有自动重试。
 - 好友操作仍无重试、无补偿；欢迎消息写失败只记录日志。
+- 昵称/头像变更不向好友广播，对方要等下一次登录或重新拉取才看到新资料。
+- 资料缓存没有 TTL，只靠 1045 与头像上传两条写入路径主动覆盖。

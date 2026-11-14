@@ -85,6 +85,10 @@ signals:
     void sig_resource_chat_rsp(const QJsonObject &data); //1035 视频/文件回执
     void sig_resource_notify(const QJsonObject &data); //1036 对方视频/文件已上传，等用户下载
     void sig_private_chat_created(const QJsonObject &data); //1026 建会话结果，error 由会话层判断
+    void sig_profile_updated(const QJsonObject &data); //1046 本人资料修改结果，失败也回传
+    void sig_friend_remark_updated(const QJsonObject &data); //1048 好友备注与标签修改结果
+    void sig_profile_loaded(const QJsonObject &data); //1050 好友最新资料，失败也回传
+    void sig_friend_profile_changed(const QJsonObject &data); //1051 好友资料变更推送
     void sig_notify_offline(); //收到服务器踢人消息的信号
     void sig_connection_closed(); //连接断开的信号
 };

@@ -9,6 +9,7 @@ Item {
     id: root
 
     property string title: ""
+    property string subtitle: "" //好友个性签名，空表示没写，标题只显示名字
     property var messages: null
     property var bridge: null
     property int currentUid: 0
@@ -64,15 +65,23 @@ Item {
         height: root.headerHeight
         color: Theme.chatBg
 
-        Column {
+        // 标题行：显示名 + 个性签名。签名只在好友写过时出现，用更小的字号跟在名字后面
+        Item {
+            id: titleRow
             anchors.left: parent.left
             anchors.leftMargin: 28
             anchors.right: profileButton.left
             anchors.rightMargin: 20
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 5
+            height: 26
+
             Text {
-                width: parent.width
+                id: titleText
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                //有签名时给名字留 62% 的宽度，剩下的交给签名；没有签名就用满整行
+                width: Math.min(implicitWidth,
+                                root.subtitle.length > 0 ? parent.width * 0.62 : parent.width)
                 text: root.title
                 textFormat: Text.PlainText
                 font.pixelSize: 20
@@ -81,9 +90,16 @@ Item {
                 elide: Text.ElideRight
             }
             Text {
-                text: "对话"
-                font.pixelSize: 11
-                color: Theme.textHint
+                visible: root.subtitle.length > 0
+                anchors.left: titleText.right
+                anchors.leftMargin: 12
+                anchors.right: parent.right
+                anchors.baseline: titleText.baseline
+                text: root.subtitle
+                textFormat: Text.PlainText
+                font.pixelSize: Theme.fontSmall
+                color: Theme.textSecondary
+                elide: Text.ElideRight
             }
         }
 

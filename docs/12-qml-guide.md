@@ -35,6 +35,9 @@ core 不依赖 Gui/Quick；这一边界通过头文件依赖和代码审查维�
 | 头像编辑（弹层） | `qml/AvatarEditor.qml` | `ImageCropper` + `UserMgr::GetIcon` / `SetLocalAvatar` |
 | 申请添加好友（弹层） | `qml/FriendDialogs.qml` | `ChatBridge::applyTo` |
 | 验证申请（弹层） | `qml/FriendDialogs.qml` | `ChatBridge::authApply` |
+| 编辑本人资料 / 好友备注与标签（弹层） | `qml/ProfileDialogs.qml` | `ChatBridge::saveMyProfile` / `saveFriendRemark` + `ProfileService` |
+| 好友标签编辑器（表单内） | `qml/TagEditor.qml` | 无，标签数组由父级持有，经 `committed` 回传 |
+| 联系人标签筛选浮层 | `qml/TagFilterPopover.qml` | `ChatBridge::tagOptions` / `setTagFilter`，展开状态由 `ChatWindow` 自己持有 |
 | 联系人页加好友浮层 | `qml/AddFriendPopover.qml` | `ChatBridge::addFriendOpen` / `searchState` / `applyState` |
 | 聊天页好友过滤 | `qml/FriendSearchPopup.qml` | `ChatBridge::friendQuery` / `friendMatches` |
 | 共用搜索输入 | `qml/SearchField.qml` | 无，查询由父页面决定 |

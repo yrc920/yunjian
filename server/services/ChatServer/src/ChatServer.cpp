@@ -6,6 +6,7 @@
 #include "CServer.h"
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
+#include "MysqlMgr.h"
 #include "ChatServiceImpl.h"
 
 int main()
@@ -16,6 +17,9 @@ int main()
 		auto pool = IOContextPool::GetInstance(); //获取IOContextPool单例实例
 		
 		RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, "0"); //将登录数设置为0
+		//启动时把数据库连接池建好: tags 补列这类一次性 DDL 在启动阶段完成,
+		//不落到第一个登录请求上, 失败也能在启动日志里看到
+		MysqlMgr::GetInstance();
 	    Defer derfer ([server_name]() {
                 RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name);
                 RedisMgr::GetInstance()->Close();

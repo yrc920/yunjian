@@ -18,8 +18,17 @@ public:
 	//检查邮箱和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
 	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
-		const std::string& back_name); //添加好友申请、申请留言与备注
-	bool AddFriend(const int& from, const int& to, std::string back_name, std::string& apply_desc);
+		const std::string& back_name, const std::vector<std::string>& tags); //好友申请、留言、备注与标签
+	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签
+	bool AddFriend(const int& from, const int& to, std::string back_name,
+		const std::vector<std::string>& tags, std::string& apply_desc,
+		std::string& reverse_back, std::vector<std::string>& reverse_tags);
+
+	//更新本人可编辑的资料字段; 昵称与签名的长度由调用方按字符数校验
+	bool UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc);
+	//修改自己给好友设的备注与标签: 返回 1 已更新, 0 不是好友, -1 数据库错误
+	int UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
+		const std::vector<std::string>& tags);
 
 	std::shared_ptr<UserInfo> GetUser(int uid); //根据用户ID获取用户信息
 	std::shared_ptr<UserInfo> GetUser(const std::string& name); //根据用户名获取用户信息
@@ -30,6 +39,8 @@ public:
 	bool GetSentApplyList(int from_uid,
 		std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit = 10);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
+	//取某人的好友 uid 列表, 资料变更后按它决定推给谁
+	bool GetFriendIds(int uid, std::vector<int>& friend_ids);
 	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建
 	//分页读取会话列表与消息, 具体语义见 MysqlDao 中同名方法
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,

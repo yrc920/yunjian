@@ -63,6 +63,78 @@ std::shared_ptr<UserInfo> UserMgr::GetUserInfo()
     return _user_info;
 }
 
+//本人资料改成功: 更新本地缓存并通知界面; 昵称与签名允许清空, 性别 0 表示不公开
+void UserMgr::UpdateMyProfile(const QString &nick, int sex, const QString &desc)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (!_user_info)
+        return;
+    _user_info->_nick = nick;
+    _user_info->_sex = sex;
+    _user_info->_desc = desc;
+    emit UserProfileChanged();
+}
+
+//好友备注与标签改成功: 只改自己这一侧的显示名与分组, 对方的昵称与别人给他的备注都不变
+bool UserMgr::UpdateFriendRelation(int uid, const QString &remark, const QStringList &tags)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(uid);
+    if (find_it == _friend_map.end() || !(*find_it))
+        return false;
+    (*find_it)->_back = remark;
+    (*find_it)->_tags = tags;
+    emit FriendRelationChanged(uid);
+    emit FriendTagsChanged(); //标签集合可能新增或消失，筛选条要重算
+    return true;
+}
+
+//好友文字资料变了：昵称、签名、性别按推送值覆盖。
+//头像不在这里更新：_icon 可能是已经下载好的本地路径，改由 FileService 下载完成后统一替换，
+//避免推送到达时头像先变成文件名、等下载完才恢复
+bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &desc, int sex)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(uid);
+    if (find_it == _friend_map.end() || !(*find_it))
+        return false;
+
+    bool changed = false;
+    if ((*find_it)->_nick != nick) {
+        (*find_it)->_nick = nick;
+        changed = true;
+    }
+    if ((*find_it)->_desc != desc) {
+        (*find_it)->_desc = desc;
+        changed = true;
+    }
+    if (sex >= 0 && (*find_it)->_sex != sex) {
+        (*find_it)->_sex = sex;
+        changed = true;
+    }
+
+    if (changed)
+        emit FriendProfileChanged(uid);
+    return changed;
+}
+
+//所有好友标签去重后按名称排序，空标签不会出现在筛选条里
+QStringList UserMgr::AllTags() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    QStringList all;
+    for (const auto& info : _friend_list) {
+        if (!info)
+            continue;
+        for (const auto& tag : info->_tags) {
+            if (!tag.isEmpty() && !all.contains(tag))
+                all.append(tag);
+        }
+    }
+    all.sort();
+    return all;
+}
+
 int UserMgr::GetUid()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -374,13 +446,22 @@ void UserMgr::AppendFriendList(QJsonArray array) {
         auto sex = value["sex"].toInt();
         auto uid = value["uid"].toInt();
         auto back = value["back"].toString();
+        //标签随好友列表下发；缺字段时是空数组，不影响旧数据
+        QStringList tags;
+        for (const auto& tag : value["tags"].toArray()) {
+            const QString text = tag.toString();
+            if (!text.isEmpty() && !tags.contains(text))
+                tags.append(text);
+        }
 
         auto info = std::make_shared<FriendInfo>(uid, name, nick, icon, sex, desc, back);
+        info->_tags = tags;
         _friend_list.push_back(info);
         _friend_map.insert(uid, info);
     }
 
     emit FriendListChanged();
+    emit FriendTagsChanged(); //整表重建后筛选条按新的标签并集刷新
 }
 
 bool UserMgr::AlreadyApply(int uid)
@@ -1019,6 +1100,7 @@ void UserMgr::ClearSession()
 
     emit ApplyListChanged();
     emit FriendListChanged();
+    emit FriendTagsChanged(); //换账号后筛选条不能留着上一个账号的标签
     if (hadIcon)
         emit UserIconChanged();
 }

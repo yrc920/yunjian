@@ -26,6 +26,10 @@ using message::KickUserReq;
 using message::KickUserRsp;
 using message::NotifyImageUploadedReq;
 using message::NotifyImageUploadedRsp;
+using message::BroadcastProfileReq;
+using message::BroadcastProfileRsp;
+using message::ProfileChangedReq;
+using message::ProfileChangedRsp;
 
 class ChatServiceImpl final : public ChatService::Service
 {
@@ -42,6 +46,12 @@ public:
     //资源服务器在聊天图片完整落盘后通知这里回写消息状态
     Status NotifyImageUploaded(ServerContext* context,
         const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response) override;
+    //资源服务器换完头像后：查该用户的好友并分发资料变更
+    Status BroadcastProfile(ServerContext* context,
+        const BroadcastProfileReq* request, BroadcastProfileRsp* response) override;
+    //跨实例资料变更：把新资料推给本实例上的这批好友
+    Status NotifyProfileChanged(ServerContext* context,
+        const ProfileChangedReq* request, ProfileChangedRsp* response) override;
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
     void RegisterServer(std::shared_ptr<CServer> pServer); //注册CServer对象，方便在处理请求时访问服务器相关功能

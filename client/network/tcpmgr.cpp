@@ -250,6 +250,30 @@ void TcpMgr::initHandlers()
             emit sig_private_chat_created(document.object());
     });
 
+    //资料与备注修改：成功失败都要交给业务层，界面要按 error 给出提示
+    _handlers.insert(ID_UPDATE_PROFILE_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_profile_updated(document.object());
+    });
+    _handlers.insert(ID_UPDATE_FRIEND_REMARK_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_friend_remark_updated(document.object());
+    });
+    //按 uid 拉最新资料：昵称与签名随时会变，打开会话或资料页时刷新一次
+    _handlers.insert(ID_GET_PROFILE_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_profile_loaded(document.object());
+    });
+    //好友资料变更推送：昵称、签名或头像改了，在线好友立即覆盖本地缓存
+    _handlers.insert(ID_NOTIFY_PROFILE_CHANGED, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_friend_profile_changed(document.object());
+    });
+
     //注册处理用户搜索响应的消息处理函数
     _handlers.insert(ID_SEARCH_USER_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
@@ -380,6 +404,13 @@ void TcpMgr::initHandlers()
 
         auto auth_info = std::make_shared<AuthInfo>(from_uid, name, nick, icon, sex,
             jsonObj["thread_id"].toVariant().toLongLong());
+        //申请时填过备注和标签的话，通过后立刻能按备注显示、按分组筛选，不必重新登录
+        auth_info->_back = jsonObj["back"].toString();
+        for (const auto &value : jsonObj["tags"].toArray()) {
+            const QString tag = value.toString();
+            if (!tag.isEmpty() && !auth_info->_tags.contains(tag))
+                auth_info->_tags.append(tag);
+        }
         for (const auto &value : jsonObj["welcome_msgs"].toArray()) {
             const auto item = value.toObject();
             auth_info->_welcome_msgs.push_back(std::make_shared<TextChatData>(
@@ -427,6 +458,8 @@ void TcpMgr::initHandlers()
         auto uid = jsonObj["uid"].toInt();
         auto rsp = std::make_shared<AuthRsp>(uid, name, nick, icon, sex,
             jsonObj["thread_id"].toVariant().toLongLong());
+        //同意时填写的备注随回包返回，本地好友列表立即使用
+        rsp->_back = jsonObj["back"].toString();
         for (const auto &value : jsonObj["welcome_msgs"].toArray()) {
             const auto item = value.toObject();
             rsp->_welcome_msgs.push_back(std::make_shared<TextChatData>(

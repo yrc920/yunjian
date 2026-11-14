@@ -103,6 +103,7 @@ set(CORE_SOURCES
     core/service/sessionservice.cpp
     core/service/chatservice.cpp
     core/service/friendservice.cpp
+    core/service/profileservice.cpp
     core/service/fileservice.cpp
     core/videothumbnail.cpp
 )
@@ -116,6 +117,7 @@ set(CORE_HEADERS
     core/service/sessionservice.h
     core/service/chatservice.h
     core/service/friendservice.h
+    core/service/profileservice.h
     core/service/fileservice.h
     core/videothumbnail.h
 )
@@ -234,6 +236,9 @@ set(QML_FILES
     qml/Reset.qml
     qml/ChatWindow.qml
     qml/FriendDialogs.qml
+    qml/ProfileDialogs.qml
+    qml/TagEditor.qml
+    qml/TagFilterPopover.qml
     qml/SearchField.qml
     qml/AddFriendPopover.qml
     qml/FriendSearchPopup.qml
@@ -248,7 +253,6 @@ set(QML_FILES
     qml/ContextMenu.qml
     qml/ViewerOverlay.qml
     qml/Avatar.qml
-    qml/IconButton.qml
     qml/ToolIcon.qml
     qml/SideButton.qml
     qml/AppInput.qml

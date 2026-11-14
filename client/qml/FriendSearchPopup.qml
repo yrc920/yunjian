@@ -50,7 +50,7 @@ Rectangle {
                 radius: 9
                 anchors.verticalCenter: parent.verticalCenter
                 source: modelData.icon || ""
-                name: modelData.name || ""
+                name: modelData.displayName || modelData.name || ""
                 textSize: 12
             }
             Column {
@@ -63,7 +63,7 @@ Rectangle {
 
                 Text {
                     width: parent.width
-                    text: modelData.name || ""
+                    text: modelData.displayName || modelData.name || ""
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
                     font.pixelSize: 12

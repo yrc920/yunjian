@@ -79,7 +79,7 @@ Item {
                 width: 44
                 height: 44
                 source: model.icon
-                name: model.name
+                name: model.displayName
                 textSize: 16
             }
             Column {
@@ -92,7 +92,7 @@ Item {
 
                 Text {
                     width: parent.width
-                    text: model.name
+                    text: model.displayName
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontBody
@@ -125,7 +125,7 @@ Item {
                     anchors.fill: parent
                     visible: model.direction === 0 && model.status === 0
                     text: "添加"
-                    onClicked: root.authRequested(model.uid, model.name, model.desc)
+                    onClicked: root.authRequested(model.uid, model.displayName, model.desc)
                 }
                 Text {
                     anchors.centerIn: parent

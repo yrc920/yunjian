@@ -98,6 +98,36 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
 	return rsp;
 }
 
+//资料变更推送: 与其它跨实例通知一样按实例名找连接池, 找不到或失败都回 RPCFailed,
+//调用方只记日志不重试——好友下次登录会从 1006 回包拿到最新资料
+ProfileChangedRsp ChatGrpcClient::NotifyProfileChanged(std::string server_ip,
+	const ProfileChangedReq& req)
+{
+	ProfileChangedRsp rsp;
+	rsp.set_error(ErrorCodes::RPCFailed);
+
+	auto find_iter = _pools.find(server_ip);
+	if (find_iter == _pools.end()) {
+		return rsp;
+	}
+
+	auto& pool = find_iter->second;
+	ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+	auto stub = pool->getConnection();
+	Status status = stub->NotifyProfileChanged(&context, req, &rsp);
+	Defer defercon([&stub, this, &pool]() {
+		pool->returnConnection(std::move(stub));
+		});
+
+	if (!status.ok()) {
+		rsp.set_error(ErrorCodes::RPCFailed);
+		return rsp;
+	}
+
+	return rsp;
+}
+
 bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
 {
 	//优先查redis中查询用户信息

@@ -2,6 +2,7 @@
 #define USERDATA_H
 
 #include <QString>
+#include <QStringList>
 #include <memory>
 #include <atomic>
 #include <QJsonArray>
@@ -87,6 +88,8 @@ struct AuthInfo {
     qint64 _thread_id = 0; //两人共用的单聊会话ID, 0 表示尚未建立
     qint64 _message_id = 0; //欢迎消息中的最后一条, 便于定位
     QString _welcome_msg_id; //欢迎消息的客户端ID前缀
+    QString _back; //我当初给对方设的备注，通过申请后由服务端回传
+    QStringList _tags; //我当初给对方选的分组，通过申请后一并生效
     std::vector<std::shared_ptr<TextChatData>> _welcome_msgs; //通过申请时写入的两条欢迎消息
 };
 
@@ -107,6 +110,8 @@ struct AuthRsp {
     qint64 _thread_id = 0;
     qint64 _message_id = 0;
     QString _welcome_msg_id;
+    QString _back; //同意时自己给对方设的备注
+    QStringList _tags; //同意时自己给对方设的分组，当前弹层不选，保持为空
     std::vector<std::shared_ptr<TextChatData>> _welcome_msgs;
 };
 
@@ -156,14 +161,16 @@ struct FriendInfo {
 
     FriendInfo(std::shared_ptr<AuthInfo> auth_info):_uid(auth_info->_uid),
         _nick(auth_info->_nick),_icon(auth_info->_icon),_name(auth_info->_name),
-        _sex(auth_info->_sex),_chat_thread(std::make_shared<ChatThreadData>(auth_info->_thread_id))
+        _sex(auth_info->_sex),_back(auth_info->_back),_tags(auth_info->_tags),
+        _chat_thread(std::make_shared<ChatThreadData>(auth_info->_thread_id))
     {
         _chat_thread->_chat_msgs = auth_info->_welcome_msgs;
     }
 
     FriendInfo(std::shared_ptr<AuthRsp> auth_rsp):_uid(auth_rsp->_uid),
         _nick(auth_rsp->_nick),_icon(auth_rsp->_icon),_name(auth_rsp->_name),
-        _sex(auth_rsp->_sex),_chat_thread(std::make_shared<ChatThreadData>(auth_rsp->_thread_id))
+        _sex(auth_rsp->_sex),_back(auth_rsp->_back),_tags(auth_rsp->_tags),
+        _chat_thread(std::make_shared<ChatThreadData>(auth_rsp->_thread_id))
     {
         _chat_thread->_chat_msgs = auth_rsp->_welcome_msgs;
     }
@@ -177,6 +184,7 @@ struct FriendInfo {
     int _sex;
     QString _desc;
     QString _back;
+    QStringList _tags; //自己给这个好友打的分组标签，只在本地视角使用
     QString _last_msg;
     std::shared_ptr<ChatThreadData> _chat_thread;
 };
@@ -214,6 +222,7 @@ struct UserInfo {
     QString _nick;
     QString _icon;
     int _sex;
+    QString _desc; //个性签名，登录时由服务端下发，本人修改后同步更新
     QString _last_msg;
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
 };
@@ -300,6 +309,15 @@ struct DownloadFileInfo {
     qint64 _current_size = 0;
     std::atomic<bool> _paused{false}; //暂停后不再请求下一片，继续时从当前偏移续传
 };
+
+//界面统一显示名：备注 > 昵称 > 用户名
+//备注只在自己这一侧生效；昵称为空时回落到用户名，避免用户清空昵称后列表出现空白
+inline QString DisplayName(const QString &remark, const QString &nick, const QString &name)
+{
+    if (!remark.isEmpty())
+        return remark;
+    return nick.isEmpty() ? name : nick;
+}
 
 Q_DECLARE_METATYPE(std::shared_ptr<SearchInfo>)
 Q_DECLARE_METATYPE(std::shared_ptr<AddFriendApply>)

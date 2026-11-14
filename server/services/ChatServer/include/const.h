@@ -3,6 +3,7 @@
 //
 
 #include <functional>
+#include <string>
 
 enum ErrorCodes {
 	Success = 0,
@@ -35,6 +36,10 @@ private:
 };
 
 #define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
+#define MAX_NICK_LEN 20 //昵称最多 20 个字符，界面的输入上限与这里保持一致
+#define MAX_DESC_LEN 60 //个性签名最多 60 个字符
+#define MAX_TAG_LEN 12 //单个好友标签最多 12 个字符
+#define MAX_TAG_COUNT 10 //一个好友最多 10 个标签
 #define HEAD_TOTAL_LEN 4 //头部总长度
 #define HEAD_ID_LEN 2 //头部id长度
 #define HEAD_DATA_LEN 2 //头部数据长度
@@ -42,6 +47,18 @@ private:
 #define MAX_RECVQUE 10000 //最大接收队列长度
 #define MAX_SENDQUE 1000 //最大发送队列长度
 #define MAX_LOGICQUE 10000 //最大逻辑队列长度
+
+//按 UTF-8 编码统计字符数: 只数首字节, 后续的 10xxxxxx 续字节跳过
+//数据库列宽以字符为单位, 直接比较 std::string 的 size() 会把一个汉字算成 3 个
+inline size_t Utf8CharCount(const std::string& text)
+{
+	size_t count = 0;
+	for (unsigned char ch : text) {
+		if ((ch & 0xC0) != 0x80)
+			++count;
+	}
+	return count;
+}
 
 enum MSG_IDS {
 	MSG_CHAT_LOGIN = 1005, //用户登陆
@@ -72,6 +89,13 @@ enum MSG_IDS {
 	ID_RESOURCE_CHAT_MSG_REQ = 1034, //视频/文件消息: content 存文件名、大小与预览资源
 	ID_RESOURCE_CHAT_MSG_RSP = 1035, //视频/文件消息回执
 	ID_NOTIFY_RESOURCE_CHAT_MSG_REQ = 1036, //通知接收方视频/文件已上传, 等待手动下载
+	ID_UPDATE_PROFILE_REQ = 1045, //修改本人资料: 昵称、性别、个性签名
+	ID_UPDATE_PROFILE_RSP = 1046, //修改本人资料回包, 带更新后的完整字段
+	ID_UPDATE_FRIEND_REMARK_REQ = 1047, //修改好友备注与标签
+	ID_UPDATE_FRIEND_REMARK_RSP = 1048, //备注与标签修改回包
+	ID_GET_PROFILE_REQ = 1049, //按uid拉取好友最新资料(昵称/签名/头像/性别)
+	ID_GET_PROFILE_RSP = 1050, //最新资料回包
+	ID_NOTIFY_PROFILE_CHANGED = 1051, //好友资料变更推送(昵称/签名/头像/性别)
 };
 
 #define USERIPPREFIX  "uip_" //用户登录ip server的名字前缀

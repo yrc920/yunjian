@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -41,6 +42,9 @@ class ChatBridge : public QObject
     Q_PROPERTY(QVariantMap profile READ profile NOTIFY profileChanged)
     Q_PROPERTY(int currentUid READ currentUid NOTIFY currentChanged)
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
+    Q_PROPERTY(QString currentSubtitle READ currentSubtitle NOTIFY currentChanged)
+    Q_PROPERTY(QStringList tagOptions READ tagOptions NOTIFY tagFilterChanged)
+    Q_PROPERTY(QString tagFilter READ tagFilter NOTIFY tagFilterChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -58,6 +62,10 @@ class ChatBridge : public QObject
     Q_PROPERTY(bool avatarUploadPaused READ avatarUploadPaused NOTIFY avatarSyncChanged)
     Q_PROPERTY(int avatarProgress READ avatarProgress NOTIFY avatarSyncChanged)
     Q_PROPERTY(QString avatarMessage READ avatarMessage NOTIFY avatarSyncChanged)
+    Q_PROPERTY(bool profileSaving READ profileSaving NOTIFY profileStateChanged)
+    Q_PROPERTY(QString profileMessage READ profileMessage NOTIFY profileStateChanged)
+    Q_PROPERTY(bool remarkSaving READ remarkSaving NOTIFY remarkStateChanged)
+    Q_PROPERTY(QString remarkMessage READ remarkMessage NOTIFY remarkStateChanged)
 
 public:
     //左侧栏目：会话 / 联系人 / 设置
@@ -87,6 +95,14 @@ public:
     // 当前会话
     int currentUid() const { return _currentUid; }
     QString currentName() const { return _currentName; }
+    // 会话标题后面的个性签名，没有签名时为空，由界面决定不占位
+    QString currentSubtitle() const { return _currentSubtitle; }
+
+    // 联系人页的标签筛选：选项来自全部好友标签的并集，空串表示不筛选
+    QStringList tagOptions() const;
+    QString tagFilter() const { return _tagFilter; }
+    Q_INVOKABLE void setTagFilter(const QString &tag);
+    Q_INVOKABLE void clearTagFilter();
 
     // 自己：myName 用于显示（昵称优先），myUserName 用于申请文案（用户名）
     QString myIcon() const;
@@ -125,6 +141,16 @@ public:
     QString avatarMessage() const;
     Q_INVOKABLE void toggleAvatarUpload();
 
+    //资料编辑：本人昵称/性别/签名，以及自己给好友设的备注
+    bool profileSaving() const { return _profileSaving; }
+    QString profileMessage() const { return _profileMessage; }
+    bool remarkSaving() const { return _remarkSaving; }
+    QString remarkMessage() const { return _remarkMessage; }
+    Q_INVOKABLE void saveMyProfile(const QString &nick, int sex, const QString &desc);
+    // 备注与标签一起保存，标签是"我给好友打的分组"
+    Q_INVOKABLE void saveFriendRemark(int uid, const QString &remark, const QStringList &tags);
+    Q_INVOKABLE void clearProfileMessages();
+
     //侧栏导航
     Q_INVOKABLE void showChatMode();
     Q_INVOKABLE void showContactMode();
@@ -153,9 +179,10 @@ public:
     Q_INVOKABLE QVariantList mediaItems(); //当前会话可查看的图片与已下载视频
     Q_INVOKABLE void search();
     Q_INVOKABLE void clearSearch();
-    // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录
+    // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录，tags 是给对方打的分组
     Q_INVOKABLE void applyTo(int uid, const QString &name, const QString &nick,
-                             const QString &icon, const QString &verify, const QString &remark);
+                             const QString &icon, const QString &verify, const QString &remark,
+                             const QStringList &tags);
     Q_INVOKABLE void authApply(int uid, const QString &remark);
 
 signals:
@@ -172,6 +199,13 @@ signals:
     void friendMatchesChanged();
     void applyStateChanged();
     void avatarSyncChanged();
+    //资料与备注的保存状态；成功后 QML 关闭弹层，失败时保留表单并显示 message
+    void profileStateChanged();
+    void remarkStateChanged();
+    void profileSaved(bool ok);
+    void remarkSaved(bool ok, int uid);
+    //标签选项或当前筛选变化：联系人页的筛选条与列表一起刷新
+    void tagFilterChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
     void resourceSaved(bool ok, const QString &path);
     void resourceNotice(const QString &message); //本地文件缺失、另存位置失效等提示
@@ -179,6 +213,10 @@ signals:
 private:
     void setMode(int mode);
     void setPane(int pane);
+    //好友关系侧数据变化后，刷新聊天标题、副标题与打开中的资料页
+    void refreshFriendSnapshot(int uid);
+    //按好友当前数据重建资料页快照，openProfile 与刷新共用
+    void rebuildProfile(const std::shared_ptr<FriendInfo> &info);
     void rebuildFriendMatches();
     void setApplyState(int state, const QString &message = {});
     void processPendingSaves(); //消息下载完成后处理排队的另存为
@@ -195,6 +233,8 @@ private:
 
     int _currentUid = 0;
     QString _currentName;
+    QString _currentSubtitle; //当前会话好友的个性签名，空表示没写
+    QString _tagFilter;       //联系人页当前选中的标签，空串表示全部
     QString _searchText;
     int _searchState = SearchIdle;
     QVariantMap _searchResult;
@@ -211,8 +251,15 @@ private:
     QString _applyIcon;
     QString _applyVerify;
     QString _applyRemark;
+    QStringList _applyTags; //本次申请选的分组，失败重试时原样再发
     int _applyState = ApplyIdle;
     QString _applyMessage;
+
+    //资料保存状态与最近一次错误提示；两个弹层互斥打开，但状态各自独立
+    bool _profileSaving = false;
+    QString _profileMessage;
+    bool _remarkSaving = false;
+    QString _remarkMessage;
 
     //资源还没下载完时的另存为目标：下载完成后自动复制，失败则丢弃
     QHash<qint64, QString> _pending_saves;

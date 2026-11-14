@@ -45,6 +45,7 @@ QVariant ApplyListModel::data(const QModelIndex &index, int role) const
     case UidRole: return info->_uid;
     case NameRole: return info->_name;
     case NickRole: return info->_nick;
+    case DisplayNameRole: return DisplayName(QString(), info->_nick, info->_name);
     case IconRole: return info->_icon;
     case DescRole: return info->_desc;
     case StatusRole: return info->_status;
@@ -60,6 +61,7 @@ QHash<int, QByteArray> ApplyListModel::roleNames() const
         {UidRole, "uid"},
         {NameRole, "name"},
         {NickRole, "nick"},
+        {DisplayNameRole, "displayName"},
         {IconRole, "icon"},
         {DescRole, "desc"},
         {StatusRole, "status"},
@@ -88,6 +90,7 @@ QVariantMap ApplyListModel::get(int row) const
         {QStringLiteral("uid"), data(idx, UidRole)},
         {QStringLiteral("name"), data(idx, NameRole)},
         {QStringLiteral("nick"), data(idx, NickRole)},
+        {QStringLiteral("displayName"), data(idx, DisplayNameRole)},
         {QStringLiteral("icon"), data(idx, IconRole)},
         {QStringLiteral("desc"), data(idx, DescRole)},
         {QStringLiteral("status"), data(idx, StatusRole)},

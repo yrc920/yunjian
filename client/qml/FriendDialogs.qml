@@ -14,9 +14,7 @@ FocusScope {
     property string pendingNick: ""
     property string pendingDesc: ""
     property string pendingIcon: ""
-    // 常用标签只用于本次表单，不会提交到服务端
-    property var presetTags: ["同学", "家人", "同事", "朋友", "游戏伙伴", "客户",
-                              "读书", "运动", "旅行", "音乐", "电影", "其他"]
+    // 本次申请要加的分组标签，提交后由服务端保存
     property var selectedTags: []
 
     visible: overlay !== ""
@@ -59,34 +57,11 @@ FocusScope {
         pendingIcon = controller.searchResult.icon || ""
         selectedTags = []
         verifyInput.text = defaultWelcome()
-        applyRemarkInput.text = name
-        tagInput.text = ""
+        // 备注是可选项：不填就不写库，之后在好友资料页随时可以补
+        applyRemarkInput.text = ""
         overlay = "apply"
         content.contentY = 0
         verifyInput.forceInputFocus()
-    }
-
-    // 标签是普通字符串数组，增删都换新数组，保证 Repeater 收到变更
-    function addTag(text) {
-        const value = text.trim()
-        if (value.length > 0 && selectedTags.indexOf(value) < 0)
-            selectedTags = selectedTags.concat([value])
-    }
-
-    function removeTag(text) {
-        const index = selectedTags.indexOf(text)
-        if (index < 0)
-            return
-        const tags = selectedTags.slice()
-        tags.splice(index, 1)
-        selectedTags = tags
-    }
-
-    function toggleTag(text) {
-        if (selectedTags.indexOf(text) >= 0)
-            removeTag(text)
-        else
-            addTag(text)
     }
 
     function submit() {
@@ -94,11 +69,12 @@ FocusScope {
             // 留空就原样发空，由服务端回退到默认留言；不要在这里再补一次默认句
             controller.applyTo(pendingUid, pendingName, pendingNick, pendingIcon,
                                verifyInput.text.trim(),
-                               applyRemarkInput.text || pendingName)
+                               applyRemarkInput.text.trim(),
+                               selectedTags)
             // 浮层留在原地，由它显示「发送中 / 已发送 / 失败」
             overlay = ""
         } else if (overlay === "auth") {
-            controller.authApply(pendingUid, authRemarkInput.text)
+            controller.authApply(pendingUid, authRemarkInput.text.trim())
             overlay = ""
         } else {
             closeDialog()
@@ -288,7 +264,8 @@ FocusScope {
                     AppInput {
                         id: applyRemarkInput
                         width: parent.width
-                        placeholder: "你习惯怎么称呼对方"
+                        maximumLength: 20
+                        placeholder: "可选，之后也能在资料页修改"
                         onAccepted: tagInput.forceInputFocus()
                     }
                     Spacer { gap: 20 }
@@ -298,84 +275,11 @@ FocusScope {
                         font.pixelSize: Theme.fontSmall
                     }
                     Spacer { gap: 10 }
-
-                    Flow {
-                        id: selectedFlow
+                    // 标签随申请一起提交，通过后直接成为自己的好友分组
+                    TagEditor {
                         width: parent.width
-                        spacing: 7
-                        visible: root.selectedTags.length > 0
-                        Repeater {
-                            model: root.selectedTags
-                            delegate: Rectangle {
-                                width: Math.min(selectedFlow.width, selectedText.implicitWidth + 42)
-                                height: 29
-                                radius: 5
-                                color: Theme.selected
-                                Text {
-                                    id: selectedText
-                                    x: 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: parent.width - 35
-                                    text: modelData
-                                    textFormat: Text.PlainText
-                                    color: Theme.textPrimary
-                                    font.pixelSize: Theme.fontSmall
-                                    elide: Text.ElideRight
-                                }
-                                AppIcon {
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 7
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    name: "close"
-                                    size: 12
-                                    color: Theme.textSecondary
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.removeTag(modelData)
-                                }
-                            }
-                        }
-                    }
-                    Spacer { gap: root.selectedTags.length > 0 ? 10 : 0 }
-                    AppInput {
-                        id: tagInput
-                        width: parent.width
-                        placeholder: "输入标签后按回车"
-                        onAccepted: {
-                            root.addTag(text)
-                            text = ""
-                        }
-                    }
-                    Spacer { gap: 12 }
-                    Flow {
-                        width: parent.width
-                        spacing: 7
-                        Repeater {
-                            model: root.presetTags
-                            delegate: Rectangle {
-                                readonly property bool chosen: root.selectedTags.indexOf(modelData) >= 0
-                                width: tagLabel.implicitWidth + 22
-                                height: 29
-                                radius: 5
-                                color: chosen ? Theme.selected : Theme.panelAlt
-                                border.width: 1
-                                border.color: chosen ? Theme.primary : "transparent"
-                                Text {
-                                    id: tagLabel
-                                    anchors.centerIn: parent
-                                    text: modelData
-                                    color: chosen ? Theme.textPrimary : Theme.textSecondary
-                                    font.pixelSize: Theme.fontSmall
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.toggleTag(modelData)
-                                }
-                            }
-                        }
+                        tags: root.selectedTags
+                        onCommitted: (list) => root.selectedTags = list
                     }
                     Spacer { gap: 4 }
                 }
@@ -392,7 +296,8 @@ FocusScope {
                     AppInput {
                         id: authRemarkInput
                         width: parent.width
-                        placeholder: "可选"
+                        maximumLength: 20
+                        placeholder: "可选，之后也能在资料页修改"
                         onAccepted: root.submit()
                     }
                 }

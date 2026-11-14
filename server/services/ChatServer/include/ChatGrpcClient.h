@@ -30,6 +30,8 @@ using message::TextChatMsgRsp;
 using message::TextChatData;
 using message::KickUserReq;
 using message::KickUserRsp;
+using message::ProfileChangedReq;
+using message::ProfileChangedRsp;
 class ChatConPool; //连接池类, 用于管理Grpc连接(前置声明)
 
 class ChatGrpcClient :public Singleton<ChatGrpcClient>
@@ -45,6 +47,8 @@ public:
 	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip,
 		const TextChatMsgReq& req, const Json::Value& rtvalue);
     KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& req);
+	//把某人的资料变更推给对端实例上的好友, 一次携带多个 uid
+	ProfileChangedRsp NotifyProfileChanged(std::string server_ip, const ProfileChangedReq& req);
 
 private:
 	ChatGrpcClient();

@@ -9,6 +9,7 @@
 #include "CServer.h"
 #include "RequestValidation.h"
 #include <charconv>
+#include <map>
 
 namespace {
 //加好友双方各自的第一句: 申请方留言为空时用默认值, 同意方固定发通过语
@@ -143,6 +144,13 @@ void LogicSystem::RegisterCallBacks()
 
     _fun_callbacks[ID_HEART_BEAT_REQ] = std::bind(&LogicSystem::HeartBeatHandler, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+
+	_fun_callbacks[ID_UPDATE_PROFILE_REQ] = std::bind(&LogicSystem::UpdateProfile, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_UPDATE_FRIEND_REMARK_REQ] = std::bind(&LogicSystem::UpdateFriendRemark, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_GET_PROFILE_REQ] = std::bind(&LogicSystem::GetProfile, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 }
 
 void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
@@ -272,6 +280,10 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 		obj["sex"] = friend_ele->sex;
 		obj["desc"] = friend_ele->desc;
 		obj["back"] = friend_ele->back;
+		//标签随好友列表一次性下发, 客户端不用再逐个好友查
+		obj["tags"] = Json::arrayValue;
+		for (const auto& tag : friend_ele->tags)
+			obj["tags"].append(tag);
 		rtvalue["friend_list"].append(obj); //将好友信息添加到Json值对象的friend_list数组中
 	}
 
@@ -379,6 +391,10 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 		welcome = kDefaultFriendWelcome;
 	auto bakname = root["bakname"].asString();
 	auto touid = root["touid"].asInt();
+	//标签缺省时是空数组; 申请通过后这些标签直接成为申请方的分组
+	std::vector<std::string> tags;
+	for (const auto& tag : root["tags"])
+		tags.push_back(tag.asString());
         std::cout << "user uid is " << uid << std::endl;
 
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
@@ -390,7 +406,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 		session->Send(return_str, ID_ADD_FRIEND_RSP);
 		});
 
-    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid, welcome, bakname)) {
+    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid, welcome, bakname, tags)) {
         rtvalue["error"] = ErrorCodes::RPCFailed;
         return;
     }
@@ -489,10 +505,17 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
     if (!b_info) return;
     //DAO在同一事务中检查申请、确认状态并建立双向好友关系，只有提交成功后才通知对方
     std::string apply_desc;
-	if (!MysqlMgr::GetInstance()->AddFriend(uid, touid, back_name, apply_desc)) {
+    std::string peer_back; //申请方当初给通过方设的备注，回传给申请方本地显示
+    std::vector<std::string> peer_tags; //申请方当初选的分组，同样回传
+    //同意弹层不选标签，这一侧的分组先留空，之后在好友资料页补
+    const std::vector<std::string> my_tags;
+	if (!MysqlMgr::GetInstance()->AddFriend(uid, touid, back_name, my_tags, apply_desc,
+        peer_back, peer_tags)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
 	}
+	//同意方自己填的备注随回包返回，客户端不必等下一次登录才看到
+	rtvalue["back"] = back_name;
 	//好友关系已经提交, 会话和欢迎消息属于附加内容; 写失败只记日志, 不回滚也不让审批失败
 	long long thread_id = MysqlMgr::GetInstance()->GetOrCreatePrivateChat(uid, touid);
 	if (thread_id > 0)
@@ -570,6 +593,10 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 			if (thread_id > 0)
 				notify["thread_id"] = Json::Int64(thread_id);
 			notify["welcome_msgs"] = applicant_view;
+			notify["back"] = peer_back;
+			notify["tags"] = Json::arrayValue;
+			for (const auto& tag : peer_tags)
+				notify["tags"].append(tag);
 			std::string base_key = USER_BASE_INFO + std::to_string(uid);
 			auto user_info = std::make_shared<UserInfo>();
 			bool b_info = GetBaseInfo(base_key, uid, user_info);
@@ -593,6 +620,9 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	AuthFriendReq auth_req;
 	auth_req.set_fromuid(uid);
 	auth_req.set_touid(touid);
+	auth_req.set_back(peer_back);
+	for (const auto& tag : peer_tags)
+		auth_req.add_tags(tag);
 	if (thread_id > 0)
 		auth_req.set_thread_id(thread_id);
 	for (const auto &item : applicant_view) {
@@ -905,6 +935,208 @@ void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session,
     Json::Value  rtvalue;
     rtvalue["error"] = ErrorCodes::Success;
     session->Send(rtvalue.toStyledString(), ID_HEARTBEAT_RSP);
+}
+
+//修改本人资料: 昵称、性别、个性签名。三个字段都可以为空, 空昵称表示界面回落到用户名
+void LogicSystem::UpdateProfile(std::shared_ptr<CSession> session,
+	const short& msg_id, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_UPDATE_PROFILE_RSP);
+		});
+
+	//操作者只认会话绑定的uid, 请求体里不带uid, 客户端伪造就改不到别人的资料
+	const int uid = session->GetUserId();
+	if (uid <= 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+
+	const std::string nick = root["nick"].asString();
+	const std::string desc = root["desc"].asString();
+	const int sex = root["sex"].asInt();
+	//长度按UTF-8字符数再校验一次, 避免绕过界面直接发超长内容把列写坏
+	if (Utf8CharCount(nick) > MAX_NICK_LEN || Utf8CharCount(desc) > MAX_DESC_LEN) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
+	if (!MysqlMgr::GetInstance()->UpdateUserProfile(uid, nick, sex, desc)) {
+		rtvalue["error"] = ErrorCodes::RPCFailed;
+		return;
+	}
+
+	//资料缓存按uid和用户名各存一份, 写完立即覆盖; 在线好友搜索资料时直接读到新值
+	auto user_info = MysqlMgr::GetInstance()->GetUser(uid);
+	if (user_info) {
+		Json::Value base_root;
+		base_root["uid"] = user_info->uid;
+		base_root["name"] = user_info->name;
+		base_root["email"] = user_info->email;
+		base_root["nick"] = user_info->nick;
+		base_root["desc"] = user_info->desc;
+		base_root["sex"] = user_info->sex;
+		base_root["icon"] = user_info->icon;
+		RedisMgr::GetInstance()->Set(USER_BASE_INFO + std::to_string(uid),
+			base_root.toStyledString());
+		RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, base_root.toStyledString());
+	}
+
+	//回包带完整结果, 客户端据此刷新本地资料页与侧栏, 不必再发一次搜索
+	rtvalue["uid"] = uid;
+	rtvalue["nick"] = nick;
+	rtvalue["sex"] = sex;
+	rtvalue["desc"] = desc;
+
+	//自己这一侧靠回包更新, 这里通知在线好友: 昵称与签名变了, 他们的列表与聊天标题跟着刷新
+	NotifyFriendsProfileChanged(uid);
+}
+
+//资料变更推送给在线好友: 先查好友列表, 再按对方所在实例分发。
+//不在线的好友不占一次 RPC, 他们下次登录时从 1006 回包里拿到最新资料。
+void LogicSystem::NotifyFriendsProfileChanged(int uid)
+{
+	if (uid <= 0)
+		return;
+
+	//头像可能是资源服务器写的, 这里统一从库里读一次, 保证推送内容与落库一致
+	auto user_info = MysqlMgr::GetInstance()->GetUser(uid);
+	if (!user_info)
+		return;
+
+	std::vector<int> friend_ids;
+	if (!MysqlMgr::GetInstance()->GetFriendIds(uid, friend_ids) || friend_ids.empty())
+		return;
+
+	Json::Value notify;
+	notify["error"] = ErrorCodes::Success;
+	notify["uid"] = uid;
+	notify["name"] = user_info->name;
+	notify["nick"] = user_info->nick;
+	notify["desc"] = user_info->desc;
+	notify["sex"] = user_info->sex;
+	notify["icon"] = user_info->icon;
+	const std::string notify_text = notify.toStyledString();
+
+	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
+	//跨实例的好友按目标实例分组, 一个实例只发一次 RPC
+	std::map<std::string, std::vector<int>> remote;
+	for (int friend_id : friend_ids) {
+		if (friend_id <= 0)
+			continue;
+
+		std::string ip;
+		if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(friend_id), ip))
+			continue;
+
+		if (ip == self_name) {
+			auto session = UserMgr::GetInstance()->GetSession(friend_id);
+			if (session)
+				session->Send(notify_text, ID_NOTIFY_PROFILE_CHANGED);
+			continue;
+		}
+		remote[ip].push_back(friend_id);
+	}
+
+	for (const auto& entry : remote) {
+		ProfileChangedReq auth_req;
+		auth_req.set_fromuid(uid);
+		for (int friend_id : entry.second)
+			auth_req.add_touids(friend_id);
+		auth_req.set_nick(user_info->nick);
+		auth_req.set_desc(user_info->desc);
+		auth_req.set_icon(user_info->icon);
+		auth_req.set_sex(user_info->sex);
+		ChatGrpcClient::GetInstance()->NotifyProfileChanged(entry.first, auth_req);
+	}
+}
+
+//修改自己给某个好友设的备注: 只写自己这一侧, 对方那边的备注不受影响
+void LogicSystem::UpdateFriendRemark(std::shared_ptr<CSession> session,
+	const short& msg_id, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_UPDATE_FRIEND_REMARK_RSP);
+		});
+
+	const int self_uid = session->GetUserId();
+	const int friend_uid = root["touid"].asInt();
+	const std::string remark = root["remark"].asString();
+	//标签整组替换: 客户端提交的就是编辑后的完整集合, 空数组表示清空
+	std::vector<std::string> tags;
+	for (const auto& tag : root["tags"])
+		tags.push_back(tag.asString());
+	if (self_uid <= 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	//备注与昵称共用同一个长度上限, 清空备注同样允许
+	if (Utf8CharCount(remark) > MAX_NICK_LEN) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
+	//返回值区分“不是好友”和“数据库错误”, 前者不能落成成功回包
+	const int result = MysqlMgr::GetInstance()->UpdateFriendRemark(self_uid, friend_uid, remark,
+		tags);
+	if (result == 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	if (result < 0) {
+		rtvalue["error"] = ErrorCodes::RPCFailed;
+		return;
+	}
+
+	rtvalue["touid"] = friend_uid;
+	rtvalue["remark"] = remark;
+	//回包带回标签, 客户端用它刷新列表与筛选条
+	rtvalue["tags"] = Json::arrayValue;
+	for (const auto& tag : tags)
+		rtvalue["tags"].append(tag);
+}
+
+//按 uid 取好友最新资料: 昵称和个性签名会被本人随时修改, 客户端打开会话或资料页时刷新一次
+void LogicSystem::GetProfile(std::shared_ptr<CSession> session,
+	const short& msg_id, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+	const int touid = root["touid"].asInt();
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_GET_PROFILE_RSP);
+		});
+
+	//只查公开资料, 不返回邮箱与密码; 目标不是好友也允许, 搜索结果同样需要
+	std::string base_key = USER_BASE_INFO + std::to_string(touid);
+	auto user_info = std::make_shared<UserInfo>();
+	if (!GetBaseInfo(base_key, touid, user_info)) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+
+	rtvalue["uid"] = user_info->uid;
+	rtvalue["name"] = user_info->name;
+	rtvalue["nick"] = user_info->nick;
+	rtvalue["desc"] = user_info->desc;
+	rtvalue["sex"] = user_info->sex;
+	rtvalue["icon"] = user_info->icon;
 }
 
 bool LogicSystem::isPureDigit(const std::string& str)

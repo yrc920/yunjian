@@ -27,6 +27,8 @@ public:
     void Stop(); //由主线程停服，在 Redis 与 io_context 销毁前结束业务线程
 	void PostMsgToQue(std::shared_ptr<LogicNode> msg); //将消息节点添加到消息队列中，供逻辑处理线程处理
     void SetServer(std::shared_ptr<CServer> pserver);
+	//资料变更后推给在线好友: 改资料成功后由逻辑层调用, 换头像时经 gRPC 从资源服务器触发
+	void NotifyFriendsProfileChanged(int uid);
 
 private:
 	LogicSystem();
@@ -54,6 +56,12 @@ private:
 	void LoadChatMessages(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
     //心跳处理函数，处理用户心跳请求并返回心跳响应
     void HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//修改本人资料: 昵称、性别、个性签名, 成功后同步刷新资料缓存
+	void UpdateProfile(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//修改自己给好友设的备注与标签, 只写自己这一侧的关系行
+	void UpdateFriendRemark(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//按 uid 取好友最新资料, 供聊天标题与资料页刷新昵称和个性签名
+	void GetProfile(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 
 	bool isPureDigit(const std::string& str); //判断字符串是否纯数字
 	//根据用户ID查询用户信息，并将结果填充到Json值对象中

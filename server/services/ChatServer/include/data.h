@@ -3,6 +3,7 @@
 //
 
 #include <string>
+#include <vector>
 
 //用户信息结构体
 struct UserInfo {
@@ -16,7 +17,8 @@ struct UserInfo {
 	std::string desc; //描述
 	int sex; //性别
 	std::string icon; //头像
-	std::string back; //背景
+	std::string back; //备注
+	std::vector<std::string> tags; //好友标签, 只在好友列表里有值
 };
 
 //好友申请信息结构体
