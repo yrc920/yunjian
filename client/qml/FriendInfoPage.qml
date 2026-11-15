@@ -11,6 +11,8 @@ Item {
     property var profile: ({})
     signal chatRequested()
     signal editRelationRequested()
+    // 删除确认由外层弹层统一处理，页面只负责发起
+    signal deleteRequested()
 
     readonly property int sex: profile.sex === undefined ? 0 : profile.sex
     // 备注 > 昵称 > 用户名，与列表、聊天标题保持同一条规则
@@ -256,6 +258,38 @@ Item {
                     height: 46
                     text: "编辑资料"
                     onClicked: root.editRelationRequested()
+                }
+            }
+
+            // 删除好友：做成次要按钮而不是一行小字，误点风险由确认弹层兜住
+            Rectangle {
+                width: parent.width
+                height: 42
+                radius: 8
+                color: deleteArea.containsMouse ? Theme.panelAlt : "transparent"
+                border.width: 1
+                border.color: Theme.line
+
+                AppIcon {
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "minus"
+                    size: 16
+                    color: Theme.danger
+                }
+                Text {
+                    x: 38
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "删除好友"
+                    color: Theme.danger
+                    font.pixelSize: Theme.fontSmall
+                }
+                MouseArea {
+                    id: deleteArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.deleteRequested()
                 }
             }
         }

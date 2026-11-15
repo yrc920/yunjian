@@ -46,6 +46,7 @@ class ChatBridge : public QObject
     Q_PROPERTY(QStringList tagOptions READ tagOptions NOTIFY tagFilterChanged)
     Q_PROPERTY(QString tagFilter READ tagFilter NOTIFY tagFilterChanged)
     Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadChanged)
+    Q_PROPERTY(QString chatNotice READ chatNotice NOTIFY chatNoticeChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -107,6 +108,9 @@ public:
 
     // 左侧栏「会话」徽标用的总未读数
     int unreadTotal() const;
+    // 一次性提示（如"对方已不是你的好友"），界面弹完即清
+    QString chatNotice() const { return _chatNotice; }
+    Q_INVOKABLE void clearChatNotice();
 
     // 自己：myName 用于显示（昵称优先），myUserName 用于申请文案（用户名）
     QString myIcon() const;
@@ -162,6 +166,22 @@ public:
 
     //好友页面入口
     Q_INVOKABLE void openChat(int uid);
+    // 撤回自己发的消息：服务端校验时间窗，成功后双方都换成提示行
+    Q_INVOKABLE void recallMessage(qint64 messageId);
+    // 重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新发送
+    Q_INVOKABLE bool retryMessage(int peerUid, const QString &msgId);
+    // 退出登录：断开长连接、清空账号数据、回到登录页
+    Q_INVOKABLE void logout();
+    // 删除好友：双向删除，不通知对方；会话与历史保留
+    Q_INVOKABLE void deleteFriend(int uid);
+    // 删除确认：入口只负责发起，真正的删除等用户确认后再执行
+    Q_PROPERTY(bool deleteConfirmVisible READ deleteConfirmVisible NOTIFY deleteConfirmChanged)
+    Q_PROPERTY(QString deleteTargetName READ deleteTargetName NOTIFY deleteConfirmChanged)
+    Q_INVOKABLE void askDeleteFriend(int uid);
+    Q_INVOKABLE void confirmDeleteFriend();
+    Q_INVOKABLE void cancelDeleteFriend();
+    bool deleteConfirmVisible() const { return _deleteConfirmVisible; }
+    QString deleteTargetName() const { return _deleteTargetName; }
     Q_INVOKABLE void openProfile(int uid);
     Q_INVOKABLE void openApplyList();
 
@@ -187,7 +207,7 @@ public:
     Q_INVOKABLE void applyTo(int uid, const QString &name, const QString &nick,
                              const QString &icon, const QString &verify, const QString &remark,
                              const QStringList &tags);
-    Q_INVOKABLE void authApply(int uid, const QString &remark);
+    Q_INVOKABLE void authApply(int uid, const QString &remark, const QStringList &tags);
 
 signals:
     void modeChanged();
@@ -212,11 +232,17 @@ signals:
     void tagFilterChanged();
     //未读总数变化：左侧栏「会话」徽标刷新
     void unreadChanged();
+    //一次性提示变化：聊天页弹一条短提示
+    void chatNoticeChanged();
+    //删除确认弹层开关
+    void deleteConfirmChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
     void resourceSaved(bool ok, const QString &path);
     void resourceNotice(const QString &message); //本地文件缺失、另存位置失效等提示
 
 private:
+    // 按当前模式与页面重新判断"正在看哪个会话"，供未读计数使用
+    void refreshActivePeer();
     void setMode(int mode);
     void setPane(int pane);
     //好友关系侧数据变化后，刷新聊天标题、副标题与打开中的资料页
@@ -241,6 +267,10 @@ private:
     QString _currentName;
     QString _currentSubtitle; //当前会话好友的个性签名，空表示没写
     QString _tagFilter;       //联系人页当前选中的标签，空串表示全部
+    QString _chatNotice;      //一次性提示，界面显示后调用 clearChatNotice 清掉
+    bool _deleteConfirmVisible = false;
+    int _deleteTargetUid = 0;
+    QString _deleteTargetName;
     QString _searchText;
     int _searchState = SearchIdle;
     QVariantMap _searchResult;

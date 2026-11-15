@@ -33,6 +33,8 @@ public:
 
     Q_INVOKABLE void go(const QString &target);
     Q_INVOKABLE void dismissNotice();
+    // 主动退出登录：断开长连接、清空账号数据、回到登录页
+    Q_INVOKABLE void logout();
 
 signals:
     void pageChanged();

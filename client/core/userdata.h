@@ -117,6 +117,11 @@ struct AuthRsp {
 
 //消息状态：0 发送中、1 已发送、2 失败、3 未读、4 已读。
 //3/4 目前由历史同步按视角给出，等本地库接入后再补已读回执
+//消息可撤回时间：与 ChatServer 的 RECALL_WINDOW_SECONDS 保持一致，
+//界面据此决定右键菜单里是否出现「撤回」
+constexpr int kRecallWindowSeconds = 120;
+
+//消息状态：只影响自己发的消息，对方消息不显示状态图标
 enum class ChatMessageStatus : int {
     Sending = 0,
     Sent = 1,
@@ -188,6 +193,10 @@ struct FriendInfo {
     QString _last_msg;
     //会话最后活动时间（UNIX 秒），登录首屏排序用；历史拉回后以最后一条消息时间为准
     qint64 _last_time = 0;
+    //服务端下发的未读条数，登录时恢复；之后由客户端本地增减
+    int _unread = 0;
+    //是否仍在好友关系里：删好友后置 false，对象与历史保留，会话列表仍能看到
+    bool _is_friend = true;
     std::shared_ptr<ChatThreadData> _chat_thread;
 };
 
@@ -257,6 +266,10 @@ struct TextChatData{
     int _to_uid;
     //服务端落库时间（UNIX 秒）。0 表示老数据或本地占位，界面按"刚刚"兜底
     qint64 _time = 0;
+    //已撤回：正文已清空，界面只显示一行提示，不再显示气泡
+    bool _recalled = false;
+    //自己撤回时本地保留原文，供「重新编辑」填回输入框；服务端那份已经清空
+    QString _recalled_text;
 };
 
 struct TextChatMsg{

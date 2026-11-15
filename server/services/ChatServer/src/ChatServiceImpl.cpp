@@ -307,3 +307,33 @@ Status ChatServiceImpl::NotifyProfileChanged(ServerContext* context,
     }
     return Status::OK;
 }
+
+//跨实例会话事件：已读把单勾改双勾，撤回把气泡换成提示。
+//对方不在本实例时直接返回成功——状态已在库里，下次拉历史能看到
+Status ChatServiceImpl::NotifyChatEvent(ServerContext* context,
+    const ChatEventReq* request, ChatEventRsp* response)
+{
+    response->set_error(ErrorCodes::Success);
+    if (request->fromuid() <= 0 || request->touid() <= 0 || request->thread_id() <= 0) {
+        response->set_error(ErrorCodes::Error_Json);
+        return Status::OK;
+    }
+
+    auto session = UserMgr::GetInstance()->GetSession(request->touid());
+    if (!session)
+        return Status::OK;
+
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCodes::Success;
+    rtvalue["thread_id"] = Json::Int64(request->thread_id());
+    rtvalue["message_id"] = Json::Int64(request->message_id());
+    if (request->event() == 1) {
+        rtvalue["uid"] = request->fromuid(); //读取者
+        session->Send(rtvalue.toStyledString(), ID_NOTIFY_MSG_READ);
+    }
+    else if (request->event() == 2) {
+        rtvalue["fromuid"] = request->fromuid(); //撤回者
+        session->Send(rtvalue.toStyledString(), ID_NOTIFY_MSG_RECALLED);
+    }
+    return Status::OK;
+}

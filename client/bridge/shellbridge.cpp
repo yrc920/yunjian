@@ -5,6 +5,7 @@
 
 #include "sessionservice.h"
 #include "tcpmgr.h"
+#include "usermgr.h"
 
 namespace {
 
@@ -66,6 +67,17 @@ void ShellBridge::showOfflineNotice(const QString &message)
 
     _notice = message;
     emit noticeChanged();
+}
+
+// 主动退出：与掉线不同的是不会弹提示，直接回登录页。
+// 先切页再关连接，避免 closeSession 触发的断线信号被当成异常提示
+void ShellBridge::logout()
+{
+    _notice.clear();
+    emit noticeChanged();
+    go(kLogin);
+    SessionService::GetInstance()->closeSession();
+    UserMgr::GetInstance()->ClearSession();
 }
 
 // 关提示、回登录页、结束会话

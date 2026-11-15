@@ -128,6 +128,34 @@ ProfileChangedRsp ChatGrpcClient::NotifyProfileChanged(std::string server_ip,
 	return rsp;
 }
 
+//会话事件：与其它跨实例通知同样的连接池查找方式，对方不在该实例时直接返回成功
+ChatEventRsp ChatGrpcClient::NotifyChatEvent(std::string server_ip, const ChatEventReq& req)
+{
+	ChatEventRsp rsp;
+	rsp.set_error(ErrorCodes::RPCFailed);
+
+	auto find_iter = _pools.find(server_ip);
+	if (find_iter == _pools.end()) {
+		return rsp;
+	}
+
+	auto& pool = find_iter->second;
+	ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+	auto stub = pool->getConnection();
+	Status status = stub->NotifyChatEvent(&context, req, &rsp);
+	Defer defercon([&stub, this, &pool]() {
+		pool->returnConnection(std::move(stub));
+		});
+
+	if (!status.ok()) {
+		rsp.set_error(ErrorCodes::RPCFailed);
+		return rsp;
+	}
+
+	return rsp;
+}
+
 bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
 {
 	//优先查redis中查询用户信息

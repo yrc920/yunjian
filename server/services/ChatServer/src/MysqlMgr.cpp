@@ -87,6 +87,32 @@ bool MysqlMgr::GetFriendIds(int uid, std::vector<int>& friend_ids)
 	return _dao.GetFriendIds(uid, friend_ids);
 }
 
+bool MysqlMgr::MarkChatMessagesRead(int uid, long long thread_id, long long last_message_id,
+	bool& changed, int& peer_uid)
+{
+	return _dao.MarkChatMessagesRead(uid, thread_id, last_message_id, changed, peer_uid);
+}
+
+int MysqlMgr::RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message)
+{
+	return _dao.RecallChatMessage(uid, message_id, message);
+}
+
+bool MysqlMgr::IsFriend(int uid, int touid)
+{
+	return _dao.IsFriend(uid, touid);
+}
+
+bool MysqlMgr::IsMutualFriend(int uid, int touid)
+{
+	return _dao.IsMutualFriend(uid, touid);
+}
+
+bool MysqlMgr::DeleteFriend(int uid, int touid)
+{
+	return _dao.DeleteFriend(uid, touid);
+}
+
 long long MysqlMgr::GetOrCreatePrivateChat(int user1, int user2)
 {
 	//单聊会话由 private_chat 的两人组合唯一确定, 创建过程在DAO里用事务处理

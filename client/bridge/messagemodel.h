@@ -42,6 +42,11 @@ public:
         FileSizeRole, //视频/文件字节数
         TransferStateRole, //ResourceTransferState，媒体卡片据此显示按钮
         TimeTextRole, //时间条文案；与上一条间隔不足 5 分钟时为空串，界面不渲染
+        RecalledRole, //已撤回：只渲染一行提示，不显示气泡与资源
+        CanRecallRole, //当前是否能撤回（自己发的、未撤回、在时间窗内）
+        StatusTextRole, //「已读」/「未读」：只对自己发的最后一条显示，其余为空
+        CanRetryRole, //发送失败：气泡旁给出可点击的重发入口
+        RecallTextRole, //自己撤回的消息保留的原文，供「重新编辑」
     };
 
     explicit MessageModel(QObject *parent = nullptr);

@@ -63,6 +63,9 @@ SessionService::SessionService() : _ready(false)
                 if (incoming)
                     mgr->IncUnread(peerUid);
                 UserMgr::GetInstance()->AppendFriendChatMsg(peerUid, msg->_chat_msgs);
+                //正在看这个会话时，消息一落地就上报已读，对方那边立刻变双勾
+                if (peerUid == mgr->ActivePeer())
+                    ChatService::GetInstance()->MarkSessionRead(peerUid);
             });
     connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
@@ -70,6 +73,29 @@ SessionService::SessionService() : _ready(false)
         for (const auto &value : data.value("text_array").toArray())
             mgr->UpdateChatMessage(peerUid, value.toObject().value("msgid").toString(), 0,
                 ChatMessageStatus::Failed);
+    });
+    //对端已读：把自己发的、消息号不超过它的消息换成双勾
+    connect(tcp, &TcpMgr::sig_message_read, this, [](const QJsonObject &data) {
+        const int uid = data.value("uid").toInt();
+        if (uid <= 0)
+            return;
+        UserMgr::GetInstance()->MarkMessagesReadTo(uid,
+            data.value("message_id").toVariant().toLongLong());
+    });
+    //自己撤回成功 / 对方撤回：本地都换成同一行提示，不再显示正文与资源
+    connect(tcp, &TcpMgr::sig_recall_rsp, this, [](const QJsonObject &data) {
+        if (data.value("error").toInt(1) != 0)
+            return;
+        auto *mgr = UserMgr::GetInstance().get();
+        const int peer = mgr->FriendIdByThread(data.value("thread_id").toVariant().toLongLong());
+        if (peer > 0)
+            mgr->MarkMessageRecalled(peer, data.value("message_id").toVariant().toLongLong());
+    });
+    connect(tcp, &TcpMgr::sig_message_recalled, this, [](const QJsonObject &data) {
+        const int from = data.value("fromuid").toInt();
+        if (from > 0)
+            UserMgr::GetInstance()->MarkMessageRecalled(from,
+                data.value("message_id").toVariant().toLongLong());
     });
     //图片消息回执：补上 message_id/thread_id 后启动资源上传；失败则结束本地消息
     connect(tcp, &TcpMgr::sig_chat_img_rsp, this, [](const QJsonObject &data) {
@@ -100,6 +126,8 @@ SessionService::SessionService() : _ready(false)
         if (from > 0 && from != UserMgr::GetInstance()->GetUid())
             UserMgr::GetInstance()->IncUnread(from);
         ChatService::GetInstance()->HandleImageNotify(data);
+        if (from > 0 && from == UserMgr::GetInstance()->ActivePeer())
+            ChatService::GetInstance()->MarkSessionRead(from);
     });
     //视频/文件回执与上传完成通知：卡片先出现，资源等用户点击后再下载
     connect(tcp, &TcpMgr::sig_resource_chat_rsp, this, [](const QJsonObject &data) {
@@ -110,6 +138,8 @@ SessionService::SessionService() : _ready(false)
         if (from > 0 && from != UserMgr::GetInstance()->GetUid())
             UserMgr::GetInstance()->IncUnread(from);
         ChatService::GetInstance()->HandleResourceNotify(data);
+        if (from > 0 && from == UserMgr::GetInstance()->ActivePeer())
+            ChatService::GetInstance()->MarkSessionRead(from);
     });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
@@ -144,6 +174,10 @@ SessionService::SessionService() : _ready(false)
                 threadId, status);
             //落库时间：历史补拉与实时消息用同一套字段，界面据此画时间条与排序
             message->_time = item.value("time").toVariant().toLongLong();
+            message->_recalled = item.value("recalled").toBool();
+            //自己发的消息如果库里已标已读，直接按双勾显示，不必等下一次通知
+            if (message->_status == ChatMessageStatus::Sent && item.value("read").toBool())
+                message->_status = ChatMessageStatus::Read;
             //图片消息的 content 是资源文件名；视频/文件的 content 是元数据 JSON。
             //图片自动补全，视频只补首帧，视频/文件本体等用户点击下载
             const int msgType = item.value("msg_type").toInt(0);
@@ -203,6 +237,9 @@ SessionService::SessionService() : _ready(false)
             messages.push_back(std::move(message));
         }
         mgr->AppendFriendChatMsg(peerUid, std::move(messages));
+        //打开会话后历史一落地就上报已读；不在前台时不报，等用户真正进入会话再报
+        if (peerUid == mgr->ActivePeer())
+            ChatService::GetInstance()->MarkSessionRead(peerUid);
         if (data.value("load_more").toBool()) {
             const auto items = data.value("text_array").toArray();
             if (!items.isEmpty())
@@ -243,19 +280,38 @@ SessionService::SessionService() : _ready(false)
                 if (!info->_welcome_msgs.empty())
                     mgr->AppendFriendChatMsg(info->_uid, info->_welcome_msgs);
             });
-    connect(tcp, &TcpMgr::sig_auth_rsp, this, [this](std::shared_ptr<AuthRsp> rsp) {
-        if (!rsp)
-            return;
-        // 服务端确认通过后，申请条目从「添加」变成「已添加」
-        UserMgr::GetInstance()->SetApplyStatus(rsp->_uid, 1);
+    //同意方与被同意方都要有的本地装配：好友、会话、欢迎消息。
+    //incoming 表示"对方通过我的申请"，只有这一侧才把默认招呼算成未读；
+    //我自己同意时正进入会话，算未读反而会立刻被清掉
+    auto applyFriendAdded = [](const std::shared_ptr<AuthRsp> &rsp, bool incoming) {
         auto *mgr = UserMgr::GetInstance().get();
+        mgr->SetApplyStatus(rsp->_uid, 1);
         if (!mgr->CheckFriendById(rsp->_uid))
             mgr->AddFriend(rsp);
         mgr->SetThreadId(rsp->_uid, rsp->_thread_id);
         if (!rsp->_welcome_msgs.empty())
             mgr->AppendFriendChatMsg(rsp->_uid, rsp->_welcome_msgs);
-        // 好友和欢迎消息都已就位，这里再通知界面跳到会话
+        if (!incoming)
+            return;
+        //默认招呼是为了让申请方知道"对方通过了"，对申请方就是一条普通未读消息
+        for (const auto &message : rsp->_welcome_msgs) {
+            if (message && message->_from_uid == rsp->_uid)
+                mgr->IncUnread(rsp->_uid);
+        }
+    };
+    connect(tcp, &TcpMgr::sig_auth_rsp, this, [this, applyFriendAdded](std::shared_ptr<AuthRsp> rsp) {
+        if (!rsp)
+            return;
+        //1015 别人通过我的申请：列表与红点更新，不强行切页
+        applyFriendAdded(rsp, true);
         emit friendApproved(rsp->_uid);
+    });
+    connect(tcp, &TcpMgr::sig_auth_friend_rsp, this, [this, applyFriendAdded](std::shared_ptr<AuthRsp> rsp) {
+        if (!rsp)
+            return;
+        //1014 我自己同意别人：不计未读，界面直接进会话
+        applyFriendAdded(rsp, false);
+        emit friendAdded(rsp->_uid);
     });
     connect(tcp, &TcpMgr::sig_con_success, this, &SessionService::onTcpConnected);
     connect(tcp, &TcpMgr::sig_login_failed, this, &SessionService::onChatLoginFailed);

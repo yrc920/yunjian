@@ -28,6 +28,12 @@ public:
     bool sendFile(int uid, const QString &path, const QString &fileName, qint64 fileSize);
     void uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId);
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉待上传记录
+    //把会话已读到最新：只在"正在看"的时候调用，同一位置不会重复上报
+    void MarkSessionRead(int peerUid);
+    //撤回自己发的消息：服务端校验时间窗与归属，成功回执后本地换成提示
+    void RecallMessage(qint64 messageId);
+    //重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新走一遍发送流程
+    bool RetryMessage(int peerUid, const QString &msgId);
     void HandleResourceRsp(const QJsonObject &data); //1035 视频/文件回执，启动资源上传
     //接收方收到 1033：补一条图片消息，本地没有压缩图时发起下载
     void HandleImageNotify(const QJsonObject &data);
@@ -69,6 +75,10 @@ private:
         int uid = 0;
     };
     QHash<QString, PendingImage> _pending_images; //unique_id -> 待上传图片
+    //thread_id -> 已经上报到的 message_id；避免每次切回会话都重复发 1052
+    QHash<qint64, qint64> _read_reported;
+    //发出后等回执的兜底：超过时限仍是"发送中"就标失败，不等用户发现
+    void StartSendTimeout(int peerUid, const QString &msgId);
 
     //视频/文件在等 1035 回执：回执到达后才把资源本体交给 FileService
     struct PendingResource {

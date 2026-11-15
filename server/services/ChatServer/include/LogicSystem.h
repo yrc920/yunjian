@@ -62,6 +62,14 @@ private:
 	void UpdateFriendRemark(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//按 uid 取好友最新资料, 供聊天标题与资料页刷新昵称和个性签名
 	void GetProfile(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//上报已读：把该会话中发给自己的消息标成已读，并通知对方把单勾改成双勾
+	void MarkMessagesRead(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//撤回自己发的消息：2 分钟内有效，成功后通知对方把气泡换成"撤回了一条消息"
+	void RecallMessage(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//会话事件分发：event 1 已读 / 2 撤回；本实例直投，跨实例走 gRPC
+	void PushChatEvent(int from_uid, int to_uid, long long thread_id, long long message_id, int event);
+	//删除好友：双向删关系，不通知对方，会话与历史保留
+	void DeleteFriend(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 
 	bool isPureDigit(const std::string& str); //判断字符串是否纯数字
 	//根据用户ID查询用户信息，并将结果填充到Json值对象中

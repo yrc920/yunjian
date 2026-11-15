@@ -18,6 +18,8 @@
 #include "friendservice.h"
 #include "profileservice.h"
 #include "fileservice.h"
+#include "shellbridge.h"
+#include "tcpmgr.h"
 #include "usermgr.h"
 #include "userdata.h"
 
@@ -26,6 +28,9 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     _friends = new FriendListModel(this);
     _applies = new ApplyListModel(this);
     _messages = new MessageModel(this);
+    //默认就停在会话模式：排序开关不会经过 setMode，必须在这里显式打开，
+    //否则登录后列表按加好友顺序排，看起来像"没有按时间排"
+    _friends->setSortByRecent(_mode == ChatMode);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
             this, &ChatBridge::myProfileChanged);
     //昵称/性别/签名改完后个人资料页与侧栏显示名一起刷新
@@ -46,6 +51,32 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     //未读总数变化：左侧栏徽标跟着刷新
     connect(UserMgr::GetInstance().get(), &UserMgr::UnreadChanged,
             this, &ChatBridge::unreadChanged);
+    //删好友回包：成功后从联系人列表移除，会话与历史保留；
+    //删除后不能停在对方资料页上，会话页或空态二选一
+    if (auto *tcp = TcpMgr::GetInstance().get()) {
+        connect(tcp, &TcpMgr::sig_delete_friend_rsp, this, [this](const QJsonObject &data) {
+            const int uid = data.value("uid").toInt();
+            if (data.value("error").toInt(1) != 0) {
+                //乐观移除失败：把这一行放回去，避免列表与服务器不一致
+                if (uid > 0)
+                    UserMgr::GetInstance()->RestoreFriend(uid);
+                _chatNotice = tr("删除好友失败，请稍后重试");
+                emit chatNoticeChanged();
+                return;
+            }
+            if (uid <= 0)
+                return;
+            //删除后不能停在对方资料页；正在聊的这个会话保留（历史可查）
+            setPane(uid == _currentUid ? ChatPage : EmptyPane);
+        });
+        //发送失败且原因是关系已不存在：给一句明确提示，别让用户猜"为什么发不出去"
+        connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [this](const QJsonObject &data) {
+            if (!data.value("not_friend").toBool())
+                return;
+            _chatNotice = tr("对方已不是你的好友，消息未发送");
+            emit chatNoticeChanged();
+        });
+    }
 
     auto *profileService = ProfileService::GetInstance().get();
     connect(profileService, &ProfileService::profileUpdated, this,
@@ -160,15 +191,10 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                     setApplyState(ApplySent, tr("申请已发送，等待对方通过"));
             });
 
-    // 我通过别人的申请后，服务端已经建好会话和欢迎消息，直接进入聊天
-    connect(SessionService::GetInstance().get(), &SessionService::friendApproved,
+    // 我自己同意了别人的申请：直接进入会话，欢迎消息就是开场白
+    connect(SessionService::GetInstance().get(), &SessionService::friendAdded,
             this, &ChatBridge::openChat);
-
-    // 进入聊天界面时默认打开第一个会话，避免右侧一片空白
-    if (_friends->rowCount() > 0) {
-        const QModelIndex first = _friends->index(0, 0);
-        openChat(first.data(FriendListModel::UidRole).toInt());
-    }
+    // 别人通过我的申请：只更新列表与红点，不切页，避免打断当前操作
 }
 
 void ChatBridge::setSearchText(const QString &text)
@@ -361,9 +387,9 @@ void ChatBridge::setApplyState(int state, const QString &message)
     emit applyStateChanged();
 }
 
-void ChatBridge::authApply(int uid, const QString &remark)
+void ChatBridge::authApply(int uid, const QString &remark, const QStringList &tags)
 {
-    FriendService::GetInstance()->authFriend(uid, remark);
+    FriendService::GetInstance()->authFriend(uid, remark, tags);
 }
 
 void ChatBridge::saveMyProfile(const QString &nick, int sex, const QString &desc)
@@ -429,6 +455,14 @@ void ChatBridge::clearTagFilter()
 int ChatBridge::unreadTotal() const
 {
     return UserMgr::GetInstance()->UnreadTotal();
+}
+
+void ChatBridge::clearChatNotice()
+{
+    if (_chatNotice.isEmpty())
+        return;
+    _chatNotice.clear();
+    emit chatNoticeChanged();
 }
 
 void ChatBridge::clearProfileMessages()
@@ -528,11 +562,82 @@ void ChatBridge::showSettings()
     setPane(UserInfoPage);
 }
 
+// 撤回：只发消息号，服务端按库里的记录判断归属与时间窗
+void ChatBridge::recallMessage(qint64 messageId)
+{
+    ChatService::GetInstance()->RecallMessage(messageId);
+}
+
+bool ChatBridge::retryMessage(int peerUid, const QString &msgId)
+{
+    return ChatService::GetInstance()->RetryMessage(peerUid, msgId);
+}
+
+// 退出登录交给外壳处理：它负责切页与关闭会话，ChatBridge 只做转发
+void ChatBridge::logout()
+{
+    if (auto *shell = ShellBridge::instance())
+        shell->logout();
+}
+
+void ChatBridge::deleteFriend(int uid)
+{
+    if (uid <= 0)
+        uid = _profile.value(QStringLiteral("uid")).toInt();
+    if (uid <= 0)
+        return;
+    //先本地移除再发请求：确认后联系人列表立刻少一个人，不用等回包；
+    //失败时由回包处理把这一行恢复
+    UserMgr::GetInstance()->RemoveFriend(uid);
+    FriendService::GetInstance()->deleteFriend(uid);
+}
+
+// 打开确认：名字优先取备注，其次昵称，最后用户名
+void ChatBridge::askDeleteFriend(int uid)
+{
+    if (uid <= 0)
+        uid = _profile.value(QStringLiteral("uid")).toInt();
+    auto info = UserMgr::GetInstance()->GetFriendById(uid);
+    if (!info)
+        return;
+
+    _deleteTargetUid = uid;
+    _deleteTargetName = DisplayName(info->_back, info->_nick, info->_name);
+    _deleteConfirmVisible = true;
+    emit deleteConfirmChanged();
+}
+
+void ChatBridge::confirmDeleteFriend()
+{
+    const int uid = _deleteTargetUid;
+    _deleteConfirmVisible = false;
+    _deleteTargetUid = 0;
+    _deleteTargetName.clear();
+    emit deleteConfirmChanged();
+    deleteFriend(uid);
+}
+
+void ChatBridge::cancelDeleteFriend()
+{
+    _deleteConfirmVisible = false;
+    _deleteTargetUid = 0;
+    _deleteTargetName.clear();
+    emit deleteConfirmChanged();
+}
+
 void ChatBridge::openChat(int uid)
 {
     auto info = UserMgr::GetInstance()->GetFriendById(uid);
     if (!info)
         return;
+
+    //已经停在这个会话上：只补拉资料与已读，不重置消息模型——
+    //重置会把滚动位置打回第一条，长会话里非常难受
+    if (uid == _currentUid && _mode == ChatMode && _pane == ChatPage) {
+        ProfileService::GetInstance()->requestProfile(uid);
+        ChatService::GetInstance()->MarkSessionRead(uid);
+        return;
+    }
 
     closeAddFriend();
     clearFriendSearch();
@@ -552,7 +657,9 @@ void ChatBridge::openChat(int uid)
     setMode(ChatMode);
     setPane(ChatPage);
     // 进入会话即视为已读；之后的推送在 UserMgr 里会跳过这个会话
-    UserMgr::GetInstance()->SetActivePeer(uid);
+    refreshActivePeer();
+    // 历史可能已经在本地：先把当前已有的最后一条报上去，新消息到达时还会再报一次
+    ChatService::GetInstance()->MarkSessionRead(uid);
 }
 
 void ChatBridge::openProfile(int uid)
@@ -624,10 +731,17 @@ void ChatBridge::setMode(int mode)
     _friends->setFilterEnabled(mode == ContactMode);
     //会话按最近消息排序，联系人保持加好友顺序
     _friends->setSortByRecent(mode == ChatMode);
-    //离开会话页后不再把新消息当成"正在看"，未读恢复累加
-    if (mode != ChatMode)
-        UserMgr::GetInstance()->SetActivePeer(0);
+    //回到会话模式且仍停在会话页时，恢复"正在看"，否则新消息会被算成未读
+    refreshActivePeer();
     emit modeChanged();
+}
+
+//当前是否真的在看某个会话：只有会话模式 + 停在会话页 + 有对象时才成立。
+//统一在这里判断，避免各个入口各写一份、切来切去把状态弄丢
+void ChatBridge::refreshActivePeer()
+{
+    const bool viewing = _mode == ChatMode && _pane == ChatPage && _currentUid > 0;
+    UserMgr::GetInstance()->SetActivePeer(viewing ? _currentUid : 0);
 }
 
 void ChatBridge::setPane(int pane)
@@ -635,9 +749,8 @@ void ChatBridge::setPane(int pane)
     if (_pane == pane)
         return;
     _pane = pane;
-    // 只有真正停在会话页才算"正在看"，切到资料页/申请页后新消息重新计入未读
-    if (pane != ChatPage)
-        UserMgr::GetInstance()->SetActivePeer(0);
+    //只有真正停在会话页才算"正在看"；切到资料页/申请页后新消息重新计入未读
+    refreshActivePeer();
     emit paneChanged();
 }
 

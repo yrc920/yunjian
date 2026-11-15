@@ -91,17 +91,29 @@ qint64 FriendListModel::lastMessageTime(const std::shared_ptr<FriendInfo> &info)
 QVector<int> FriendListModel::computeView() const
 {
     auto *mgr = UserMgr::GetInstance().get();
-    const int total = mgr->FriendCount();
-
     std::vector<std::shared_ptr<FriendInfo>> items;
-    items.reserve(total);
-    for (int i = 0; i < total; ++i) {
-        auto info = mgr->FriendAt(i);
-        if (!info)
-            continue;
-        if (_filterEnabled && !_tagFilter.isEmpty() && !info->_tags.contains(_tagFilter))
-            continue;
-        items.push_back(std::move(info));
+
+    if (_sortRecent) {
+        // 会话模式：好友 + 已删好友但仍有历史的人，会话记录不能因为关系没了就消失
+        const int total = mgr->PeerCount();
+        items.reserve(total);
+        for (int i = 0; i < total; ++i) {
+            auto info = mgr->PeerAt(i);
+            if (info)
+                items.push_back(std::move(info));
+        }
+    }
+    else {
+        const int total = mgr->FriendCount();
+        items.reserve(total);
+        for (int i = 0; i < total; ++i) {
+            auto info = mgr->FriendAt(i);
+            if (!info)
+                continue;
+            if (_filterEnabled && !_tagFilter.isEmpty() && !info->_tags.contains(_tagFilter))
+                continue;
+            items.push_back(std::move(info));
+        }
     }
 
     if (_sortRecent) {
@@ -196,12 +208,29 @@ QVariant FriendListModel::data(const QModelIndex &index, int role) const
     case TagsRole: return friend_info->_tags;
     case IconRole: return friend_info->_icon;
     case DescRole: return friend_info->_desc;
-    case LastTextRole:
+    case LastTextRole: {
         if (!friend_info->_chat_thread->_chat_msgs.empty()) {
             const auto &last = friend_info->_chat_thread->_chat_msgs.back();
-            return last->_imageSource.isEmpty() ? last->_msg_content : QStringLiteral("[图片]");
+            if (!last)
+                return friend_info->_last_msg;
+            //撤回优先：最后一条被撤回时，摘要不再暴露原内容
+            if (last->_recalled)
+                return QStringLiteral("撤回了一条消息");
+            switch (last->_msg_type) {
+            case ChatMsgType::Image:
+                return QStringLiteral("[图片]");
+            case ChatMsgType::Video:
+                return QStringLiteral("[视频]");
+            case ChatMsgType::File:
+                return last->_file_name.isEmpty()
+                    ? QStringLiteral("[文件]")
+                    : QStringLiteral("[文件] ") + last->_file_name;
+            default:
+                return last->_msg_content;
+            }
         }
         return friend_info->_last_msg;
+    }
     case LastTimeRole:
         return TimeFormat::listTime(lastMessageTime(friend_info));
     case UnreadRole:
@@ -249,9 +278,9 @@ int FriendListModel::indexOfUid(int uid) const
 int FriendListModel::chatCount() const
 {
     int count = 0;
-    const int total = UserMgr::GetInstance()->FriendCount();
+    const int total = UserMgr::GetInstance()->PeerCount();
     for (int row = 0; row < total; ++row) {
-        auto friend_info = UserMgr::GetInstance()->FriendAt(row);
+        auto friend_info = UserMgr::GetInstance()->PeerAt(row);
         if (friend_info && friend_info->_chat_thread->_thread_id > 0)
             ++count;
     }

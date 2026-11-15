@@ -1,5 +1,7 @@
 #include "messagemodel.h"
 
+#include <ctime>
+
 #include "usermgr.h"
 #include "userdata.h"
 #include "timeformat.h"
@@ -65,9 +67,12 @@ MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
     connect(UserMgr::GetInstance().get(), &UserMgr::UserProfileChanged, this, refreshNames);
 }
 
-// 切换当前会话；uid 为 0 时清空列表
+// 切换当前会话；uid 为 0 时清空列表。同一个会话重复调用直接返回，
+// 否则点一次当前会话就会重置模型，界面跳回第一条消息
 void MessageModel::setFriend(int uid)
 {
+    if (uid == _uid && uid != 0)
+        return;
     beginResetModel();
     _uid = uid;
     auto friend_info = UserMgr::GetInstance()->GetFriendById(uid);
@@ -134,6 +139,40 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         }
         return TimeFormat::messageTime(msg->_time);
     }
+    case RecalledRole:
+        return msg->_recalled;
+    case CanRecallRole: {
+        if (msg->_recalled || msg->_from_uid != UserMgr::GetInstance()->GetUid())
+            return false;
+        if (msg->_message_id <= 0 || msg->_time <= 0)
+            return false;
+        if (msg->_status == ChatMessageStatus::Failed)
+            return false;
+        return std::time(nullptr) - msg->_time <= kRecallWindowSeconds;
+    }
+    case StatusTextRole: {
+        //只有"自己发的最后一条"值得给结论：一屏十几条都挂状态，噪声大于信息
+        if (msg->_recalled || msg->_from_uid != UserMgr::GetInstance()->GetUid())
+            return {};
+        if (msg->_status != ChatMessageStatus::Sent && msg->_status != ChatMessageStatus::Read)
+            return {};
+        const auto &msgs = friend_info->_chat_thread->_chat_msgs;
+        for (int i = static_cast<int>(msgs.size()) - 1; i >= 0; --i) {
+            if (!msgs[i] || msgs[i]->_from_uid != msg->_from_uid)
+                continue;
+            if (i != index.row())
+                return {};
+            break;
+        }
+        return msg->_status == ChatMessageStatus::Read
+            ? QStringLiteral("已读") : QStringLiteral("未读");
+    }
+    case CanRetryRole:
+        return msg->_status == ChatMessageStatus::Failed && !msg->_recalled;
+    case RecallTextRole:
+        //只有自己撤回的文本才有可编辑的原文
+        return msg->_recalled && msg->_from_uid == UserMgr::GetInstance()->GetUid()
+            ? msg->_recalled_text : QString();
     case SelfRole: return msg->_from_uid == UserMgr::GetInstance()->GetUid();
     case FromUidRole: return msg->_from_uid;
     case ImageSourceRole: return msg->_imageSource;
@@ -196,6 +235,11 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {FileSizeRole, "fileSize"},
         {TransferStateRole, "transferState"},
         {TimeTextRole, "timeText"},
+        {RecalledRole, "recalled"},
+        {CanRecallRole, "canRecall"},
+        {StatusTextRole, "statusText"},
+        {CanRetryRole, "canRetry"},
+        {RecallTextRole, "recallText"},
     };
 }
 
@@ -253,6 +297,9 @@ void MessageModel::onFriendChatChanged(int uid)
             }
         }
         if (prefix) {
+            //插入前先刷新旧行：原「最后一条自己发的」不再显示已读/未读
+            if (_cachedCount > 0)
+                emit dataChanged(index(0, 0), index(_cachedCount - 1, 0), {StatusTextRole});
             beginInsertRows(QModelIndex(), _cachedCount, newCount - 1);
             syncCache(msgs);
             endInsertRows();

@@ -95,6 +95,8 @@ service ChatService {
   rpc BroadcastProfile (BroadcastProfileReq) returns (BroadcastProfileRsp) {}
   // 跨实例：把某人的资料变更推给对端实例上的若干好友（批量，一次一个实例）
   rpc NotifyProfileChanged (ProfileChangedReq) returns (ProfileChangedRsp) {}
+  // 跨实例会话事件：已读上报或撤回，转给对方所在实例再推给客户端
+  rpc NotifyChatEvent (ChatEventReq) returns (ChatEventRsp) {}
 }
 
 // 好友申请通知
@@ -307,5 +309,23 @@ message ProfileChangedReq {
 // 跨实例资料变更响应
 message ProfileChangedRsp {
   // 业务错误码，0 表示通知已投递；实例不在线或参数非法返回非 0
+  int32 error = 1;
+}
+
+// 会话事件：已读或撤回，只通知对方一个人，因此不需要批量列表
+message ChatEventReq {
+  // 触发事件的人：已读时是读取者，撤回时是发送者
+  int32 fromuid = 1;
+  // 要收到通知的对方
+  int32 touid = 2;
+  int64 thread_id = 3;
+  // 已读时表示"读到哪一条"，撤回时表示被撤回的消息
+  int64 message_id = 4;
+  // 1 已读 / 2 撤回
+  int32 event = 5;
+}
+
+message ChatEventRsp {
+  // 业务错误码，0 表示已投递
   int32 error = 1;
 }

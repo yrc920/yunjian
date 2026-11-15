@@ -293,6 +293,43 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 读回：重发同一条（唯一键命中）时拿到的是库里原来的时间。跨实例转发把同一个值写入
 `TextChatData.time`，接收方不会因为转发延迟看到偏晚的时间。
 
+### 已读与撤回（1052 / 1055）
+
+两个请求都不带操作者字段，身份只认会话；`RequestValidation` 只校验字段类型与正数，
+归属校验在 DAO 里做。
+
+**已读（1052）**：
+
+1. 按 `thread_id` 查 `private_chat`，确认请求者属于该会话，同时取出对方 uid；
+2. `UPDATE chat_message SET is_read = 1 WHERE thread_id = ? AND recv_id = ? AND message_id <= ? AND is_read = 0`；
+3. 受影响行数为 0 说明没有新消息被标记，直接回包、不打扰对方——否则每次切会话都会推一条通知；
+4. 有变化时推 1054：本实例直投，跨实例走 `NotifyChatEvent(event=1)`。
+
+**撤回（1055）**：
+
+1. 按 `message_id` 读记录，校验 `sender_id` 是本人、`recalled = 0`、`created_at` 在
+   `RECALL_WINDOW_SECONDS`（120 秒）内；
+2. `UPDATE chat_message SET recalled = 1, content = '', msg_type = 0 WHERE message_id = ? AND recalled = 0`；
+3. 回 1056 给自己，推 1057 给对方（`NotifyChatEvent(event=2)`）。
+
+`thread_id` 一律以库里的记录为准，客户端传错也不会把通知发到别的会话。对方离线时不推送，
+状态已经在库里，下次拉历史由 `read` / `recalled` 字段还原。
+
+> 跨实例统一走 `NotifyChatEvent`，一个 RPC 带 `fromuid / touid / thread_id / message_id / event`，
+> 对端按 `event` 组装 1054 或 1057。这样已读与撤回不需要两套转发通道。
+
+### 删除好友（1058）
+
+`DeleteFriend` 只删 `self_id = 自己 AND friend_id = 对方` 这一行，以及自己发出的申请记录。
+对方的行不动、也不推任何通知：他那边好友列表照旧，会话照旧，只是消息发不出去。
+
+删除要让"发不出去"真正生效，关键在 `EnsureChatThread`：它**无论有没有 thread_id 都先校验
+双向关系（两行都在）**，不通过直接返回 0。早期版本在 `thread_id > 0` 时直接返回，
+删好友后旧会话仍能继续发消息，删除等于没做；只校验发送方那一行也不够，被删除者仍能把消息发进来。
+
+消息保存失败时用 `IsMutualFriend` 复核（仅失败路径），回包里带 `not_friend: true`，
+客户端才能给出「对方已不是你的好友」而不是笼统的发送失败。
+
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
 资源全部落盘后，ResourceServer 按 Redis `uip_<receiver>` 选择接收方所在实例，通过 gRPC

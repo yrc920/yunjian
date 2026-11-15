@@ -32,6 +32,8 @@ CREATE TABLE `chat_message` (
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `status` tinyint unsigned NOT NULL DEFAULT '0',
   `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
+  `is_read` tinyint unsigned NOT NULL DEFAULT '0',
+  `recalled` tinyint unsigned NOT NULL DEFAULT '0',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
   KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),
@@ -73,6 +75,7 @@ CREATE TABLE `friend` (
   `self_id` int NOT NULL,
   `friend_id` int NOT NULL,
   `back` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT '',
+  `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `self_friend` (`self_id`,`friend_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
@@ -94,6 +97,7 @@ CREATE TABLE `friend_apply` (
   `status` smallint NOT NULL DEFAULT '0',
   `descs` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `back_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `from_to_uid` (`from_uid`,`to_uid`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;

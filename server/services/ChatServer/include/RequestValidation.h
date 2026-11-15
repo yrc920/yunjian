@@ -129,6 +129,22 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         return positiveId("touid") && root["touid"].asInt() != session_uid
             ? Success : UidInvalid;
     }
+    //已读上报与撤回都不带操作者字段，身份只认会话；
+    //归属校验（这个 thread 是不是他的、这条消息是不是他发的）留到 DAO 里做
+    if (id == ID_MARK_READ_REQ) {
+        return root["thread_id"].isInt64() && root["thread_id"].asInt64() > 0
+            && root["message_id"].isInt64() && root["message_id"].asInt64() > 0
+            ? Success : Error_Json;
+    }
+    if (id == ID_RECALL_MSG_REQ) {
+        return root["message_id"].isInt64() && root["message_id"].asInt64() > 0
+            ? Success : Error_Json;
+    }
+    //删好友：只带对方 uid，不能删自己
+    if (id == ID_DELETE_FRIEND_REQ) {
+        return positiveId("touid") && root["touid"].asInt() != session_uid
+            ? Success : UidInvalid;
+    }
     //好友申请用uid表示申请人，同意好友、文本消息和心跳用fromuid表示操作者
     //请求中声明的操作者必须与服务端绑定的用户一致，不能仅凭客户端传来的uid执行操作
     const char* actor = id == ID_ADD_FRIEND_REQ ? "uid" : "fromuid";
@@ -142,7 +158,8 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         return stringField("applyname") && stringField("bakname") && tagsField("tags")
             ? Success : Error_Json;
     }
-    if (id == ID_AUTH_FRIEND_REQ) return stringField("back") ? Success : Error_Json;
+    if (id == ID_AUTH_FRIEND_REQ) return stringField("back") && tagsField("tags")
+        ? Success : Error_Json;
     //文本消息按数组传入，每一项都要有字符串类型的内容和消息标识，避免处理到一半才发现字段错误
     if (id == ID_TEXT_CHAT_MSG_REQ) {
         const auto& texts = root["text_array"];

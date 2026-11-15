@@ -32,6 +32,8 @@ CREATE TABLE `chat_message` (
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `status` tinyint unsigned NOT NULL DEFAULT '0',
   `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
+  `is_read` tinyint unsigned NOT NULL DEFAULT '0',
+  `recalled` tinyint unsigned NOT NULL DEFAULT '0',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
   KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),
@@ -43,9 +45,9 @@ CREATE TABLE `chat_message` (
 -- Records of chat_message
 -- ----------------------------
 BEGIN;
-INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (1, 1, 1003, 1004, 'friend-welcome-1003-1004', '你好，我是test1', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0);
-INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (2, 1, 1004, 1003, 'friend-welcome-1004-1003', 'We are friends now!', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0);
-INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`) VALUES (3, 1, 1004, 1003, '{393942e7-96a1-4120-8159-d5c98f0fc065}', '烟花易逝，人情长存', '2026-11-06 14:09:45', '2026-11-06 14:09:45', 0);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `is_read`, `recalled`) VALUES (1, 1, 1003, 1004, 'friend-welcome-1003-1004', '你好，我是test1', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0, 0, 1, 0);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `is_read`, `recalled`) VALUES (2, 1, 1004, 1003, 'friend-welcome-1004-1003', 'We are friends now!', '2026-11-06 14:09:17', '2026-11-06 14:09:17', 0, 0, 1, 0);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `client_msg_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `is_read`, `recalled`) VALUES (3, 1, 1004, 1003, '{393942e7-96a1-4120-8159-d5c98f0fc065}', '烟花易逝，人情长存', '2026-11-06 14:09:45', '2026-11-06 14:09:45', 0, 0, 1, 0);
 COMMIT;
 
 -- ----------------------------
@@ -77,6 +79,7 @@ CREATE TABLE `friend` (
   `self_id` int NOT NULL,
   `friend_id` int NOT NULL,
   `back` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT '',
+  `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `self_friend` (`self_id`,`friend_id`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
@@ -85,8 +88,8 @@ CREATE TABLE `friend` (
 -- Records of friend
 -- ----------------------------
 BEGIN;
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (1, 1004, 1003, '');
-INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`) VALUES (2, 1003, 1004, 'test2');
+INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`, `tags`) VALUES (1, 1004, 1003, '', '[]');
+INSERT INTO `friend` (`id`, `self_id`, `friend_id`, `back`, `tags`) VALUES (2, 1003, 1004, 'test2', '[]');
 COMMIT;
 
 -- ----------------------------
@@ -100,6 +103,7 @@ CREATE TABLE `friend_apply` (
   `status` smallint NOT NULL DEFAULT '0',
   `descs` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `back_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `from_to_uid` (`from_uid`,`to_uid`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
@@ -108,7 +112,7 @@ CREATE TABLE `friend_apply` (
 -- Records of friend_apply
 -- ----------------------------
 BEGIN;
-INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`, `descs`, `back_name`) VALUES (1, 1003, 1004, 1, '你好，我是test1', 'test2');
+INSERT INTO `friend_apply` (`id`, `from_uid`, `to_uid`, `status`, `descs`, `back_name`, `tags`) VALUES (1, 1003, 1004, 1, '你好，我是test1', 'test2', '[]');
 COMMIT;
 
 -- ----------------------------

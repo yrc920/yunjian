@@ -18,6 +18,9 @@ enum ErrorCodes {
 	PasswdInvalid = 1009, //密码更新失败
 	TokenInvalid = 1010,   //Token失效
 	UidInvalid = 1011,  //uid无效
+	RecallExpired = 1012, //超过可撤回时间
+	RecallDenied = 1013, //这条消息不允许撤回（不是本人发的或已撤回）
+	NotFriend = 1014, //双方已不是好友，消息发不出去
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -36,6 +39,9 @@ private:
 };
 
 #define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
+
+//消息可撤回时间：超过这个秒数只能留在记录里，与常见 IM 的 2 分钟一致
+constexpr int RECALL_WINDOW_SECONDS = 120;
 #define MAX_NICK_LEN 20 //昵称最多 20 个字符，界面的输入上限与这里保持一致
 #define MAX_DESC_LEN 60 //个性签名最多 60 个字符
 #define MAX_TAG_LEN 12 //单个好友标签最多 12 个字符
@@ -96,6 +102,14 @@ enum MSG_IDS {
 	ID_GET_PROFILE_REQ = 1049, //按uid拉取好友最新资料(昵称/签名/头像/性别)
 	ID_GET_PROFILE_RSP = 1050, //最新资料回包
 	ID_NOTIFY_PROFILE_CHANGED = 1051, //好友资料变更推送(昵称/签名/头像/性别)
+	ID_MARK_READ_REQ = 1052, //上报已读位置
+	ID_MARK_READ_RSP = 1053, //已读上报回包
+	ID_NOTIFY_MSG_READ = 1054, //对端已读通知, 发送方据此把单勾改成双勾
+	ID_RECALL_MSG_REQ = 1055, //撤回自己发的消息
+	ID_RECALL_MSG_RSP = 1056, //撤回回包
+	ID_NOTIFY_MSG_RECALLED = 1057, //对端撤回通知
+	ID_DELETE_FRIEND_REQ = 1058, //删除好友（双向关系一起删，不通知对方）
+	ID_DELETE_FRIEND_RSP = 1059, //删除好友回包
 };
 
 #define USERIPPREFIX  "uip_" //用户登录ip server的名字前缀

@@ -151,6 +151,14 @@ void LogicSystem::RegisterCallBacks()
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_GET_PROFILE_REQ] = std::bind(&LogicSystem::GetProfile, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+
+	//已读上报与撤回：两条都会改变对方看到的状态，需要转发通知
+	_fun_callbacks[ID_MARK_READ_REQ] = std::bind(&LogicSystem::MarkMessagesRead, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_RECALL_MSG_REQ] = std::bind(&LogicSystem::RecallMessage, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_DELETE_FRIEND_REQ] = std::bind(&LogicSystem::DeleteFriend, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 }
 
 void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
@@ -226,6 +234,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 			item["nick"] = thread.peer_nick;
 			item["icon"] = thread.peer_icon;
 			item["sex"] = thread.peer_sex;
+			//登录首屏就靠这两个字段：没有它未读会在重登后归零、列表也会按加好友顺序排
+			item["time"] = Json::Int64(thread.updated_at);
+			item["unread"] = thread.unread;
 			thread_array.append(item);
 		}
 		rtvalue["thread_list"] = thread_array;
@@ -507,8 +518,12 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
     std::string apply_desc;
     std::string peer_back; //申请方当初给通过方设的备注，回传给申请方本地显示
     std::vector<std::string> peer_tags; //申请方当初选的分组，同样回传
-    //同意弹层不选标签，这一侧的分组先留空，之后在好友资料页补
-    const std::vector<std::string> my_tags;
+    //同意弹层可以直接选分组：自己这一侧的好友关系里存下来，不必等通过后再补
+    std::vector<std::string> my_tags;
+    for (const auto& tag : root["tags"]) {
+        if (tag.isString() && !tag.asString().empty())
+            my_tags.push_back(tag.asString());
+    }
 	if (!MysqlMgr::GetInstance()->AddFriend(uid, touid, back_name, my_tags, apply_desc,
         peer_back, peer_tags)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
@@ -676,6 +691,10 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 	std::vector<ChatMessageInfo> saved;
 	if (!MysqlMgr::GetInstance()->SaveChatMessages(uid, touid, thread_id, contents, saved)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
+		//写库失败最常见的原因是关系不完整（任何一方删了好友），
+		//单独标出来，客户端才能提示"你们已不是好友"而不是笼统的发送失败
+		if (!MysqlMgr::GetInstance()->IsMutualFriend(uid, touid))
+			rtvalue["not_friend"] = true;
 		return;
 	}
 	//thread_id 可能是0(客户端还没建会话), 以写库结果为准回填
@@ -891,6 +910,8 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
 		item["sex"] = thread.peer_sex;
 		//会话最后活动时间：客户端首屏排序用，历史消息拉回来后改用消息时间
 		item["time"] = Json::Int64(thread.updated_at);
+		//未读数存在服务端，登录时一起下发，退出重进不会归零
+		item["unread"] = thread.unread;
 		response["thread_list"].append(item);
 	}
 	session->Send(response.toStyledString(), ID_LOAD_CHAT_THREAD_RSP);
@@ -925,6 +946,9 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 		item["content"] = message.content;
 		item["msg_type"] = message.msg_type; //0 文本, 1 图片; 客户端据此决定渲染方式
 		item["time"] = Json::Int64(message.created_at); //UNIX 秒, 客户端按本地时区分层显示
+		//自己发的消息带 read 表示对方是否已读；recalled 为真时只渲染一行提示，不显示正文
+		item["read"] = message.is_read;
+		item["recalled"] = message.recalled;
 		//历史消息按"自己发的/对方发的"给默认状态, 库里 status 暂未维护已读
 		item["status"] = message.sender_id == uid ? 1 : 3;
 		response["text_array"].append(item);
@@ -1145,6 +1169,161 @@ void LogicSystem::GetProfile(std::shared_ptr<CSession> session,
 	rtvalue["desc"] = user_info->desc;
 	rtvalue["sex"] = user_info->sex;
 	rtvalue["icon"] = user_info->icon;
+}
+
+//把会话事件推给对方：本实例直投，跨实例走 gRPC。
+//对方离线时什么都不做——状态已经在库里，下次拉历史自然能看到已读/撤回
+void LogicSystem::PushChatEvent(int from_uid, int to_uid, long long thread_id,
+	long long message_id, int event)
+{
+	if (from_uid <= 0 || to_uid <= 0 || thread_id <= 0)
+		return;
+
+	std::string ip;
+	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(to_uid), ip))
+		return;
+
+	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
+	if (ip == self_name) {
+		auto peer = UserMgr::GetInstance()->GetSession(to_uid);
+		if (!peer)
+			return;
+
+		Json::Value notify;
+		notify["error"] = ErrorCodes::Success;
+		notify["thread_id"] = Json::Int64(thread_id);
+		notify["message_id"] = Json::Int64(message_id);
+		if (event == 1) {
+			//已读：客户端按 uid 确认是哪位好友读的
+			notify["uid"] = from_uid;
+			peer->Send(notify.toStyledString(), ID_NOTIFY_MSG_READ);
+		}
+		else {
+			notify["fromuid"] = from_uid;
+			peer->Send(notify.toStyledString(), ID_NOTIFY_MSG_RECALLED);
+		}
+		return;
+	}
+
+	ChatEventReq req;
+	req.set_fromuid(from_uid);
+	req.set_touid(to_uid);
+	req.set_thread_id(thread_id);
+	req.set_message_id(message_id);
+	req.set_event(event);
+	ChatGrpcClient::GetInstance()->NotifyChatEvent(ip, req);
+}
+
+//上报已读位置：客户端打开会话或收到新消息时调用，重复上报不会产生多余通知
+void LogicSystem::MarkMessagesRead(std::shared_ptr<CSession> session,
+	const short&, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+	const long long thread_id = root["thread_id"].asInt64();
+	const long long message_id = root["message_id"].asInt64();
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_MARK_READ_RSP);
+		});
+
+	const int uid = session->GetUserId();
+	if (uid <= 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	if (thread_id <= 0 || message_id <= 0) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
+	bool changed = false;
+	int peer_uid = 0;
+	if (!MysqlMgr::GetInstance()->MarkChatMessagesRead(uid, thread_id, message_id, changed, peer_uid)) {
+		rtvalue["error"] = ErrorCodes::RPCFailed;
+		return;
+	}
+	rtvalue["thread_id"] = Json::Int64(thread_id);
+	rtvalue["message_id"] = Json::Int64(message_id);
+
+	//没有新消息被标记时不必通知对方，避免每次切会话都推一遍
+	if (changed)
+		PushChatEvent(uid, peer_uid, thread_id, message_id, 1);
+}
+
+//撤回消息：自己这一侧靠回包更新，对方那一侧靠通知
+void LogicSystem::RecallMessage(std::shared_ptr<CSession> session,
+	const short&, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+	const long long message_id = root["message_id"].asInt64();
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_RECALL_MSG_RSP);
+		});
+
+	const int uid = session->GetUserId();
+	if (uid <= 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	if (message_id <= 0) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
+	ChatMessageInfo message;
+	const int code = MysqlMgr::GetInstance()->RecallChatMessage(uid, message_id, message);
+	if (code != ErrorCodes::Success) {
+		rtvalue["error"] = code;
+		return;
+	}
+
+	//thread_id 以库里为准，客户端传错也不会把通知发到别的会话
+	rtvalue["thread_id"] = Json::Int64(message.thread_id);
+	rtvalue["message_id"] = Json::Int64(message.message_id);
+	PushChatEvent(uid, message.recv_id, message.thread_id, message.message_id, 2);
+}
+
+//删除好友：只改关系表，不推送、不通知。对方那边的好友列表要到下次登录才发现，
+//期间还能看到历史会话；发消息时由 EnsureChatThread 的好友校验挡住
+void LogicSystem::DeleteFriend(std::shared_ptr<CSession> session,
+	const short&, const std::string& msg_data)
+{
+	Json::Reader reader;
+	Json::Value root;
+	reader.parse(msg_data, root);
+	const int touid = root["touid"].asInt();
+
+	Json::Value rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	rtvalue["uid"] = touid; //失败时也带回来，客户端才能把乐观移除的那一行恢复
+	Defer defer([&rtvalue, session]() {
+		session->Send(rtvalue.toStyledString(), ID_DELETE_FRIEND_RSP);
+		});
+
+	const int uid = session->GetUserId();
+	if (uid <= 0) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	if (touid <= 0 || touid == uid) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+
+	//只删自己这一行：对方仍把你看作好友，直到他也删除
+	if (!MysqlMgr::GetInstance()->DeleteFriend(uid, touid)) {
+		rtvalue["error"] = ErrorCodes::RPCFailed;
+		return;
+	}
 }
 
 bool LogicSystem::isPureDigit(const std::string& str)

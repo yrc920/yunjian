@@ -118,6 +118,120 @@ bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &d
     return changed;
 }
 
+//对端已读：只处理自己发的、已经有服务端消息号的那些，回执没回来的不参与
+bool UserMgr::MarkMessagesReadTo(int peer_uid, qint64 last_read_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(peer_uid);
+    if (find_it == _friend_map.end() || !(*find_it) || last_read_id <= 0)
+        return false;
+
+    const int self_uid = _user_info ? _user_info->_uid : 0;
+    bool changed = false;
+    for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
+        if (!msg || msg->_from_uid != self_uid)
+            continue;
+        if (msg->_message_id <= 0 || msg->_message_id > last_read_id)
+            continue;
+        if (msg->_status == ChatMessageStatus::Read)
+            continue;
+        msg->_status = ChatMessageStatus::Read;
+        changed = true;
+    }
+
+    if (changed)
+        emit FriendChatChanged(peer_uid);
+    return changed;
+}
+
+//撤回：正文与资源一起清掉，只留一条可渲染的提示，避免旧图片还留在界面或磁盘上被点开
+bool UserMgr::MarkMessageRecalled(int peer_uid, qint64 message_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(peer_uid);
+    if (find_it == _friend_map.end() || !(*find_it) || message_id <= 0)
+        return false;
+
+    for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
+        if (!msg || msg->_message_id != message_id || msg->_recalled)
+            continue;
+        msg->_recalled = true;
+        //自己撤回时留一份原文，供「重新编辑」；对方撤回时本地本来就没有原文
+        if (msg->_from_uid == (_user_info ? _user_info->_uid : 0))
+            msg->_recalled_text = msg->_msg_content;
+        msg->_msg_content.clear();
+        msg->_msg_type = ChatMsgType::Text;
+        msg->_imageSource.clear();
+        msg->_imageWidth = 0;
+        msg->_imageHeight = 0;
+        msg->_file_name.clear();
+        msg->_file_size = 0;
+        msg->_thumb_name.clear();
+        msg->_transferProgress = -1;
+        msg->_transfer_state = ResourceTransferState::None;
+        emit FriendChatChanged(peer_uid);
+        return true;
+    }
+    return false;
+}
+
+//发送超时或回执报错：只改状态，内容保留，用户可以直接重发
+bool UserMgr::MarkMessageFailed(int friend_id, const QString &msg_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(friend_id);
+    if (find_it == _friend_map.end() || !(*find_it))
+        return false;
+
+    for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
+        if (!msg || msg->_msg_id != msg_id || msg->_status != ChatMessageStatus::Sending)
+            continue;
+        msg->_status = ChatMessageStatus::Failed;
+        emit FriendChatChanged(friend_id);
+        return true;
+    }
+    return false;
+}
+
+//重发前先移除旧的失败记录：沿用同一条会让界面出现两条相同内容
+bool UserMgr::RemoveChatMessage(int friend_id, const QString &msg_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(friend_id);
+    if (find_it == _friend_map.end() || !(*find_it))
+        return false;
+
+    auto &msgs = (*find_it)->_chat_thread->_chat_msgs;
+    auto iter = std::find_if(msgs.begin(), msgs.end(), [&msg_id](const auto &msg) {
+        return msg && msg->_msg_id == msg_id;
+    });
+    if (iter == msgs.end())
+        return false;
+    msgs.erase(iter);
+    emit FriendChatChanged(friend_id);
+    return true;
+}
+
+//删好友失败时把人放回联系人列表：对象一直在 _friend_map 里，恢复只是重新挂回列表
+void UserMgr::RestoreFriend(int uid)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(uid);
+    if (find_it == _friend_map.end() || !(*find_it) || (*find_it)->_is_friend)
+        return;
+
+    const bool listed = std::any_of(_friend_list.begin(), _friend_list.end(),
+        [uid](const auto &info) { return info && info->_uid == uid; });
+    if (listed)
+        return;
+
+    emit FriendListAboutToChange();
+    (*find_it)->_is_friend = true;
+    _friend_list.push_back(*find_it);
+    emit FriendListChanged();
+    emit FriendTagsChanged();
+}
+
 //未读只对"对方发来的消息"累加；正在看的会话由 SetActivePeer 直接清零，不计数
 void UserMgr::IncUnread(int uid)
 {
@@ -636,12 +750,26 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
         const QJsonObject item = value.toObject();
         const int uid = item.value("uid").toInt();
         auto info = GetFriendById(uid);
-        if (!info)
-            continue;
+        if (!info) {
+            //已删好友但服务端仍有会话：保留一个"非好友"对象，会话列表照样能看到历史
+            info = std::make_shared<FriendInfo>(uid, item.value("name").toString(),
+                item.value("nick").toString(), item.value("icon").toString(),
+                item.value("sex").toInt(), QString(), QString());
+            info->_is_friend = false;
+            _friend_map[uid] = info;
+        }
         info->_chat_thread->_thread_id = item.value("thread_id").toVariant().toLongLong();
         //会话最后活动时间只用于首屏排序，拉回历史后会被真实消息时间覆盖
         info->_last_time = item.value("time").toVariant().toLongLong();
+        //未读以服务端为准：登录时恢复，之后由本地收到消息与打开会话增减
+        const int unread = item.value("unread").toInt(0);
+        info->_unread = unread;
+        if (unread > 0)
+            _unread[uid] = unread;
+        else
+            _unread.remove(uid);
     }
+    emit UnreadChanged();
 }
 
 void UserMgr::RefreshFriendList()
@@ -1098,6 +1226,39 @@ std::shared_ptr<FriendInfo> UserMgr::FriendAt(int index) const
     if (index < 0 || index >= static_cast<int>(_friend_list.size()))
         return nullptr;
     return _friend_list[index];
+}
+
+//会话对象包含已删好友但仍有历史的人：会话列表不能因为关系没了就把记录藏起来
+int UserMgr::PeerCount() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _friend_map.size();
+}
+
+std::shared_ptr<FriendInfo> UserMgr::PeerAt(int index) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (index < 0 || index >= _friend_map.size())
+        return nullptr;
+    auto it = _friend_map.cbegin();
+    std::advance(it, index);
+    return it.value();
+}
+
+//删好友只动联系人列表：对象留在 _friend_map 里，会话与历史继续可用
+void UserMgr::RemoveFriend(int uid)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto find_it = _friend_map.find(uid);
+    if (find_it == _friend_map.end() || !(*find_it))
+        return;
+
+    emit FriendListAboutToChange();
+    (*find_it)->_is_friend = false;
+    _friend_list.erase(std::remove_if(_friend_list.begin(), _friend_list.end(),
+        [uid](const auto &info) { return !info || info->_uid == uid; }), _friend_list.end());
+    emit FriendListChanged();
+    emit FriendTagsChanged(); //标签筛选条要按新的好友集合重算
 }
 
 std::shared_ptr<FriendInfo> UserMgr::GetFriendById(int uid)

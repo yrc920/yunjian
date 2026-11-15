@@ -16,6 +16,7 @@ FocusScope {
     property string pendingIcon: ""
     // 本次申请要加的分组标签，提交后由服务端保存
     property var selectedTags: []
+    property var authTags: []
 
     visible: overlay !== ""
     focus: visible
@@ -37,6 +38,7 @@ FocusScope {
         pendingDesc = desc
         pendingIcon = ""
         authRemarkInput.text = ""
+        authTags = []
         overlay = "auth"
         content.contentY = 0
         authRemarkInput.forceInputFocus()
@@ -74,7 +76,7 @@ FocusScope {
             // 浮层留在原地，由它显示「发送中 / 已发送 / 失败」
             overlay = ""
         } else if (overlay === "auth") {
-            controller.authApply(pendingUid, authRemarkInput.text.trim())
+            controller.authApply(pendingUid, authRemarkInput.text.trim(), authTags)
             overlay = ""
         } else {
             closeDialog()
@@ -300,6 +302,20 @@ FocusScope {
                         placeholder: "可选，之后也能在资料页修改"
                         onAccepted: root.submit()
                     }
+                    Spacer { gap: 4 }
+                    // 同意时就给对方分组：不用等通过后再去好友资料页补一次
+                    Text {
+                        text: "标签"
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSmall
+                    }
+                    Spacer { gap: 6 }
+                    TagEditor {
+                        width: parent.width
+                        tags: root.authTags
+                        onCommitted: (list) => root.authTags = list
+                    }
+                    Spacer { gap: 4 }
                 }
             }
         }

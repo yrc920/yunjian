@@ -67,6 +67,14 @@ enum ReqId{
     ID_GET_PROFILE_REQ = 1049, //按uid拉取好友最新资料
     ID_GET_PROFILE_RSP = 1050, //最新资料回包
     ID_NOTIFY_PROFILE_CHANGED = 1051, //好友资料变更推送（昵称/签名/头像/性别）
+    ID_MARK_READ_REQ = 1052, //上报已读位置
+    ID_MARK_READ_RSP = 1053, //已读上报回包
+    ID_NOTIFY_MSG_READ = 1054, //对端已读通知，发送方据此把单勾改成双勾
+    ID_RECALL_MSG_REQ = 1055, //撤回自己发的消息
+    ID_RECALL_MSG_RSP = 1056, //撤回回包
+    ID_NOTIFY_MSG_RECALLED = 1057, //对端撤回通知
+    ID_DELETE_FRIEND_REQ = 1058, //删除好友（双向关系一起删，不通知对方）
+    ID_DELETE_FRIEND_RSP = 1059, //删除好友回包
 };
 
 //模块

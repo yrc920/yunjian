@@ -41,6 +41,12 @@ public:
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
 	//取某人的好友 uid 列表, 资料变更后按它决定推给谁
 	bool GetFriendIds(int uid, std::vector<int>& friend_ids);
+	bool MarkChatMessagesRead(int uid, long long thread_id, long long last_message_id,
+		bool& changed, int& peer_uid);
+	int RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message);
+	bool IsFriend(int uid, int touid);
+	bool IsMutualFriend(int uid, int touid);
+	bool DeleteFriend(int uid, int touid);
 	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建
 	//分页读取会话列表与消息, 具体语义见 MysqlDao 中同名方法
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,

@@ -24,7 +24,9 @@ public:
     // 发出好友申请；tags 是申请方给对方打的分组，通过后直接生效
     bool applyFriend(int touid, const QString &applyName, const QString &backName,
                      const QStringList &tags);
-    void authFriend(int touid, const QString &backName);
+    void authFriend(int touid, const QString &backName, const QStringList &tags);
+    // 删除好友：双向删除关系，服务端不通知对方
+    void deleteFriend(int touid);
 
 signals:
     void userFound(int uid, const QString &name, const QString &nick,

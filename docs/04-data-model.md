@@ -3,8 +3,11 @@
 数据分两层：**MySQL 负责持久化**（用户、好友关系、好友申请、会话与消息），**Redis 负责运行时状态**
 （token、用户缓存、实例位置、连接计数、验证码）。
 
-> `backup/xigu.sql` 包含账号与好友基础数据。聊天表结构不随仓库分发，
-> 由部署环境按本文档的字段与索引手动创建。
+> `backup/xigu.sql` 是可直接洗库的完整快照：表结构 + 5 个种子账号 + 一组示例会话与消息；
+> `backup/xigu_clean.sql` 只有结构与种子账号，不带聊天记录。
+> **新增或修改字段时必须同时更新这两个文件**：服务端 `EnsureSchema` 会在启动时补列，
+> 但备份文件不同步的话，用备份洗库后拿到的仍是旧结构，`is_read`、`recalled`、`tags`
+> 这类后加字段会缺失，未读与撤回功能会直接出错。
 
 ---
 
@@ -104,7 +107,7 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 | `chat_thread` | 单聊/群聊共用的全局会话 ID 和类型；`updated_at` 在每次写消息时刷新 |
 | `private_chat` | 两个按 uid 升序保存的单聊参与者；唯一索引避免重复会话 |
 | `group_chat` / `group_chat_member` | 群聊资料与成员关系，本阶段只建表，群聊业务尚未接入 |
-| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态与 `created_at` |
+| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态、`created_at`、`is_read` 与 `recalled` |
 
 时间字段有两个用途，都按 UNIX 秒下发：
 
@@ -123,6 +126,15 @@ SQL 里统一用 `UNIX_TIMESTAMP(created_at)` 取值，避免把数据库时区�
 `file_name` 始终保留上传者看到的原名用于展示。`status=0` 表示资源还没上传完成；
 ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer 把 `status` 改成 1。
 视频与文件不区分上传者/接收者，接收方收到通知只建卡片，资源本体由用户点击后下载。
+
+已读与撤回是两列独立的状态，不复用 `status`（那一列表示资源是否上传完成）：
+
+- `is_read`：接收方是否已读，只对 `recv_id` 有意义。上报已读时批量置 1，
+  发送方那一侧的同一条记录不动——已读永远是接收方视角。
+- `recalled`：是否已撤回。撤回不物理删除，改为置 1 并清空 `content`、把 `msg_type` 归 0，
+  双方拉历史时都只看到提示；原始内容不再保留。
+
+两列都由 `EnsureSchema` 在启动时补齐，与好友标签走同一套"缺列才 ALTER"的逻辑。
 
 消息分页使用 `(thread_id, message_id)` 索引及游标 `message_id > last_id`；会话分页使用 `thread_id > last_id`。
 首次单聊先用普通查询取已有会话，缺失时直接插入 `chat_thread` + `private_chat`，由

@@ -93,6 +93,14 @@ public:
     qint64 LastMessageId(int friend_id) const; //当前最大消息ID, 作为翻页游标
     bool HasPendingPrivateChat(int friend_id) const; //是否正在等待 1026 回包
     void MarkPrivateChatPending(int friend_id, bool pending);
+    //对端已读：把自己发的、消息号不超过 last_read_id 的消息标成已读
+    bool MarkMessagesReadTo(int peer_uid, qint64 last_read_id);
+    //撤回：把指定消息标记为已撤回并清空正文与资源，双方都只看到提示
+    bool MarkMessageRecalled(int peer_uid, qint64 message_id);
+    //发送超时或回执失败：把某条还在等待的消息标失败，界面给出重发入口
+    bool MarkMessageFailed(int friend_id, const QString &msg_id);
+    //从本地会话里删掉一条消息（重发前先移除旧的失败记录，避免出现两条）
+    bool RemoveChatMessage(int friend_id, const QString &msg_id);
     //未读会话数：收到对方消息时累加，打开该会话时清零
     void IncUnread(int uid);
     void ClearUnread(int uid);
@@ -135,6 +143,13 @@ public:
     // 供列表模型按行读取：模型不复制数据，只引用这里的原始对象
     int FriendCount() const;
     std::shared_ptr<FriendInfo> FriendAt(int index) const;
+    //会话对象：好友 + 已删好友但仍有历史的人，会话列表按它遍历
+    int PeerCount() const;
+    std::shared_ptr<FriendInfo> PeerAt(int index) const;
+    //删好友成功：从联系人列表移除，保留对象与消息，会话列表仍能看到历史
+    void RemoveFriend(int uid);
+    //删好友失败：把乐观移除的那一行放回去，列表与服务器保持一致
+    void RestoreFriend(int uid);
     std::shared_ptr<FriendInfo> GetFriendById(int uid);
     int ApplyCount() const;
     std::shared_ptr<ApplyInfo> ApplyAt(int index) const;

@@ -242,6 +242,7 @@ ChatService::ChatService()
         _pending_resources.clear();
         _pending_videos.clear();
         _video_by_thumb.clear();
+        _read_reported.clear(); //换账号后已读位置要重新上报
         for (auto it = _chat_downloads.constBegin(); it != _chat_downloads.constEnd(); ++it) {
             UserMgr::GetInstance()->RemoveDownloadFile(it.key());
             if (!it.value().path.isEmpty())
@@ -307,6 +308,7 @@ bool ChatService::sendText(int uid, const QString &text)
         //先按本机时间占位，回执带回服务端时间后原地覆盖，避免发送中这一行没有时间
         pending->_time = QDateTime::currentSecsSinceEpoch();
         mgr->AppendFriendChatMsg(uid, {pending});
+        StartSendTimeout(uid, msgId);
     }
     return true;
 }
@@ -314,6 +316,106 @@ bool ChatService::sendText(int uid, const QString &text)
 QString ChatService::ResourcePath(ChatMsgType type, const QString &name)
 {
     return UserMgr::ResourcePath(type, name);
+}
+
+//把会话已读到最新。只取已经有服务端消息号的消息，本地还没回执的占位不算；
+//同一 thread 上报到同一个位置时直接跳过，避免切换会话反复发请求
+void ChatService::MarkSessionRead(int peerUid)
+{
+    auto info = UserMgr::GetInstance()->GetFriendById(peerUid);
+    if (!info || !info->_chat_thread)
+        return;
+    const qint64 threadId = info->_chat_thread->_thread_id;
+    if (threadId <= 0)
+        return;
+
+    qint64 lastId = 0;
+    for (const auto &msg : info->_chat_thread->_chat_msgs) {
+        if (msg && msg->_message_id > lastId)
+            lastId = msg->_message_id;
+    }
+    if (lastId <= 0 || _read_reported.value(threadId, 0) >= lastId)
+        return;
+    _read_reported[threadId] = lastId;
+
+    QJsonObject frame;
+    frame["thread_id"] = threadId;
+    frame["message_id"] = lastId;
+    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_MARK_READ_REQ,
+        QJsonDocument(frame).toJson(QJsonDocument::Compact));
+}
+
+//撤回：只发消息号，会话与对方由服务端按库里记录确定
+void ChatService::RecallMessage(qint64 messageId)
+{
+    if (messageId <= 0)
+        return;
+    QJsonObject frame;
+    frame["message_id"] = messageId;
+    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_RECALL_MSG_REQ,
+        QJsonDocument(frame).toJson(QJsonDocument::Compact));
+}
+
+//发出后等回执的兜底：网络半死（连着但不通）时心跳不一定立刻断，
+//用 10 秒超时把消息标失败，比让用户盯着"发送中"更好
+void ChatService::StartSendTimeout(int peerUid, const QString &msgId)
+{
+    QTimer::singleShot(10000, [peerUid, msgId] {
+        UserMgr::GetInstance()->MarkMessageFailed(peerUid, msgId);
+    });
+}
+
+//重发失败消息：先取出内容与本地文件，删掉旧记录，再走一遍正常的发送流程。
+//文本直接复用；图片用缩略图重传；视频/文件必须有本机原文件，否则只能重新选择
+bool ChatService::RetryMessage(int peerUid, const QString &msgId)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    auto info = mgr->GetFriendById(peerUid);
+    if (!info || !info->_chat_thread)
+        return false;
+
+    std::shared_ptr<TextChatData> target;
+    for (const auto &msg : info->_chat_thread->_chat_msgs) {
+        if (msg && msg->_msg_id == msgId) {
+            target = msg;
+            break;
+        }
+    }
+    if (!target || target->_status != ChatMessageStatus::Failed || target->_recalled)
+        return false;
+
+    const ChatMsgType type = target->_msg_type;
+    const QString text = target->_msg_content;
+    const QString thumb = target->_imageSource;
+    const QString local = target->_local_path;
+    const QString fileName = target->_file_name;
+    const qint64 fileSize = target->_file_size;
+    const int width = target->_imageWidth;
+    const int height = target->_imageHeight;
+
+    if (type == ChatMsgType::Text) {
+        mgr->RemoveChatMessage(peerUid, msgId);
+        return sendText(peerUid, text);
+    }
+
+    if (type == ChatMsgType::Image) {
+        QString path = thumb;
+        if (path.startsWith(QStringLiteral("file://")))
+            path = QUrl(path).toLocalFile();
+        if (path.startsWith(QStringLiteral("data:")) || !QFileInfo::exists(path)) {
+            return false; //调用方据此提示"原文件已不在本机"
+        }
+        mgr->RemoveChatMessage(peerUid, msgId);
+        return sendImage(peerUid, thumb, path, width, height);
+    }
+
+    if (local.isEmpty() || !QFileInfo::exists(local)) {
+        return false;
+    }
+    mgr->RemoveChatMessage(peerUid, msgId);
+    if (type == ChatMsgType::Video)
+        return sendVideo(peerUid, local, fileName, fileSize);
+    return sendFile(peerUid, local, fileName, fileSize);
 }
 
 QString ChatService::ImageCachePath(const QString &name)

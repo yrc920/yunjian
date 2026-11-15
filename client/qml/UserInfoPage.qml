@@ -8,7 +8,8 @@ Item {
     property bool avatarSaved: false
     readonly property var profile: controller ? controller.myProfile : ({})
     signal editAvatarRequested()
-    signal editProfileRequested()
+    // field 为空表示打开批量编辑；"nick"/"sex"/"desc" 表示只针对这一项
+    signal editProfileRequested(string field)
 
     Rectangle {
         anchors.fill: parent
@@ -55,12 +56,38 @@ Item {
             Row {
                 width: parent.width
                 spacing: 22
-                Avatar {
+                // 头像本身就是一个入口：悬停出现"更换头像"，点一下直接进头像编辑
+                Item {
                     width: 88
                     height: 88
-                    source: root.controller ? root.controller.myIcon : ""
-                    name: root.controller ? root.controller.myName : ""
-                    textSize: 30
+                    Avatar {
+                        anchors.fill: parent
+                        source: root.controller ? root.controller.myIcon : ""
+                        name: root.controller ? root.controller.myName : ""
+                        textSize: 30
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 12
+                        color: Qt.rgba(0, 0, 0, 0.42)
+                        visible: avatarArea.containsMouse
+                        Text {
+                            anchors.centerIn: parent
+                            text: "更换头像"
+                            color: "#FFFFFF"
+                            font.pixelSize: 11
+                        }
+                    }
+                    MouseArea {
+                        id: avatarArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.avatarSaved = false
+                            root.editAvatarRequested()
+                        }
+                    }
                 }
                 Column {
                     width: parent.width - 110
@@ -85,23 +112,10 @@ Item {
             }
 
             Spacer { gap: 24 }
-            // 头像与文字资料分开编辑：头像是资源上传流程，其余字段保存后立即生效
+            // 单项修改在字段行上直接点；这里只保留批量编辑入口
             Row {
                 width: parent.width
                 spacing: 12
-                AppButton {
-                    id: changeAvatarButton
-                    objectName: "changeAvatarButton"
-                    width: 146
-                    height: 42
-                    text: "更换头像"
-                    iconName: "image"
-                    onClicked: {
-                        root.avatarSaved = false
-                        forceActiveFocus()
-                        root.editAvatarRequested()
-                    }
-                }
                 AppButton {
                     objectName: "editProfileButton"
                     width: 146
@@ -109,7 +123,7 @@ Item {
                     text: "编辑资料"
                     onClicked: {
                         forceActiveFocus()
-                        root.editProfileRequested()
+                        root.editProfileRequested("")
                     }
                 }
             }
@@ -175,14 +189,18 @@ Item {
 
             Repeater {
                 model: [
-                    { label: "用户名", value: root.profile.name || "未设置" },
-                    { label: "昵称", value: root.profile.nick || "未设置" },
-                    { label: "性别", value: root.profile.sex === 1 ? "男" : (root.profile.sex === 2 ? "女" : "未设置") },
-                    { label: "个性签名", value: root.profile.desc || "未设置" }
+                    { label: "用户名", value: root.profile.name || "未设置", field: "" },
+                    { label: "昵称", value: root.profile.nick || "未设置", field: "nick" },
+                    { label: "性别", value: root.profile.sex === 1 ? "男" : (root.profile.sex === 2 ? "女" : "未设置"), field: "sex" },
+                    { label: "个性签名", value: root.profile.desc || "未设置", field: "desc" }
                 ]
                 delegate: Item {
+                    id: fieldRow
                     width: details.width
                     height: Math.max(48, valueText.implicitHeight + 26)
+                    readonly property bool editable: modelData.field.length > 0
+                    readonly property bool hovered: rowArea.containsMouse && editable
+
                     Text {
                         y: 13
                         text: modelData.label
@@ -193,12 +211,30 @@ Item {
                         id: valueText
                         x: 82
                         y: 13
-                        width: parent.width - x
+                        width: parent.width - x - 44
                         text: modelData.value
                         textFormat: Text.PlainText
                         color: Theme.textPrimary
                         font.pixelSize: Theme.fontBody
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    }
+                    // 可改的字段悬停时右侧出现「修改」，点一下只改这一项
+                    Text {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 2
+                        y: 13
+                        text: "修改"
+                        visible: fieldRow.hovered
+                        color: Theme.primary
+                        font.pixelSize: Theme.fontSmall
+                    }
+                    MouseArea {
+                        id: rowArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: fieldRow.editable
+                        cursorShape: fieldRow.editable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: root.editProfileRequested(modelData.field)
                     }
                 }
             }

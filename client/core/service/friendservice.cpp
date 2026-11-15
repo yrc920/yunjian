@@ -123,8 +123,19 @@ bool FriendService::applyFriend(int touid, const QString &applyName,
     return true;
 }
 
-// 同意对方的申请：back 是给对方设置的备注名
-void FriendService::authFriend(int touid, const QString &backName)
+// 删除好友：只发对方 uid，是否真有关系由服务端判断
+void FriendService::deleteFriend(int touid)
+{
+    QJsonObject body;
+    body["touid"] = touid;
+
+    emit TcpMgr::GetInstance()->sig_send_data(
+        ReqId::ID_DELETE_FRIEND_REQ,
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+// 同意对方的申请：back 是给对方设置的备注名，tags 是自己这边的分组，直接写好友库
+void FriendService::authFriend(int touid, const QString &backName, const QStringList &tags)
 {
     const int myUid = UserMgr::GetInstance()->GetUid();
 
@@ -132,6 +143,7 @@ void FriendService::authFriend(int touid, const QString &backName)
     body["fromuid"] = myUid;
     body["touid"] = touid;
     body["back"] = backName;
+    body["tags"] = QJsonArray::fromStringList(tags);
 
     emit TcpMgr::GetInstance()->sig_send_data(
         ReqId::ID_AUTH_FRIEND_REQ,

@@ -121,6 +121,57 @@ Rectangle {
     }
 
     Rectangle {
+        x: 22
+        y: 275
+        width: parent.width - 44
+        height: 1
+        color: Theme.line
+    }
+
+    // 退出登录：断开连接、清空账号数据后回到登录页，不会弹"连接已断开"的提示
+    Rectangle {
+        id: logoutRow
+        x: 12
+        y: 292
+        width: parent.width - 24
+        height: 54
+        radius: 8
+        color: logoutArea.containsMouse ? Theme.panelAlt : "transparent"
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: "退出登录"
+        Accessible.onPressAction: root.controller ? root.controller.logout() : undefined
+        Keys.onSpacePressed: if (root.controller) root.controller.logout()
+        Keys.onReturnPressed: if (root.controller) root.controller.logout()
+
+        AppIcon {
+            x: 17
+            anchors.verticalCenter: parent.verticalCenter
+            name: "back"
+            size: 20
+            color: Theme.danger
+        }
+        Text {
+            x: 54
+            anchors.verticalCenter: parent.verticalCenter
+            text: "退出登录"
+            color: Theme.danger
+            font.pixelSize: Theme.fontBody
+        }
+        MouseArea {
+            id: logoutArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                logoutRow.forceActiveFocus()
+                if (root.controller)
+                    root.controller.logout()
+            }
+        }
+    }
+
+    Rectangle {
         anchors.right: parent.right
         width: 1
         height: parent.height

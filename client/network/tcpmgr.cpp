@@ -273,6 +273,35 @@ void TcpMgr::initHandlers()
         if (document.isObject())
             emit sig_friend_profile_changed(document.object());
     });
+    //已读上报回包：只是确认，客户端不需要额外动作
+    _handlers.insert(ID_MARK_READ_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_mark_read_rsp(document.object());
+    });
+    //对端已读：把这条会话里自己发的、消息号不超过它的消息标成已读
+    _handlers.insert(ID_NOTIFY_MSG_READ, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_message_read(document.object());
+    });
+    //撤回回包：成功后本端也要把气泡换成提示
+    _handlers.insert(ID_RECALL_MSG_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_recall_rsp(document.object());
+    });
+    _handlers.insert(ID_NOTIFY_MSG_RECALLED, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_message_recalled(document.object());
+    });
+    //删好友回包：失败也交给业务层，界面要给出原因
+    _handlers.insert(ID_DELETE_FRIEND_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_delete_friend_rsp(document.object());
+    });
 
     //注册处理用户搜索响应的消息处理函数
     _handlers.insert(ID_SEARCH_USER_RSP, [this](ReqId id, int len, QByteArray data){
@@ -413,12 +442,15 @@ void TcpMgr::initHandlers()
         }
         for (const auto &value : jsonObj["welcome_msgs"].toArray()) {
             const auto item = value.toObject();
-            auth_info->_welcome_msgs.push_back(std::make_shared<TextChatData>(
+            auto welcome = std::make_shared<TextChatData>(
                 item["msgid"].toString(), item["content"].toString(),
                 item["fromuid"].toInt(from_uid), item["touid"].toInt(UserMgr::GetInstance()->GetUid()),
                 item["message_id"].toVariant().toLongLong(),
                 jsonObj["thread_id"].toVariant().toLongLong(),
-                static_cast<ChatMessageStatus>(item["status"].toInt(3))));
+                static_cast<ChatMessageStatus>(item["status"].toInt(3)));
+            //欢迎消息也带落库时间：加好友那一刻就是它们的时间，聊天里正常显示时间条
+            welcome->_time = item["time"].toVariant().toLongLong();
+            auth_info->_welcome_msgs.push_back(welcome);
         }
 
         emit sig_add_auth_friend(auth_info);
@@ -462,14 +494,17 @@ void TcpMgr::initHandlers()
         rsp->_back = jsonObj["back"].toString();
         for (const auto &value : jsonObj["welcome_msgs"].toArray()) {
             const auto item = value.toObject();
-            rsp->_welcome_msgs.push_back(std::make_shared<TextChatData>(
+            auto welcome = std::make_shared<TextChatData>(
                 item["msgid"].toString(), item["content"].toString(),
                 item["fromuid"].toInt(uid), item["touid"].toInt(UserMgr::GetInstance()->GetUid()),
                 item["message_id"].toVariant().toLongLong(),
                 jsonObj["thread_id"].toVariant().toLongLong(),
-                static_cast<ChatMessageStatus>(item["status"].toInt(1))));
+                static_cast<ChatMessageStatus>(item["status"].toInt(1)));
+            //欢迎消息也带落库时间：加好友那一刻就是它们的时间，聊天里正常显示时间条
+            welcome->_time = item["time"].toVariant().toLongLong();
+            rsp->_welcome_msgs.push_back(welcome);
         }
-        emit sig_auth_rsp(rsp);
+        emit sig_auth_friend_rsp(rsp);
 
         qDebug() << "Auth Friend Success " ;
     });

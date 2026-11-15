@@ -37,8 +37,9 @@ FocusScope {
         overlay = ""
     }
 
-    // 打开时按当前资料回填，清掉上一次的错误提示
-    function openSelf() {
+    // 打开时按当前资料回填，清掉上一次的错误提示。
+    // field 为 "desc" 时直接聚焦签名；"sex" 没有输入框，弹窗打开后点选项即可
+    function openSelf(field) {
         const profile = controller.myProfile
         nickText = profile.nick || ""
         sexValue = profile.sex === undefined ? 0 : profile.sex
@@ -49,7 +50,10 @@ FocusScope {
         controller.clearProfileMessages()
         overlay = "self"
         content.contentY = 0
-        nickInput.forceInputFocus()
+        if (field === "desc")
+            descInput.forceInputFocus()
+        else
+            nickInput.forceInputFocus()
     }
 
     function openRemark(uid, display, userName, icon, remark, tags) {

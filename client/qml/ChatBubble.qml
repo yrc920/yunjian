@@ -16,7 +16,10 @@ Item {
     property int imageHeight: 0
     property int status: 1
     property int transferProgress: -1
+    property string statusText: "" //「已读」/「未读」，只对自己发的最后一条有值
+    property bool retryable: false //发送失败：给出可点击的重发入口
     signal imageClicked() //图片气泡点击后交给查看器打开原图
+    signal retryRequested() //点击失败提示，重新发送这条消息
     signal contextRequested(real x, real y) //右键菜单：坐标相对当前气泡
 
     readonly property bool localImage: imageSource.length > 0
@@ -204,48 +207,37 @@ Item {
         }
     }
 
-    // 状态行：0 发送中（转圈）、1 已发送、2 失败；文本和图片共用同一套图标
+    // 状态区：不再画单勾/双勾——勾号分不清"已发送"和"已读"。
+    // 只在自己最后一条消息旁边给两个字结论；失败时给一个可点的重发入口。
     Row {
-        visible: root.isSelf
-        spacing: 3
+        visible: root.isSelf && (root.statusText.length > 0 || root.retryable)
+        spacing: 6
         anchors.right: root.isImage ? pictureFrame.left : textBubble.left
-        anchors.rightMargin: 7
+        anchors.rightMargin: 8
         anchors.verticalCenter: root.isImage ? pictureFrame.verticalCenter : textBubble.verticalCenter
 
-        AppIcon {
-            visible: root.status === 0
-            name: "reset"
-            size: 14
-            color: Theme.textHint
-            RotationAnimation on rotation {
-                running: root.status === 0
-                loops: Animation.Infinite
-                duration: 900
+        Text {
+            visible: root.statusText.length > 0
+            text: root.statusText
+            color: (root.status === 4 || root.statusText === "已读") ? Theme.textSecondary : Theme.textHint
+            font.pixelSize: 10
+        }
+        Item {
+            visible: root.retryable
+            width: retryLabel.implicitWidth + 12
+            height: 16
+            Text {
+                id: retryLabel
+                anchors.centerIn: parent
+                text: "! 点击重发"
+                color: Theme.danger
+                font.pixelSize: 10
             }
-        }
-        AppIcon {
-            visible: root.status === 1
-            name: "check"
-            size: 14
-            color: Theme.primary
-        }
-        AppIcon {
-            visible: root.status === 2
-            name: "close"
-            size: 14
-            color: Theme.danger
-        }
-        Text {
-            visible: root.status === 3
-            text: "未读"
-            color: Theme.textHint
-            font.pixelSize: 10
-        }
-        Text {
-            visible: root.status === 4
-            text: "已读"
-            color: Theme.primary
-            font.pixelSize: 10
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.retryRequested()
+            }
         }
     }
 }

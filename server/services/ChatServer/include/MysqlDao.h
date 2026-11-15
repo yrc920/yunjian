@@ -38,7 +38,8 @@ public:
 	int UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
 		const std::vector<std::string>& tags);
 	//好友表与申请表各有一个 tags 列: 启动时幂等补列, 不需要部署环境手工建表
-	bool EnsureFriendTagColumns();
+	//启动时补齐后加的列（好友标签、消息已读/撤回），已存在则跳过
+	bool EnsureSchema();
 
 	std::shared_ptr<UserInfo> GetUser(int uid); //根据用户ID获取用户信息
 	std::shared_ptr<UserInfo> GetUser(const std::string& name); //根据用户名获取用户信息
@@ -51,6 +52,17 @@ public:
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info);
 	//取某人的好友 uid 列表, 资料变更后按它决定推给谁
 	bool GetFriendIds(int uid, std::vector<int>& friend_ids);
+	//把该会话里"发给 uid"的消息标为已读；changed 表示是否真有更新，peer_uid 输出对方 uid
+	bool MarkChatMessagesRead(int uid, long long thread_id, long long last_message_id,
+		bool& changed, int& peer_uid);
+	//撤回自己发的消息：返回 ErrorCodes，成功时把撤回后的消息写进 message
+	int RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message);
+	//双方是否还是好友：删好友后用于判断消息能否发出
+	bool IsFriend(int uid, int touid);
+	//双向关系是否完整（两行都在）：发消息的前提
+	bool IsMutualFriend(int uid, int touid);
+	//删除好友：只删自己这一行，对方仍保留关系
+	bool DeleteFriend(int uid, int touid);
 	//取单聊会话, 没有则创建; 非好友返回0. 依赖 private_chat 的 (user1_id,user2_id) 唯一键去重
 	long long GetOrCreatePrivateChat(int user1, int user2);
 	//按会话ID升序分页取会话列表, has_more 表示还有下一页

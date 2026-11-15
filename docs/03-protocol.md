@@ -97,6 +97,14 @@
 | 1049 | `ID_GET_PROFILE_REQ` | C → S | 按 uid 拉取好友最新资料 |
 | 1050 | `ID_GET_PROFILE_RSP` | S → C | 最新资料回包（昵称/签名/头像/性别） |
 | 1051 | `ID_NOTIFY_PROFILE_CHANGED` | S → C | 好友资料变更推送（昵称/签名/头像/性别） |
+| 1052 | `ID_MARK_READ_REQ` | C → S | 上报会话已读位置 |
+| 1053 | `ID_MARK_READ_RSP` | S → C | 已读上报回包 |
+| 1054 | `ID_NOTIFY_MSG_READ` | S → C | 对端已读通知，发送方把单勾改成双勾 |
+| 1055 | `ID_RECALL_MSG_REQ` | C → S | 撤回自己发的消息 |
+| 1056 | `ID_RECALL_MSG_RSP` | S → C | 撤回回包 |
+| 1057 | `ID_NOTIFY_MSG_RECALLED` | S → C | 对端撤回通知 |
+| 1058 | `ID_DELETE_FRIEND_REQ` | C → S | 删除好友（双向删关系，不通知对方） |
+| 1059 | `ID_DELETE_FRIEND_RSP` | S → C | 删除好友回包 |
 
 > 1012 与 1016 为历史预留空位，当前未使用。1045–1048 与资源服务器的 1037–1044 不冲突：
 > 后四者走 ResourceServer 的另一条连接，这里只用于 ChatServer 长连接。
@@ -125,7 +133,10 @@
     // tags 是本人给对方打的分组，只影响自己这一侧的联系人筛选
   ],
   "thread_list": [                  // 已建立的单聊会话
-    {"thread_id":0, "uid":0, "name":"", "nick":"", "icon":"", "sex":0}
+    {"thread_id":0, "uid":0, "name":"", "nick":"", "icon":"", "sex":0,
+     "time":0, "unread":0}
+    // time 是会话最后活动时间（UNIX 秒），unread 是发给自己的未读条数；
+    // 客户端登录首屏直接用它恢复红点与排序，不能等到 1028 才有这两个字段
   ],
   "thread_more": false              // 会话是否还有下一页
 }
@@ -140,6 +151,9 @@
 
 **1009 好友申请** `{uid:int, applyname:string, bakname:string, touid:int, tags:[string]}`
 
+申请记录以 `(from_uid, to_uid)` 为唯一键，重复申请会更新留言、备注与标签，并把 `status`
+复位成 0（待处理）——单向删除之后重新申请，对方才能在「新的朋友」里看到这条新申请。
+
 `applyname` 是申请留言（为空时服务端用默认句），`bakname` 是备注名，`tags` 是给对方打的分组。
 `bakname` 留空表示不设备注；`tags` 留空或省略表示不分组，最多 10 个、单个不超过 12 字符。
 两者都存进 `friend_apply`，同意后复制到申请方那行 `friend`，之后可在好友资料页修改。
@@ -150,17 +164,24 @@
 
 `name` 是申请人资料名，`desc` 是申请留言。
 
-**1013 同意好友申请** `{fromuid:int, touid:int, back:string}`（`back` 为备注名，同意方不填欢迎语）
+**1013 同意好友申请** `{fromuid:int, touid:int, back:string, tags:[string]}`（`back` 为备注名，同意方不填欢迎语）
+
+`tags` 是同意方直接给对方选的分组，写进自己那一行 `friend`，通过后立即生效，
+不必再去好友资料页补一次。对方在申请里填的备注与标签仍会复制到申请方那一行。
 
 **1014 同意回包** `{error, name, nick, icon, sex, uid, thread_id, welcome_msgs, back}`
 
 `back` 是同意方自己填的备注；`welcome_msgs` 项为 `{msgid, content, message_id, thread_id, status, fromuid, touid}`；
 同意方视角：申请方留言（status=3）、同意方默认句（status=1）。
 
+客户端把 1014 与 1015 分开处理：**1014 是"我同意了别人"**，界面直接进入会话，
+默认招呼不算未读（人正看着）；**1015 是"别人通过了我"**，只把会话与红点放进列表，不强行切页。
+
 **1015 同意通知** `{error, fromuid, touid, name, nick, icon, sex, thread_id, welcome_msgs, back, tags}`
 
 `back` 与 `tags` 是申请方当初填的备注与分组，通过后直接回传，申请方不必重新登录才看到；
 `welcome_msgs` 项同上；申请方视角：自己的留言（status=1）、同意方默认句（status=3）。
+那条默认句对申请方就是一条普通未读消息，红点用来提示"对方已经通过了"。
 
 **1017 文本消息** `{fromuid:int, touid:int, thread_id:int64, text_array:[{content:string, msgid:string}]}`
 
@@ -169,6 +190,8 @@
 **1018 文本消息回执** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status, time}]}`
 
 `status`：1=已发送，2=发送失败。`time` 是服务端落库时间（UNIX 秒）。
+失败时除了 `error`，若原因正是"双方已不是好友"，会额外带 `not_friend: true`，
+客户端据此提示「对方已不是你的好友，消息未发送」，而不是笼统的发送失败。
 
 **1019 文本消息投递** `{error, fromuid, touid, thread_id, text_array:[{content, msgid, message_id, status, time}]}`
 
@@ -180,17 +203,21 @@
 
 **1027 拉会话列表** `{fromuid:int, thread_id:int64}` —— `thread_id` 是上一页最后一条，首屏传 0。
 
-**1028 会话列表回包** `{error, thread_list:[{thread_id, uid, name, nick, icon, sex, time}], load_more:bool}`
+**1028 会话列表回包** `{error, thread_list:[{thread_id, uid, name, nick, icon, sex, time, unread}], load_more:bool}`
 
 `time` 是会话最后活动时间（UNIX 秒，来自 `chat_thread.updated_at`）。客户端登录首屏按它排序，
 避免历史消息还没拉回来时列表先按加好友顺序显示、随后又跳一次；历史拉回后改用最后一条消息时间。
+`unread` 是该会话里发给自己的未读条数，登录时一起下发——未读数因此能跨登录保留，
+不必依赖客户端内存。
 
 **1029 拉历史消息** `{fromuid:int, thread_id:int64, message_id:int64}` —— 取 `message_id` 之后的消息，首屏传 0。
 
-**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status, time}], load_more:bool}`
+**1030 历史消息回包** `{error, thread_id, text_array:[{message_id, thread_id, fromuid, touid, msgid, content, msg_type, status, time, read, recalled}], load_more:bool}`
 
 `msg_type`：0=文本，1=图片（`content` 是资源文件名），2=视频，3=文件（2/3 的 `content` 是元数据 JSON）。
 `time` 是 `chat_message.created_at` 的 UNIX 秒值，客户端按本地时区格式化成时间条，并据此排序会话。
+`read` 表示对方是否已读（只对自己发的消息有意义）；`recalled` 为真时 `content` 已清空，
+客户端只渲染一行「撤回了一条消息」，不再显示气泡与资源。
 
 **1031 图片消息** `{fromuid:int, touid:int, thread_id:int64, md5:string, name:string, token:string, unique_id:string}`
 
@@ -272,6 +299,43 @@
 文字字段立即刷新列表与聊天标题，`icon` 与本地文件名不同时再走一次头像下载。
 推送只发给在线好友；离线好友不做补偿，下次登录从 1006 回包拿到最新资料。
 自己的资料仍以 1046 回包为准，不会收到自己的推送。
+
+**1052 上报已读** `{thread_id:int64, message_id:int64}`
+
+客户端打开会话、或在会话页收到新消息时上报"已读到哪一条"。服务端只把该会话里
+`recv_id = 自己` 且 `message_id <= 上报值` 的消息标为已读；同一条不会重复通知对方。
+
+**1053 已读上报回包** `{error, thread_id, message_id}`
+
+只是确认，客户端不需要额外动作。参数非法返回 1001，会话不属于自己返回 1002。
+
+**1054 对端已读通知** `{thread_id, uid, message_id}`
+
+`uid` 是读取者。发送方收到后，把自己发的、`message_id` 不超过这个位置的消息标成已读（双勾）。
+离线时不推，下次拉历史由 `read` 字段还原。
+
+**1055 撤回消息** `{message_id:int64}`
+
+只带消息号：归属与时间窗由服务端按库里的记录判断。只允许发送者本人、发送后 2 分钟内、未撤回的消息。
+
+**1056 撤回回包** `{error, thread_id, message_id}`
+
+成功返回 0；超过 2 分钟返回 `1012`，不是本人或已撤回返回 `1013`，消息不存在同样按 `1013` 处理。
+
+**1057 对端撤回通知** `{thread_id, message_id, fromuid}`
+
+接收方把这条消息标为已撤回：正文清空，不再显示气泡与附件，只留一行「「昵称」撤回了一条消息」。
+
+**1058 删除好友** `{touid:int}`
+
+只带对方 uid。服务端**只删自己这一行** `friend` 关系（以及自己发出的申请记录），
+不推通知；对方那一行仍在，所以他的好友列表照旧，也能继续看到会话。
+`private_chat` 与 `chat_message` 始终保留。
+
+**1059 删除好友回包** `{error, uid}`
+
+成功返回 0 与对方 uid；关系不存在或参数非法返回非 0。成功后客户端从联系人列表移除，
+会话列表保留该会话（历史仍可查看）。双方都删过之后，关系才彻底消失。
 
 ---
 

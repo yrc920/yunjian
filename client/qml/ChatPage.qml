@@ -17,6 +17,9 @@ Item {
     signal profileRequested()
     signal mediaViewRequested(var items, int index) //查看器：当前会话的图片与视频列表
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
+    // 刚切进会话的一小段时间：模型在重建、图片在加载，contentY 会被反复改写。
+    // 这段时间内不改写 stickBottom，并持续贴底，避免"打开会话停在第一条"。
+    property bool settling: false
 
     readonly property bool hasAttachment: composerBridge.hasAttachment
     readonly property int headerHeight: 78
@@ -35,6 +38,8 @@ Item {
     onCurrentUidChanged: {
         composerBridge.switchConversation(input.textDocument, currentUid)
         root.stickBottom = true
+        root.settling = true
+        settleTimer.restart()
         Qt.callLater(messageList.positionViewAtEnd)
     }
     Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentUid)
@@ -50,6 +55,13 @@ Item {
         }
         function onResourceNotice(message) {
             root.showActionMessage(message)
+        }
+        // 服务端判定"已经不是好友"时给一句明确提示，弹完即清，避免重复
+        function onChatNoticeChanged() {
+            if (!root.bridge || root.bridge.chatNotice.length === 0)
+                return
+            root.showActionMessage(root.bridge.chatNotice)
+            root.bridge.clearChatNotice()
         }
     }
 
@@ -197,9 +209,40 @@ Item {
                     }
                 }
 
+                // 撤回：正文和资源都不再显示，只留一行提示；两侧措辞不同，
+                // 自己撤回的文本还可以一键填回输入框重新编辑
+                Item {
+                    width: parent.width
+                    height: model.recalled ? 34 : 0
+                    visible: model.recalled
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Text {
+                            text: model.isSelf ? "你撤回了一条消息"
+                                               : "「" + model.name + "」撤回了一条消息"
+                            textFormat: Text.PlainText
+                            color: Theme.textHint
+                            font.pixelSize: 10
+                        }
+                        Text {
+                            visible: model.recallText.length > 0
+                            text: "重新编辑"
+                            color: Theme.primary
+                            font.pixelSize: 10
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.restoreRecalled(model.recallText)
+                            }
+                        }
+                    }
+                }
+
                 Loader {
                     id: loader
                     width: parent.width
+                    visible: !model.recalled
                     sourceComponent: model.msgType >= 2 ? mediaComponent : bubbleComponent
                 }
             }
@@ -217,11 +260,17 @@ Item {
                     imageWidth: model.imageWidth
                     imageHeight: model.imageHeight
                     status: model.status
+                    statusText: model.statusText
+                    retryable: model.canRetry
+                    onRetryRequested: {
+                        if (!root.bridge.retryMessage(root.currentUid, model.msgId))
+                            root.showActionMessage("无法重发：原文件已不在本机")
+                    }
                     transferProgress: model.transferProgress
                     onImageClicked: root.openImage(model.messageId, model.imageSource)
                     onContextRequested: (x, y) => root.showMessageMenu(
                         model.messageId, model.msgType, model.text, model.imageSource,
-                        mapToItem(root, x, y))
+                        mapToItem(root, x, y), model.canRecall)
                 }
             }
 
@@ -243,7 +292,7 @@ Item {
                         model.messageId, model.msgId, model.msgType, action, model.fileName)
                     onContextRequested: (x, y) => root.showMediaMenu(
                         model.messageId, model.msgId, model.msgType, model.transferState,
-                        model.fileName, mapToItem(root, x, y))
+                        model.fileName, mapToItem(root, x, y), model.canRecall)
                 }
             }
         }
@@ -251,23 +300,42 @@ Item {
         // 只有停在底部时才跟随新消息；向上翻历史时不再被拉回底部，
         // 图片异步加载导致的高度变化也用短定时器合并，避免连续跳动
         onCountChanged: {
-            if (root.stickBottom)
+            if (root.stickBottom || root.settling)
                 Qt.callLater(messageList.positionViewAtEnd)
         }
         onContentHeightChanged: {
-            if (root.stickBottom && !messageList.moving)
+            if ((root.stickBottom || root.settling) && !messageList.moving)
                 scrollTimer.restart()
         }
         //离底部 64px 内就视为“在底部”：图片加载让 contentHeight 变高时还能继续跟到底，
         //快速滚动到末尾也不会停在最后一张图上
         onMovementEnded: {
+            //用户主动拖动说明要自己看，settling 立即结束，不再强行贴底
+            if (root.settling) {
+                root.settling = false
+                settleTimer.stop()
+            }
             root.stickBottom = contentY + height >= contentHeight - 64
             if (root.stickBottom)
                 scrollTimer.restart() //滚动期间新加载的图片可能把底部又推高了
         }
         onContentYChanged: {
+            //settling 期间的位置变化是程序贴底造成的，不能据此判定"用户翻上去了"
+            if (root.settling)
+                return
             if (!moving && !flicking)
                 root.stickBottom = contentY + height >= contentHeight - 64
+        }
+    }
+
+    // 打开会话后的贴底窗口：模型重建与首屏图片加载都在这段时间内完成
+    Timer {
+        id: settleTimer
+        interval: 320
+        onTriggered: {
+            root.settling = false
+            if (root.stickBottom)
+                messageList.positionViewAtEnd()
         }
     }
 
@@ -628,6 +696,15 @@ Item {
         Qt.callLater(messageList.positionViewAtEnd)
     }
 
+    // 撤回后重新编辑：把原文填回输入框，光标放到末尾
+    function restoreRecalled(text) {
+        if (!text)
+            return
+        input.text = text
+        input.cursorPosition = text.length
+        input.forceActiveFocus()
+    }
+
     function formatSize(bytes) {
         if (!bytes || bytes <= 0)
             return "0 B"
@@ -687,10 +764,12 @@ Item {
     }
 
     //普通消息：目前提供复制，图片额外支持查看、复制图片、另存为与定位文件
-    function showMessageMenu(messageId, msgType, text, imageUrl, point) {
+    function showMessageMenu(messageId, msgType, text, imageUrl, point, canRecall) {
+        // 撤回只在时间窗内、自己发的、未撤回的消息上出现，不做成灰掉的菜单项
+        const recallItem = { text: "撤回", action: () => root.bridge.recallMessage(messageId) }
         if (msgType === 1) {
             const local = root.bridge ? root.bridge.resourceUrl(messageId).length > 0 : false
-            contextMenu.open(point.x, point.y, [
+            const items = [
                 { text: "查看大图", action: () => root.openImage(messageId, imageUrl) },
                 { text: "复制图片", action: () => {
                     if (!root.bridge.copyImage(messageId, imageUrl))
@@ -700,17 +779,23 @@ Item {
                   action: () => root.beginImageSaveAs(messageId, imageUrl) },
                 { text: "打开文件夹", enabled: local,
                   action: () => root.bridge.revealResource(messageId) }
-            ])
+            ]
+            if (canRecall)
+                items.push(recallItem)
+            contextMenu.open(point.x, point.y, items)
             return
         }
-        contextMenu.open(point.x, point.y, [
+        const items = [
             { text: "复制文字", enabled: text.length > 0,
               action: () => root.bridge.copyText(text) }
-        ])
+        ]
+        if (canRecall)
+            items.push(recallItem)
+        contextMenu.open(point.x, point.y, items)
     }
 
     //视频/文件：按传输状态给出下载、暂停、继续、打开、定位与另存为
-    function showMediaMenu(messageId, msgId, msgType, state, fileName, point) {
+    function showMediaMenu(messageId, msgId, msgType, state, fileName, point, canRecall) {
         const paused = state === 3 || state === 5
         const active = state === 2 || state === 4
         const done = state === 6
@@ -732,6 +817,8 @@ Item {
         items.push({ text: "另存为", action: () => root.beginSaveAs(messageId, fileName) })
         items.push({ text: "复制文件名", enabled: fileName.length > 0,
                      action: () => root.bridge.copyText(fileName) })
+        if (canRecall)
+            items.push({ text: "撤回", action: () => root.bridge.recallMessage(messageId) })
         contextMenu.open(point.x, point.y, items)
     }
 

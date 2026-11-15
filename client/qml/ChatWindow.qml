@@ -686,6 +686,20 @@ Item {
                             bridge.openProfile(model.uid)
                     }
 
+                    // 联系人/会话行右键：发消息、看资料、删除好友（删除要二次确认）
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onClicked: (mouse) => {
+                            const point = mapToItem(root, mouse.x, mouse.y)
+                            friendMenu.open(point.x, point.y, [
+                                { text: "发消息", action: () => bridge.openChat(model.uid) },
+                                { text: "查看资料", action: () => bridge.openProfile(model.uid) },
+                                { text: "删除好友", action: () => bridge.askDeleteFriend(model.uid) }
+                            ])
+                        }
+                    }
+
                     Rectangle {
                         x: 10
                         width: parent.width - 20
@@ -936,6 +950,7 @@ Item {
                 visible: bridge.pane === ChatBridge.FriendInfoPage
                 profile: bridge.profile
                 onChatRequested: bridge.openChat(bridge.profile.uid)
+                onDeleteRequested: bridge.askDeleteFriend(bridge.profile.uid)
                 onEditRelationRequested: profileDialogs.openRemark(bridge.profile.uid,
                                                                   bridge.profile.displayName,
                                                                   bridge.profile.name,
@@ -956,7 +971,7 @@ Item {
                 visible: bridge.pane === ChatBridge.UserInfoPage
                 controller: bridge
                 onEditAvatarRequested: avatarEditor.chooseImage()
-                onEditProfileRequested: profileDialogs.openSelf()
+                onEditProfileRequested: (field) => profileDialogs.openSelf(field)
             }
         }
     }
@@ -1045,5 +1060,75 @@ Item {
     ViewerOverlay {
         id: viewer
         anchors.fill: parent
+    }
+
+    // 好友行右键菜单：删除入口放在这里，比翻资料页更直接
+    ContextMenu {
+        id: friendMenu
+        anchors.fill: parent
+    }
+
+    // 删除好友确认：资料页与联系人菜单共用同一层，避免各页面各写一份
+    Rectangle {
+        id: deleteConfirm
+        anchors.fill: parent
+        visible: bridge.deleteConfirmVisible
+        color: Theme.overlay
+        z: 30
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: bridge.cancelDeleteFriend()
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(420, parent.width - 64)
+            implicitHeight: deleteContent.implicitHeight + 48
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+
+            Column {
+                id: deleteContent
+                x: 24
+                y: 24
+                width: parent.width - 48
+                spacing: 14
+
+                Text {
+                    text: "删除好友"
+                    color: Theme.textPrimary
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                Text {
+                    width: parent.width
+                    text: "删除「" + bridge.deleteTargetName + "」？对方不会收到通知，"
+                        + "你们的历史消息仍会保留，但不能再发消息。"
+                    color: Theme.textSecondary
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                Row {
+                    width: parent.width
+                    spacing: 12
+
+                    CodeButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "取消"
+                        onClicked: bridge.cancelDeleteFriend()
+                    }
+                    AppButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "确认删除"
+                        onClicked: bridge.confirmDeleteFriend()
+                    }
+                }
+            }
+        }
     }
 }

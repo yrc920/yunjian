@@ -75,7 +75,9 @@ signals:
     void sig_friend_apply(std::shared_ptr<AddFriendApply>); //申请对方为好友的信号
     void sig_add_friend_rsp(const QJsonObject &data); //1010 申请回执，失败也要交给界面判断
     void sig_add_auth_friend(std::shared_ptr<AuthInfo>); //对方同意好友申请的信号
-    void sig_auth_rsp(std::shared_ptr<AuthRsp>); //同意好友申请的响应信号
+    void sig_auth_rsp(std::shared_ptr<AuthRsp>); //1015 别人通过我的申请
+    //1014 我自己同意别人：与 1015 分开处理，我要跳进会话，对方只需要红点
+    void sig_auth_friend_rsp(std::shared_ptr<AuthRsp>);
     void sig_text_chat_msg(std::shared_ptr<TextChatMsg>); //收到文本消息的信号
     void sig_chat_msg_failed(const QJsonObject &data); //1018 回执带错误，按 msgid 标失败
     void sig_chat_threads(const QJsonObject &data); //1028 会话列表，含 load_more
@@ -89,6 +91,11 @@ signals:
     void sig_friend_remark_updated(const QJsonObject &data); //1048 好友备注与标签修改结果
     void sig_profile_loaded(const QJsonObject &data); //1050 好友最新资料，失败也回传
     void sig_friend_profile_changed(const QJsonObject &data); //1051 好友资料变更推送
+    void sig_mark_read_rsp(const QJsonObject &data); //1053 已读上报回包
+    void sig_message_read(const QJsonObject &data); //1054 对端已读，把单勾改成双勾
+    void sig_recall_rsp(const QJsonObject &data); //1056 撤回回包
+    void sig_message_recalled(const QJsonObject &data); //1057 对端撤回
+    void sig_delete_friend_rsp(const QJsonObject &data); //1059 删除好友回包
     void sig_notify_offline(); //收到服务器踢人消息的信号
     void sig_connection_closed(); //连接断开的信号
 };
