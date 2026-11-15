@@ -225,8 +225,10 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
     const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response)
 {
     response->set_message_id(request->message_id());
-    if (request->message_id() <= 0 || request->sender() <= 0 || request->receiver() <= 0
-        || request->name().empty()) {
+    //群聊的 receiver 为 0：没有单一接收方，改按成员列表广播
+    const bool group_resource = request->thread_type() == 2;
+    if (request->message_id() <= 0 || request->sender() <= 0 || request->name().empty()
+        || (!group_resource && request->receiver() <= 0)) {
         response->set_error(ErrorCodes::Error_Json);
         return Status::OK;
     }
@@ -245,8 +247,36 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
         message.message_id, message.sender_id, 1);
     response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
 
-    //接收方在本实例在线时立即推送；资源服务器已按 uip_<receiver> 选好目标实例
+    //接收方在本实例在线时立即推送；资源服务器已按 uip_<receiver> 选好目标实例。
+    //群聊没有单一接收方：按成员列表广播，发送者自己已经看到消息，跳过
     if (ok) {
+        int thread_type = static_cast<int>(ThreadType::Private);
+        MysqlMgr::GetInstance()->GetThreadType(message.thread_id, thread_type);
+        if (thread_type == static_cast<int>(ThreadType::Group)) {
+            std::vector<int> members;
+            if (MysqlMgr::GetInstance()->GetGroupMemberIds(message.thread_id, members)) {
+                Json::Value payload;
+                payload["error"] = ErrorCodes::Success;
+                payload["thread_id"] = Json::Int64(message.thread_id);
+                payload["thread_type"] = thread_type;
+                payload["fromuid"] = message.sender_id;
+                payload["touid"] = 0;
+                payload["msg_type"] = message.msg_type;
+                payload["message_id"] = Json::Int64(message.message_id);
+                payload["msgid"] = message.client_msg_id;
+                payload["time"] = Json::Int64(message.created_at);
+                payload["name"] = request->name();
+                payload["total_size"] = Json::Int64(request->total_size());
+                if (message.msg_type != 1)
+                    payload["content"] = message.content;
+                LogicSystem::GetInstance()->BroadcastGroupEvent(message.thread_id, members,
+                    message.sender_id, payload,
+                    message.msg_type == 1 ? ID_NOTIFY_IMG_CHAT_MSG_REQ
+                                          : ID_NOTIFY_RESOURCE_CHAT_MSG_REQ);
+            }
+            return Status::OK;
+        }
+
         auto session = UserMgr::GetInstance()->GetSession(message.recv_id);
         if (session) {
             if (message.msg_type == 1) {
@@ -334,6 +364,25 @@ Status ChatServiceImpl::NotifyChatEvent(ServerContext* context,
     else if (request->event() == 2) {
         rtvalue["fromuid"] = request->fromuid(); //撤回者
         session->Send(rtvalue.toStyledString(), ID_NOTIFY_MSG_RECALLED);
+    }
+    return Status::OK;
+}
+
+//跨实例群事件：payload 已经由发送方实例组装成客户端可直接解析的 JSON，
+//这里只负责按 uid 找到本实例的会话并原样投递；离线成员跳过，入库内容不会丢
+Status ChatServiceImpl::NotifyGroupEvent(ServerContext* context,
+    const GroupEventReq* request, GroupEventRsp* response)
+{
+    response->set_error(ErrorCodes::Success);
+    if (request->thread_id() <= 0 || request->notify_id() <= 0 || request->payload().empty()) {
+        response->set_error(ErrorCodes::Error_Json);
+        return Status::OK;
+    }
+
+    for (int i = 0; i < request->touids_size(); ++i) {
+        auto session = UserMgr::GetInstance()->GetSession(request->touids(i));
+        if (session)
+            session->Send(request->payload(), static_cast<short>(request->notify_id()));
     }
     return Status::OK;
 }

@@ -96,6 +96,12 @@ signals:
     void sig_recall_rsp(const QJsonObject &data); //1056 撤回回包
     void sig_message_recalled(const QJsonObject &data); //1057 对端撤回
     void sig_delete_friend_rsp(const QJsonObject &data); //1059 删除好友回包
+    //群聊：建群、群资料、群设置、成员操作与变更推送
+    void sig_group_created(const QJsonObject &data); //1061 建群结果
+    void sig_group_info(const QJsonObject &data); //1063 群资料与成员
+    void sig_group_updated(const QJsonObject &data); //1065 群设置修改结果
+    void sig_group_member_op(const QJsonObject &data); //1067 成员操作结果
+    void sig_group_changed(const QJsonObject &data); //1068 群资料/成员/被移出/解散
     void sig_notify_offline(); //收到服务器踢人消息的信号
     void sig_connection_closed(); //连接断开的信号
 };

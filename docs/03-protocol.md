@@ -105,6 +105,15 @@
 | 1057 | `ID_NOTIFY_MSG_RECALLED` | S → C | 对端撤回通知 |
 | 1058 | `ID_DELETE_FRIEND_REQ` | C → S | 删除好友（双向删关系，不通知对方） |
 | 1059 | `ID_DELETE_FRIEND_RSP` | S → C | 删除好友回包 |
+| 1060 | `ID_CREATE_GROUP_REQ` | C → S | 创建群聊（群名 + 好友 uid） |
+| 1061 | `ID_CREATE_GROUP_RSP` | S → C | 建群回包（thread_id、群资料、成员） |
+| 1062 | `ID_GET_GROUP_INFO_REQ` | C → S | 拉群资料与成员 |
+| 1063 | `ID_GET_GROUP_INFO_RSP` | S → C | 群资料、成员与我的群设置 |
+| 1064 | `ID_UPDATE_GROUP_REQ` | C → S | 改群名/公告、群昵称、免打扰 |
+| 1065 | `ID_UPDATE_GROUP_RSP` | S → C | 群设置修改回包 |
+| 1066 | `ID_GROUP_MEMBER_OP_REQ` | C → S | 邀请、移除、设/撤管理员、退群、解散 |
+| 1067 | `ID_GROUP_MEMBER_OP_RSP` | S → C | 成员操作回包 |
+| 1068 | `ID_NOTIFY_GROUP_CHANGED` | S → C | 群资料/成员/被移出/解散/系统消息推送 |
 
 > 1012 与 1016 为历史预留空位，当前未使用。1045–1048 与资源服务器的 1037–1044 不冲突：
 > 后四者走 ResourceServer 的另一条连接，这里只用于 ChatServer 长连接。
@@ -337,6 +346,54 @@
 成功返回 0 与对方 uid；关系不存在或参数非法返回非 0。成功后客户端从联系人列表移除，
 会话列表保留该会话（历史仍可查看）。双方都删过之后，关系才彻底消失。
 
+### 群聊（1060–1068）
+
+群聊与单聊共用 `thread_id` 与消息表：`chat_thread.thread_type=2`，群消息 `recv_id=0`。
+1017/1019、1031–1036 都带 `thread_type`；群聊里 `touid=0`，目标由 `thread_id` 决定。
+
+**1060 建群** `{fromuid, name, members:[uid...]}`
+
+创建者成为群主，成员只能是创建者的好友；一次最多 50 人，群上限 200。
+`name` 为空时服务端用「群聊」。
+
+**1061 建群回包** `{error, thread_id, thread_type, group, members}`
+
+`group` 字段：`thread_id/name/notice/owner/member_count/my_role/muted/my_nick/created_at`；
+`members` 每项：`uid/name/nick/icon/sex/role/group_nick`。
+成功后会给其他成员推 1068 `created`，并写一条建群系统消息。
+
+**1062 拉群资料** `{fromuid, thread_id}` → **1063** `{error, thread_id, group, members}`
+
+只允许群成员读取；`group` 额外带 `my_role`、`muted`、`my_nick`。
+
+**1064 修改群设置** `{fromuid, thread_id, action, value}`
+
+`action` 取 `name` / `notice` / `nickname` / `mute`；前两项需管理员及以上，
+`nickname` 改我在本群的昵称（≤16 字），`mute` 的 `value` 为 `"1"`/`"0"`。
+**1065** 回包 `{error, thread_id, action, value}`；改名与改公告会写系统消息并推 1068 `info`。
+
+**1066 成员操作** `{fromuid, thread_id, action, ...}`
+
+- `invite`：`members:[uid...]`，只能邀请自己的好友，已在群里的跳过；
+- `remove` / `set_admin` / `unset_admin`：`target:uid`；
+- `leave`：群主不能直接退群；
+- `dismiss`：只有群主可以解散，删 `chat_thread` 时消息与成员级联清理。
+
+**1067 回包** `{error, thread_id, action, member_count?, added?, target?, message?}`。
+
+**1068 群变更推送** `{error, thread_id, thread_type:2, event, ...}`
+
+`event` 取值：
+
+- `created`：带 `group` 与 `members`，被拉进群的人据此建会话；
+- `info`：带 `name` 或 `notice`；
+- `members`：带 `member_count`，可能带 `target` 与 `role`；
+- `removed` / `dismissed`：我被移出或群解散，客户端删除会话；
+- `message`：带一条系统消息 `message`（字段同历史消息）。
+
+群消息未读按 `group_chat_member.last_read_message_id` 推进，`at_me` 由未读消息的
+`mentions` 是否含当前 uid 判断；群聊不做逐条已读。
+
 ---
 
 ### 资源服务器私有协议（Client ↔ ResourceServer）
@@ -425,7 +482,8 @@ Base URL 由客户端 `config.ini` 的 `[GateServer] host/port` 拼成 `http://<
 校验顺序：JSON → 验证码存在性（1003）→ 验证码比对（1004）→ `CheckEmail(name, email)`（1007）
 → `UpdatePwd(name, pwd)`（1008，失败时）。
 
-> 新密码在 DAO 层做 Argon2id 哈希后落库，网关只处理明文入参。
+> 新密码在 DAO 层做 Argon2id 哈希后落库；网关只接收客户端 `xorString()` 变形后的字符串，
+> 不做还原，因此哈希的原文是变形值而不是用户输入的原密码。
 
 成功响应：`{"error":0, "email":string, "user":string, "verifycode":string}`
 

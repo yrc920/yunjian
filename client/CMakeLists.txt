@@ -102,6 +102,7 @@ set(CORE_SOURCES
     core/service/authservice.cpp
     core/service/sessionservice.cpp
     core/service/chatservice.cpp
+    core/service/groupservice.cpp
     core/service/friendservice.cpp
     core/service/profileservice.cpp
     core/service/fileservice.cpp
@@ -117,6 +118,7 @@ set(CORE_HEADERS
     core/service/authservice.h
     core/service/sessionservice.h
     core/service/chatservice.h
+    core/service/groupservice.h
     core/service/friendservice.h
     core/service/profileservice.h
     core/service/fileservice.h
@@ -179,6 +181,7 @@ set(BRIDGE_SOURCES
     bridge/registerbridge.cpp
     bridge/resetbridge.cpp
     bridge/friendlistmodel.cpp
+    bridge/conversationmodel.cpp
     bridge/applylistmodel.cpp
     bridge/messagemodel.cpp
     bridge/composerbridge.cpp
@@ -192,6 +195,7 @@ set(BRIDGE_HEADERS
     bridge/registerbridge.h
     bridge/resetbridge.h
     bridge/friendlistmodel.h
+    bridge/conversationmodel.h
     bridge/applylistmodel.h
     bridge/messagemodel.h
     bridge/composerbridge.h
@@ -246,6 +250,8 @@ set(QML_FILES
     qml/FriendSearchPopup.qml
     qml/ChatPage.qml
     qml/FriendInfoPage.qml
+    qml/GroupInfoPage.qml
+    qml/CreateGroupDialog.qml
     qml/ApplyFriendPage.qml
     qml/SettingsPanel.qml
     qml/UserInfoPage.qml

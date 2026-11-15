@@ -64,6 +64,35 @@ public:
 	bool GetChatMessage(long long message_id, ChatMessageInfo& message);
 	//资源服务器通知: 把指定消息标记为已上传
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
+	//会话类型: 1 单聊 / 2 群聊
+	bool GetThreadType(long long thread_id, int& thread_type);
+	//群聊的建群、资料、成员与消息, 具体语义见 MysqlDao 中同名方法
+	long long CreateGroup(int owner_id, const std::string& group_name,
+		const std::vector<int>& members, GroupInfo& info,
+		std::vector<GroupMemberInfo>& member_list, int& error);
+	bool GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
+		std::vector<GroupMemberInfo>& members);
+	int UpdateGroupField(long long thread_id, int uid, MysqlDao::GroupField field,
+		const std::string& value, std::string& applied);
+	int InviteGroupMembers(long long thread_id, int operator_uid,
+		const std::vector<int>& members, std::vector<int>& added, int& member_count);
+	int RemoveGroupMember(long long thread_id, int operator_uid, int target_uid,
+		int& member_count);
+	int SetGroupAdmin(long long thread_id, int operator_uid, int target_uid, bool admin);
+	int LeaveGroup(long long thread_id, int uid, bool& dismissed);
+	int DismissGroup(long long thread_id, int uid);
+	bool AddGroupSystemMessage(long long thread_id, int actor, const std::string& content,
+		ChatMessageInfo& message);
+	bool GetGroupMemberIds(long long thread_id, std::vector<int>& members);
+	bool SaveGroupMessages(int sender_id, long long thread_id, const std::string& mentions,
+		const std::vector<std::pair<std::string, std::string>>& contents,
+		std::vector<ChatMessageInfo>& messages);
+	bool SaveGroupResourceMessage(int sender_id, long long thread_id, const std::string& mentions,
+		const std::string& client_msg_id, int msg_type, const std::string& content,
+		ChatMessageInfo& message);
+	bool MarkGroupRead(int uid, long long thread_id, long long last_message_id);
+	bool GetGroupMember(long long thread_id, int uid, GroupMemberInfo& member,
+		bool& muted, long long& last_read_message_id);
 
 private:
 	MysqlMgr();

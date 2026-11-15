@@ -43,14 +43,17 @@ ChatGrpcClient::ChatGrpcClient()
 
 bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int receiver,
 	long long thread_id, const std::string& name, const std::string& client_msg_id,
-	long long total_size)
+	long long total_size, int thread_type)
 {
 	if (_stubs.empty())
 		return false;
 
-	//接收方离线时 Redis 没有位置键，不必调用任何实例；状态由调用方直接写库
+	//单聊看接收方是否在线；群聊没有单一接收方，改找发送者所在实例，
+	//由它查成员列表并按实例广播，离线成员靠登录同步
+	const bool group = thread_type == 2;
+	const int target_uid = group ? sender : receiver;
 	std::string server_name;
-	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(receiver), server_name))
+	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(target_uid), server_name))
 		return false;
 
 	auto iter = _stubs.find(server_name);
@@ -70,6 +73,7 @@ bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int rece
 	request.set_name(name);
 	request.set_client_msg_id(client_msg_id);
 	request.set_total_size(total_size);
+	request.set_thread_type(thread_type);
 
 	message::NotifyImageUploadedRsp response;
 	const grpc::Status status = iter->second->NotifyImageUploaded(&context, request, &response);

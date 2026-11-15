@@ -106,8 +106,9 @@ CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
 | --- | --- |
 | `chat_thread` | 单聊/群聊共用的全局会话 ID 和类型；`updated_at` 在每次写消息时刷新 |
 | `private_chat` | 两个按 uid 升序保存的单聊参与者；唯一索引避免重复会话 |
-| `group_chat` / `group_chat_member` | 群聊资料与成员关系，本阶段只建表，群聊业务尚未接入 |
-| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态、`created_at`、`is_read` 与 `recalled` |
+| `group_chat` | 群资料：`thread_id`、`group_name`、`owner_id`、`notice`、创建/更新时间 |
+| `group_chat_member` | 群成员：`role`（0 成员/1 管理员/2 群主）、`nickname`、`last_read_message_id`、`muted`、`joined_at` |
+| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态、`created_at`、`is_read`、`recalled` 与 `mentions` |
 
 时间字段有两个用途，都按 UNIX 秒下发：
 
@@ -120,7 +121,8 @@ SQL 里统一用 `UNIX_TIMESTAMP(created_at)` 取值，避免把数据库时区�
 写入不显式传时间：用列的 `CURRENT_TIMESTAMP` 默认值，插入后按 `message_id` 读回时间戳——
 这样重发同一条（唯一键命中、没有真正插入）时拿到的是库里原来的时间，而不是这次重试的时刻。
 
-`chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件。图片消息的 `content` 存资源文件名（md5）；
+`chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件、4 群系统消息。
+群消息 `recv_id=0`，`mentions` 存逗号分隔的 @ uid。图片消息的 `content` 存资源文件名（md5）；
 视频与文件的 `content` 存元数据 JSON（`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`）。
 视频/文件的 `resource` 优先等于原文件名，重名时带 `(2)` 等后缀，落盘与下载都按它拼路径；
 `file_name` 始终保留上传者看到的原名用于展示。`status=0` 表示资源还没上传完成；

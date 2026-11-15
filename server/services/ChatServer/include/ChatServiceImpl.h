@@ -32,6 +32,8 @@ using message::ProfileChangedReq;
 using message::ProfileChangedRsp;
 using message::ChatEventReq;
 using message::ChatEventRsp;
+using message::GroupEventReq;
+using message::GroupEventRsp;
 
 class ChatServiceImpl final : public ChatService::Service
 {
@@ -57,6 +59,9 @@ public:
     //跨实例会话事件：已读或撤回，推给本实例上的接收者
     Status NotifyChatEvent(ServerContext* context,
         const ChatEventReq* request, ChatEventRsp* response) override;
+    //跨实例群事件：按 touids 把同一份通知投递给本实例上的群成员
+    Status NotifyGroupEvent(ServerContext* context,
+        const GroupEventReq* request, GroupEventRsp* response) override;
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
     void RegisterServer(std::shared_ptr<CServer> pServer); //注册CServer对象，方便在处理请求时访问服务器相关功能

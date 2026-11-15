@@ -97,6 +97,28 @@ service ChatService {
   rpc NotifyProfileChanged (ProfileChangedReq) returns (ProfileChangedRsp) {}
   // 跨实例会话事件：已读上报或撤回，转给对方所在实例再推给客户端
   rpc NotifyChatEvent (ChatEventReq) returns (ChatEventRsp) {}
+  // 跨实例群事件：群消息、资源就绪、群资料/成员变动、群内撤回。
+  // 群成员分散在多个实例上，发送方按实例聚合后用一次调用把同一份通知投递过去
+  rpc NotifyGroupEvent (GroupEventReq) returns (GroupEventRsp) {}
+}
+
+// 跨实例群事件的请求
+message GroupEventReq {
+  // 群会话 ID，接收方只用于日志与定位
+  int64 thread_id = 1;
+  // 目标实例上需要收到通知的成员，接收方逐个查找本机会话
+  repeated int32 touids = 2;
+  // 客户端消息 ID：1019 文本 / 1033 图片 / 1036 视频文件 / 1057 撤回 / 1068 群变更
+  int32 notify_id = 3;
+  // 直接下发给客户端的 JSON。群事件字段差异大（文本、资源、成员变动各不相同），
+  // proto 只承担"把同一份通知送到目标实例"的职责，客户端仍按 JSON 解析
+  string payload = 4;
+}
+
+// 跨实例群事件的响应
+message GroupEventRsp {
+  // 业务错误码，0 表示已投递；目标实例不可达时返回非 0，由发送方记录日志
+  int32 error = 1;
 }
 
 // 好友申请通知
@@ -271,6 +293,8 @@ message NotifyImageUploadedReq {
   string client_msg_id = 6;
   // 资源文件大小，接收方展示下载进度
   int64 total_size = 7;
+  // 会话类型：1 单聊 / 2 群聊。群聊时 receiver 为发送者，由 ChatServer 按成员广播
+  int32 thread_type = 8;
 }
 
 // 资源上传完成的响应

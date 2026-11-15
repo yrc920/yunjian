@@ -141,7 +141,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		//接收方离线或 RPC 不可用时直接写库，保证下次登录仍能看到“已上传”
 		const bool notified = ChatGrpcClient::GetInstance()->NotifyImageReady(
 			task->_chat_msg_id, task->_uid, task->_touid, task->_thread_id, task->_name,
-			task->_unique_id, task->_total_size);
+			task->_unique_id, task->_total_size, task->_thread_type);
 		if (!notified) {
 			const bool updated = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
 				task->_chat_msg_id, task->_uid, 1);

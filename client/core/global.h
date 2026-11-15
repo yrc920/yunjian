@@ -14,7 +14,8 @@
  * @history
  *****************************************************************************/
 
-//简单的异或加密函数, 输入一个字符串, 返回加密后的字符串
+//密码发送前的可逆变形: 登录、注册、重置密码三条路径都必须先过一遍。
+//网关拿到字符串后直接做 Argon2 哈希, 库里存的也是变形值的哈希, 两端不能有一边发原文
 extern std::function<QString(QString)> xorString;
 
 //功能的id
@@ -75,6 +76,15 @@ enum ReqId{
     ID_NOTIFY_MSG_RECALLED = 1057, //对端撤回通知
     ID_DELETE_FRIEND_REQ = 1058, //删除好友（双向关系一起删，不通知对方）
     ID_DELETE_FRIEND_RSP = 1059, //删除好友回包
+    ID_CREATE_GROUP_REQ = 1060, //创建群聊：群名 + 勾选的好友
+    ID_CREATE_GROUP_RSP = 1061, //创建结果，带回 thread_id 与群资料
+    ID_GET_GROUP_INFO_REQ = 1062, //拉群资料与成员列表
+    ID_GET_GROUP_INFO_RSP = 1063, //群资料、成员与我自己的群设置
+    ID_UPDATE_GROUP_REQ = 1064, //改群名/公告、改我在本群的昵称、免打扰
+    ID_UPDATE_GROUP_RSP = 1065, //群设置修改回包
+    ID_GROUP_MEMBER_OP_REQ = 1066, //邀请、移除、设/撤管理员、退群、解散
+    ID_GROUP_MEMBER_OP_RSP = 1067, //成员操作回包
+    ID_NOTIFY_GROUP_CHANGED = 1068, //群资料/成员/被移出/解散的推送
 };
 
 //模块

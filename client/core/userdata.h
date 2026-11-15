@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <vector>
 #include <QJsonObject>
+#include <QMap>
 #include <QSet>
 #include <utility>
 #include <QMetaType>
@@ -130,12 +131,36 @@ enum class ChatMessageStatus : int {
     Read = 4,
 };
 
-//消息类型：文本走气泡，图片/文件直接显示资源
+//消息类型：文本走气泡，图片/文件直接显示资源，系统消息在群聊里居中显示
 enum class ChatMsgType : int {
     Text = 0,
     Image = 1,
     Video = 2,
     File = 3,
+    System = 4,
+};
+
+//会话类型：与 chat_thread.thread_type 一致，决定消息写到哪张表、名字从哪里取
+enum class ChatThreadKind : int {
+    Private = 1,
+    Group = 2,
+};
+
+//群成员角色：0 成员 / 1 管理员 / 2 群主，判断权限时统一用"大于等于"
+enum class GroupRole : int {
+    Member = 0,
+    Admin = 1,
+    Owner = 2,
+};
+
+//一次聊天操作的会话上下文。thread_id 是唯一标识，群聊没有"对方 uid"
+struct ConversationRef {
+    qint64 _thread_id = 0;
+    ChatThreadKind _kind = ChatThreadKind::Private;
+    int _peer_uid = 0;
+
+    bool IsGroup() const { return _kind == ChatThreadKind::Group; }
+    bool Valid() const { return _thread_id > 0; }
 };
 
 //图片/视频/文件在界面上的传输状态：图片只用到进度，视频与文件还要按状态显示按钮
@@ -154,8 +179,62 @@ enum class ResourceTransferState : int {
 struct ChatThreadData {
     explicit ChatThreadData(qint64 thread_id = 0) : _thread_id(thread_id) {}
 
+    //按 msgid 去重合并：同一条消息可能先以「发送中」进入列表，
+    //回执或历史同步再带服务端 message_id 回来，这里只做原地更新并重新排序
+    void AppendMsgs(const std::vector<std::shared_ptr<TextChatData>>& msgs);
+
     qint64 _thread_id = 0;
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
+};
+
+//群成员：账号资料来自服务端 user 表，群昵称只在这个群里生效
+struct GroupMember {
+    GroupMember() = default;
+    GroupMember(int uid, QString name, QString nick, QString icon, int sex, int role,
+                QString group_nick, qint64 joined_at = 0) :
+        _uid(uid), _name(std::move(name)), _nick(std::move(nick)), _icon(std::move(icon)),
+        _sex(sex), _role(role), _group_nick(std::move(group_nick)), _joined_at(joined_at) {}
+
+    int _uid = 0;
+    QString _name;
+    QString _nick;
+    QString _icon;
+    int _sex = 0;
+    int _role = static_cast<int>(GroupRole::Member);
+    QString _group_nick;
+    qint64 _joined_at = 0;
+
+    bool IsOwner() const { return _role == static_cast<int>(GroupRole::Owner); }
+    bool IsAdmin() const { return _role >= static_cast<int>(GroupRole::Admin); }
+};
+
+//一个群会话：群资料、我在这个群的角色与设置、成员索引，以及与其他会话一致的消息容器
+struct GroupInfo {
+    explicit GroupInfo(qint64 thread_id = 0) : _thread_id(thread_id),
+        _chat_thread(std::make_shared<ChatThreadData>(thread_id)) {}
+
+    qint64 _thread_id = 0;
+    QString _name;
+    QString _notice;
+    QString _my_nick; //我在本群的昵称，空表示用账号昵称
+    int _owner_id = 0;
+    int _my_role = static_cast<int>(GroupRole::Member);
+    bool _muted = false;
+    int _member_count = 0;
+    qint64 _created_at = 0;
+    qint64 _last_time = 0; //服务端下发的最后活动时间，历史拉回前用于首屏排序
+    int _unread = 0;
+    bool _at_me = false; //未读里有没有 @我，会话行据此显示"[有人@我]"
+    QMap<int, GroupMember> _member_map; //uid -> 成员资料，消息气泡按它取名字与头像
+    std::shared_ptr<ChatThreadData> _chat_thread;
+
+    bool IsOwner() const { return _my_role == static_cast<int>(GroupRole::Owner); }
+    bool IsAdmin() const { return _my_role >= static_cast<int>(GroupRole::Admin); }
+    const GroupMember *Member(int uid) const
+    {
+        const auto it = _member_map.constFind(uid);
+        return it == _member_map.constEnd() ? nullptr : &it.value();
+    }
 };
 
 struct FriendInfo {
@@ -180,8 +259,6 @@ struct FriendInfo {
         _chat_thread->_chat_msgs = auth_rsp->_welcome_msgs;
     }
 
-    void AppendChatMsgs(const std::vector<std::shared_ptr<TextChatData>> text_vec);
-
     int _uid;
     QString _name;
     QString _nick;
@@ -193,8 +270,6 @@ struct FriendInfo {
     QString _last_msg;
     //会话最后活动时间（UNIX 秒），登录首屏排序用；历史拉回后以最后一条消息时间为准
     qint64 _last_time = 0;
-    //服务端下发的未读条数，登录时恢复；之后由客户端本地增减
-    int _unread = 0;
     //是否仍在好友关系里：删好友后置 false，对象与历史保留，会话列表仍能看到
     bool _is_friend = true;
     std::shared_ptr<ChatThreadData> _chat_thread;
@@ -262,6 +337,8 @@ struct TextChatData{
     QString _thumb_name; //视频首帧资源名，接收方先下载它做预览
     QString _local_path; //完整资源在本机的位置，点开查看器/另存为时使用
     ResourceTransferState _transfer_state = ResourceTransferState::None;
+    //群消息 @ 到的成员 uid；自己的 uid 在里面时气泡高亮，会话行显示"有人@我"
+    QStringList _mentions;
     int _from_uid;
     int _to_uid;
     //服务端落库时间（UNIX 秒）。0 表示老数据或本地占位，界面按"刚刚"兜底
@@ -273,8 +350,9 @@ struct TextChatData{
 };
 
 struct TextChatMsg{
-    TextChatMsg(int fromuid, int touid, QJsonArray arrays, qint64 thread_id = 0):
-        _from_uid(fromuid),_to_uid(touid),_thread_id(thread_id){
+    TextChatMsg(int fromuid, int touid, QJsonArray arrays, qint64 thread_id = 0,
+                int thread_type = static_cast<int>(ChatThreadKind::Private)):
+        _from_uid(fromuid),_to_uid(touid),_thread_id(thread_id),_thread_type(thread_type){
         for(auto  msg_data : arrays){
             auto msg_obj = msg_data.toObject();
             auto content = msg_obj["content"].toString();
@@ -287,12 +365,17 @@ struct TextChatMsg{
                     static_cast<int>(ChatMessageStatus::Sent))));
             //实时消息也带服务端落库时间，时间条与列表排序都靠它
             msg_ptr->_time = msg_obj["time"].toVariant().toLongLong();
+            //@ 名单在 JSON 里是逗号串，转成 uid 列表供气泡高亮与会话行提示
+            const QString mentions = msg_obj["mentions"].toString();
+            for (const QString &uid : mentions.split(QLatin1Char(','), Qt::SkipEmptyParts))
+                msg_ptr->_mentions.append(uid.trimmed());
             _chat_msgs.push_back(msg_ptr);
         }
     }
     int _to_uid;
     int _from_uid;
     qint64 _thread_id = 0;
+    int _thread_type = static_cast<int>(ChatThreadKind::Private);
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
 };
 
@@ -315,6 +398,7 @@ struct UploadFileInfo {
     qint64 _chat_msg_id = 0;
     int _touid = 0;
     qint64 _thread_id = 0;
+    int _thread_type = 1; //1 单聊 / 2 群聊：资源服务器按它决定完成通知发给谁
     QString _unique_id;
 };
 

@@ -18,6 +18,7 @@
 #include "friendservice.h"
 #include "profileservice.h"
 #include "fileservice.h"
+#include "groupservice.h"
 #include "shellbridge.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
@@ -25,12 +26,10 @@
 
 ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
 {
+    _conversations = new ConversationModel(this);
     _friends = new FriendListModel(this);
     _applies = new ApplyListModel(this);
     _messages = new MessageModel(this);
-    //默认就停在会话模式：排序开关不会经过 setMode，必须在这里显式打开，
-    //否则登录后列表按加好友顺序排，看起来像"没有按时间排"
-    _friends->setSortByRecent(_mode == ChatMode);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
             this, &ChatBridge::myProfileChanged);
     //昵称/性别/签名改完后个人资料页与侧栏显示名一起刷新
@@ -51,6 +50,16 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     //未读总数变化：左侧栏徽标跟着刷新
     connect(UserMgr::GetInstance().get(), &UserMgr::UnreadChanged,
             this, &ChatBridge::unreadChanged);
+    //群资料或成员变化：当前会话的标题、副标题与群资料页一起刷新
+    connect(UserMgr::GetInstance().get(), &UserMgr::GroupInfoChanged, this,
+            [this](qint64 threadId) {
+                if (isGroup() && threadId == _currentThreadId)
+                    refreshConversationSnapshot();
+            });
+    connect(UserMgr::GetInstance().get(), &UserMgr::GroupListChanged, this, [this] {
+        if (isGroup())
+            refreshConversationSnapshot();
+    });
     //删好友回包：成功后从联系人列表移除，会话与历史保留；
     //删除后不能停在对方资料页上，会话页或空态二选一
     if (auto *tcp = TcpMgr::GetInstance().get()) {
@@ -160,9 +169,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
         if (!_friendQuery.trimmed().isEmpty())
             rebuildFriendMatches();
     });
-    connect(userMgr, &UserMgr::FriendChatChanged, this, [this](int) {
-        if (!_friendQuery.trimmed().isEmpty())
-            rebuildFriendMatches();
+    connect(userMgr, &UserMgr::ConversationChanged, this, [this](qint64, int) {
         //下载完成信号发出时 UserMgr 还持有自己的锁，排到事件循环末尾再复制文件
         if (!_pending_saves.isEmpty())
             QTimer::singleShot(0, this, [this] { processPendingSaves(); });
@@ -189,6 +196,84 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 mgr->AddSentApply(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify);
                 if (sameTarget)
                     setApplyState(ApplySent, tr("申请已发送，等待对方通过"));
+            });
+
+    // 群服务：建群、群资料、群设置与成员操作的回包都在这里落到界面状态
+    auto *groupService = GroupService::GetInstance().get();
+    connect(groupService, &GroupService::createFinished, this,
+            [this](bool ok, qint64 threadId, const QString &message) {
+                _createGroupBusy = false;
+                _createGroupMessage = message;
+                emit createGroupChanged();
+                if (!ok)
+                    return;
+                _createGroupOpen = false;
+                _createGroupMessage.clear();
+                emit createGroupChanged();
+                openGroup(threadId);
+            });
+    connect(groupService, &GroupService::infoLoaded, this,
+            [this](bool ok, qint64 threadId, const QString &message) {
+                if (ok && _pendingOpenGroup == threadId) {
+                    _pendingOpenGroup = 0;
+                    openGroup(threadId);
+                }
+                if (threadId != _currentThreadId || _pane != GroupInfoPage)
+                    return;
+                if (ok)
+                    _groupMessage.clear();
+                setGroupState(false, ok ? QString() : message);
+                emit groupChanged();
+            });
+    connect(groupService, &GroupService::updateFinished, this,
+            [this](bool ok, qint64 threadId, const QString &action, const QString &message) {
+                if (threadId != _currentThreadId)
+                    return;
+                setGroupState(false, ok ? QString() : message);
+                Q_UNUSED(action);
+            });
+    connect(groupService, &GroupService::memberOpFinished, this,
+            [this](bool ok, qint64 threadId, const QString &action, const QString &message) {
+                if (threadId != _currentThreadId)
+                    return;
+                setGroupState(false, message);
+                if (!ok)
+                    return;
+                if (action == "dismiss" || action == "leave") {
+                    if (action == "leave")
+                        UserMgr::GetInstance()->RemoveGroup(threadId);
+                    _currentThreadId = 0;
+                    _currentUid = 0;
+                    _currentKind = static_cast<int>(ChatThreadKind::Private);
+                    _currentName.clear();
+                    _currentSubtitle.clear();
+                    _messages->setConversation(0, 0, 0);
+                    setPane(EmptyPane);
+                    emit currentChanged();
+                    emit groupChanged();
+                }
+            });
+    connect(groupService, &GroupService::groupActivated, this,
+            [this](qint64 threadId) {
+                //被邀请后第一次拿到群：如果正停在这个群的资料页，补一次成员列表
+                if (threadId == _currentThreadId)
+                    emit groupChanged();
+            });
+    connect(groupService, &GroupService::groupRemoved, this,
+            [this](qint64 threadId, bool dismissed) {
+                _chatNotice = dismissed ? tr("群聊已解散") : tr("你已被移出群聊");
+                emit chatNoticeChanged();
+                if (threadId != _currentThreadId)
+                    return;
+                _currentThreadId = 0;
+                _currentUid = 0;
+                _currentKind = static_cast<int>(ChatThreadKind::Private);
+                _currentName.clear();
+                _currentSubtitle.clear();
+                _messages->setConversation(0, 0, 0);
+                setPane(EmptyPane);
+                emit currentChanged();
+                emit groupChanged();
             });
 
     // 我自己同意了别人的申请：直接进入会话，欢迎消息就是开场白
@@ -568,9 +653,9 @@ void ChatBridge::recallMessage(qint64 messageId)
     ChatService::GetInstance()->RecallMessage(messageId);
 }
 
-bool ChatBridge::retryMessage(int peerUid, const QString &msgId)
+bool ChatBridge::retryMessage(const QString &msgId)
 {
-    return ChatService::GetInstance()->RetryMessage(peerUid, msgId);
+    return ChatService::GetInstance()->RetryMessage(currentConversation(), msgId);
 }
 
 // 退出登录交给外壳处理：它负责切页与关闭会话，ChatBridge 只做转发
@@ -633,16 +718,19 @@ void ChatBridge::openChat(int uid)
 
     //已经停在这个会话上：只补拉资料与已读，不重置消息模型——
     //重置会把滚动位置打回第一条，长会话里非常难受
-    if (uid == _currentUid && _mode == ChatMode && _pane == ChatPage) {
+    if (uid == _currentUid && _currentKind == static_cast<int>(ChatThreadKind::Private)
+        && _mode == ChatMode && _pane == ChatPage) {
         ProfileService::GetInstance()->requestProfile(uid);
-        ChatService::GetInstance()->MarkSessionRead(uid);
+        ChatService::GetInstance()->MarkSessionRead(currentConversation());
         return;
     }
 
     closeAddFriend();
     clearFriendSearch();
 
+    _currentKind = static_cast<int>(ChatThreadKind::Private);
     _currentUid = uid;
+    _currentThreadId = info->_chat_thread ? info->_chat_thread->_thread_id : 0;
     ChatService::GetInstance()->ensurePrivateChat(uid);
     //标题与列表共用同一条显示名规则：备注 > 昵称 > 用户名
     _currentName = DisplayName(info->_back, info->_nick, info->_name);
@@ -650,16 +738,174 @@ void ChatBridge::openChat(int uid)
     //好友可能刚改过签名，打开会话时拉一次最新资料；失败继续用本地缓存
     ProfileService::GetInstance()->requestProfile(uid);
 
-    // 消息模型切到这个人，随后触发的 countChanged 会让界面滚到底
-    _messages->setFriend(uid);
+    // 消息模型切到这条会话，随后触发的 countChanged 会让界面滚到底
+    _messages->setConversation(_currentThreadId, _currentKind, uid);
     emit currentChanged();
+    emit groupChanged();
 
     setMode(ChatMode);
     setPane(ChatPage);
     // 进入会话即视为已读；之后的推送在 UserMgr 里会跳过这个会话
-    refreshActivePeer();
+    refreshActiveThread();
     // 历史可能已经在本地：先把当前已有的最后一条报上去，新消息到达时还会再报一次
-    ChatService::GetInstance()->MarkSessionRead(uid);
+    ChatService::GetInstance()->MarkSessionRead(currentConversation());
+}
+
+//打开群聊：thread_id 由会话行或建群回包给出。群资料还没到就先拉一次，
+//回来后在 infoLoaded 里补打开，避免把用户丢在空态
+void ChatBridge::openGroup(qint64 threadId)
+{
+    if (threadId <= 0)
+        return;
+    auto group = UserMgr::GetInstance()->GetGroup(threadId);
+    if (!group) {
+        _pendingOpenGroup = threadId;
+        GroupService::GetInstance()->RequestGroupInfo(threadId);
+        return;
+    }
+
+    if (threadId == _currentThreadId
+        && _currentKind == static_cast<int>(ChatThreadKind::Group)
+        && _mode == ChatMode && _pane == ChatPage) {
+        ChatService::GetInstance()->MarkSessionRead(currentConversation());
+        return;
+    }
+
+    closeAddFriend();
+    clearFriendSearch();
+    _pendingOpenGroup = 0;
+    _currentKind = static_cast<int>(ChatThreadKind::Group);
+    _currentUid = 0;
+    _currentThreadId = threadId;
+    _currentName = group->_name;
+    _currentSubtitle = group->_member_count > 0
+        ? tr("%1 人").arg(group->_member_count) : QString();
+
+    _messages->setConversation(threadId, _currentKind, 0);
+    emit currentChanged();
+    emit groupChanged();
+
+    setMode(ChatMode);
+    setPane(ChatPage);
+    refreshActiveThread();
+    ChatService::GetInstance()->MarkSessionRead(currentConversation());
+
+    //成员列表用于气泡名字与 @ 候选；没拉过就补一次
+    if (group->_member_map.isEmpty())
+        GroupService::GetInstance()->RequestGroupInfo(threadId);
+}
+
+ConversationRef ChatBridge::currentConversation() const
+{
+    ConversationRef conv;
+    conv._thread_id = _currentThreadId;
+    conv._kind = static_cast<ChatThreadKind>(_currentKind);
+    conv._peer_uid = _currentKind == static_cast<int>(ChatThreadKind::Private) ? _currentUid : 0;
+    return conv;
+}
+
+bool ChatBridge::isGroup() const
+{
+    return _currentKind == static_cast<int>(ChatThreadKind::Group);
+}
+
+QVariantMap ChatBridge::groupInfo() const
+{
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (!group)
+        return {};
+    return {
+        {QStringLiteral("threadId"), QVariant::fromValue(group->_thread_id)},
+        {QStringLiteral("name"), group->_name},
+        {QStringLiteral("notice"), group->_notice},
+        {QStringLiteral("owner"), group->_owner_id},
+        {QStringLiteral("memberCount"), group->_member_count},
+        {QStringLiteral("myRole"), group->_my_role},
+        {QStringLiteral("muted"), group->_muted},
+        {QStringLiteral("myNick"), group->_my_nick},
+        {QStringLiteral("createdAt"), QVariant::fromValue(group->_created_at)},
+    };
+}
+
+QVariantList ChatBridge::groupMembers() const
+{
+    QVariantList list;
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (!group)
+        return list;
+    const int self = UserMgr::GetInstance()->GetUid();
+    for (auto it = group->_member_map.cbegin(); it != group->_member_map.cend(); ++it) {
+        const GroupMember &member = it.value();
+        const QString name = !member._group_nick.isEmpty()
+            ? member._group_nick : DisplayName(QString(), member._nick, member._name);
+        list.append(QVariantMap{
+            {QStringLiteral("uid"), member._uid},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("account"), member._name},
+            {QStringLiteral("icon"), member._icon},
+            {QStringLiteral("role"), member._role},
+            {QStringLiteral("groupNick"), member._group_nick},
+            {QStringLiteral("initial"), name.isEmpty() ? QStringLiteral("?") : name.left(1)},
+            {QStringLiteral("isSelf"), member._uid == self},
+        });
+    }
+    return list;
+}
+
+//@ 候选：除自己外的全部成员，按资料页同一套显示名
+QVariantList ChatBridge::mentionCandidates() const
+{
+    QVariantList list;
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (!group)
+        return list;
+    const int self = UserMgr::GetInstance()->GetUid();
+    for (auto it = group->_member_map.cbegin(); it != group->_member_map.cend(); ++it) {
+        const GroupMember &member = it.value();
+        if (member._uid == self)
+            continue;
+        const QString name = !member._group_nick.isEmpty()
+            ? member._group_nick : DisplayName(QString(), member._nick, member._name);
+        list.append(QVariantMap{
+            {QStringLiteral("uid"), member._uid},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("icon"), member._icon},
+        });
+    }
+    return list;
+}
+
+bool ChatBridge::canManageGroup() const
+{
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    return group && group->IsAdmin();
+}
+
+bool ChatBridge::isGroupOwner() const
+{
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    return group && group->IsOwner();
+}
+
+void ChatBridge::refreshConversationSnapshot()
+{
+    if (isGroup()) {
+        auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+        if (!group)
+            return;
+        _currentName = group->_name;
+        _currentSubtitle = group->_member_count > 0
+            ? tr("%1 人").arg(group->_member_count) : QString();
+    }
+    else {
+        auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
+        if (!info)
+            return;
+        _currentName = DisplayName(info->_back, info->_nick, info->_name);
+        _currentSubtitle = info->_desc;
+    }
+    emit currentChanged();
+    emit groupChanged();
 }
 
 void ChatBridge::openProfile(int uid)
@@ -706,7 +952,7 @@ void ChatBridge::refreshFriendSnapshot(int uid)
     if (!info)
         return;
 
-    if (_currentUid == uid) {
+    if (!isGroup() && _currentUid == uid) {
         _currentName = DisplayName(info->_back, info->_nick, info->_name);
         _currentSubtitle = info->_desc;
         emit currentChanged();
@@ -727,21 +973,17 @@ void ChatBridge::setMode(int mode)
     if (_mode == mode)
         return;
     _mode = mode;
-    //标签筛选只作用于联系人列表；聊天模式必须看到全部会话
-    _friends->setFilterEnabled(mode == ContactMode);
-    //会话按最近消息排序，联系人保持加好友顺序
-    _friends->setSortByRecent(mode == ChatMode);
     //回到会话模式且仍停在会话页时，恢复"正在看"，否则新消息会被算成未读
-    refreshActivePeer();
+    refreshActiveThread();
     emit modeChanged();
 }
 
-//当前是否真的在看某个会话：只有会话模式 + 停在会话页 + 有对象时才成立。
+//当前是否真的在看某个会话：只有会话模式 + 停在会话页 + 有 thread 时才成立。
 //统一在这里判断，避免各个入口各写一份、切来切去把状态弄丢
-void ChatBridge::refreshActivePeer()
+void ChatBridge::refreshActiveThread()
 {
-    const bool viewing = _mode == ChatMode && _pane == ChatPage && _currentUid > 0;
-    UserMgr::GetInstance()->SetActivePeer(viewing ? _currentUid : 0);
+    const bool viewing = _mode == ChatMode && _pane == ChatPage && _currentThreadId > 0;
+    UserMgr::GetInstance()->SetActiveThread(viewing ? _currentThreadId : 0);
 }
 
 void ChatBridge::setPane(int pane)
@@ -750,7 +992,7 @@ void ChatBridge::setPane(int pane)
         return;
     _pane = pane;
     //只有真正停在会话页才算"正在看"；切到资料页/申请页后新消息重新计入未读
-    refreshActivePeer();
+    refreshActiveThread();
     emit paneChanged();
 }
 
@@ -758,8 +1000,11 @@ void ChatBridge::setPane(int pane)
 // 任意一段失败就返回 false，QML 因此保留输入内容
 bool ChatBridge::sendParts(const QVariantList &parts)
 {
-    auto *mgr = UserMgr::GetInstance().get();
-    if (!SessionService::GetInstance()->isReady() || !mgr->GetFriendById(_currentUid))
+    const ConversationRef conv = currentConversation();
+    const bool ready = conv._kind == ChatThreadKind::Group
+        ? UserMgr::GetInstance()->GetGroup(conv._thread_id) != nullptr
+        : UserMgr::GetInstance()->GetFriendById(conv._peer_uid) != nullptr;
+    if (!SessionService::GetInstance()->isReady() || !ready)
         return false;
 
     bool hasContent = false;
@@ -784,7 +1029,7 @@ bool ChatBridge::sendParts(const QVariantList &parts)
             return false;
     }
     //按编辑器顺序发送：文本分帧，图片先发 1031，视频/文件先发 1034；
-    //回执到达后再把资源交给资源服务器
+    //回执到达后再把资源交给资源服务器。@ 名单只挂在文本段上
     QStringList sent_uploads; //整批成功后才删输入区的临时压缩图
     for (const QVariant &part : parts) {
         const QVariantMap item = part.toMap();
@@ -792,26 +1037,27 @@ bool ChatBridge::sendParts(const QVariantList &parts)
         if (kind == "image") {
             const QString upload = item.value("upload").toString();
             //source 是气泡缩略图，upload 是输入区预先压缩好的上传文件
-            if (!ChatService::GetInstance()->sendImage(_currentUid, item.value("source").toString(),
+            if (!ChatService::GetInstance()->sendImage(conv, item.value("source").toString(),
                     upload, item.value("width").toInt(), item.value("height").toInt()))
                 return false;
             if (!upload.isEmpty())
                 sent_uploads.append(upload);
         }
         else if (kind == "video") {
-            if (!ChatService::GetInstance()->sendVideo(_currentUid,
+            if (!ChatService::GetInstance()->sendVideo(conv,
                     item.value("path").toString(), item.value("name").toString(),
                     item.value("size").toLongLong()))
                 return false;
         }
         else if (kind == "file") {
-            if (!ChatService::GetInstance()->sendFile(_currentUid,
+            if (!ChatService::GetInstance()->sendFile(conv,
                     item.value("path").toString(), item.value("name").toString(),
                     item.value("size").toLongLong()))
                 return false;
         }
-        else if (!ChatService::GetInstance()->sendText(_currentUid,
-                     item.value("text").toString())) {
+        else if (!ChatService::GetInstance()->sendText(conv,
+                     item.value("text").toString(),
+                     item.value("mentions").toStringList())) {
             return false;
         }
     }
@@ -1019,11 +1265,11 @@ bool ChatBridge::copyImage(qint64 messageId, const QUrl &fallback)
 QVariantList ChatBridge::mediaItems()
 {
     QVariantList items;
-    auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
-    if (!info || !info->_chat_thread)
+    auto thread = UserMgr::GetInstance()->ThreadData(_currentThreadId);
+    if (!thread)
         return items;
 
-    for (const auto &message : info->_chat_thread->_chat_msgs) {
+    for (const auto &message : thread->_chat_msgs) {
         if (!message)
             continue;
         if (message->_msg_type == ChatMsgType::Image) {
@@ -1058,4 +1304,170 @@ QVariantList ChatBridge::mediaItems()
         }
     }
     return items;
+}
+
+// ---- 群聊 ----
+
+//候选人是全部好友：群只能从好友里发起，和微信一致
+QVariantList ChatBridge::groupCandidates() const
+{
+    QVariantList list;
+    auto *mgr = UserMgr::GetInstance().get();
+    const int count = mgr->FriendCount();
+    for (int i = 0; i < count; ++i) {
+        auto info = mgr->FriendAt(i);
+        if (!info)
+            continue;
+        const QString name = DisplayName(info->_back, info->_nick, info->_name);
+        list.append(QVariantMap{
+            {QStringLiteral("uid"), info->_uid},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("account"), info->_name},
+            {QStringLiteral("icon"), info->_icon},
+            {QStringLiteral("initial"), name.isEmpty() ? QStringLiteral("?") : name.left(1)},
+        });
+    }
+    return list;
+}
+
+void ChatBridge::openCreateGroup()
+{
+    _createGroupOpen = true;
+    _createGroupBusy = false;
+    _createGroupMessage.clear();
+    emit createGroupChanged();
+}
+
+void ChatBridge::closeCreateGroup()
+{
+    //请求在途时不允许关掉，回包还要落到界面上；已经关过就不再重复发信号
+    if (_createGroupBusy || !_createGroupOpen)
+        return;
+    _createGroupOpen = false;
+    _createGroupMessage.clear();
+    emit createGroupChanged();
+}
+
+void ChatBridge::createGroup(const QString &name, const QVariantList &uids)
+{
+    if (_createGroupBusy)
+        return;
+    QList<int> members;
+    for (const QVariant &value : uids) {
+        const int uid = value.toInt();
+        if (uid > 0 && !members.contains(uid))
+            members.append(uid);
+    }
+    if (members.isEmpty()) {
+        _createGroupMessage = tr("至少选择一位好友");
+        emit createGroupChanged();
+        return;
+    }
+    _createGroupBusy = true;
+    _createGroupMessage = tr("正在创建…");
+    emit createGroupChanged();
+    GroupService::GetInstance()->CreateGroup(name.trimmed(), members);
+}
+
+//群资料页：从聊天标题进入，进页先保证成员列表是最新的
+void ChatBridge::openGroupInfo()
+{
+    if (!isGroup() || _currentThreadId <= 0)
+        return;
+    setMode(ChatMode);
+    setPane(GroupInfoPage);
+    _groupMessage.clear();
+    setGroupState(false, QString());
+    GroupService::GetInstance()->RequestGroupInfo(_currentThreadId);
+}
+
+void ChatBridge::backToChat()
+{
+    if (_currentThreadId <= 0)
+        return;
+    setMode(ChatMode);
+    setPane(ChatPage);
+    refreshActiveThread();
+}
+
+void ChatBridge::updateGroupField(const QString &action, const QString &value)
+{
+    if (!isGroup() || _currentThreadId <= 0)
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->UpdateGroup(_currentThreadId, action, value);
+}
+
+void ChatBridge::toggleGroupMute()
+{
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (!group)
+        return;
+    updateGroupField(QStringLiteral("mute"), group->_muted ? QStringLiteral("0")
+                                                          : QStringLiteral("1"));
+}
+
+void ChatBridge::inviteGroupMembers(const QVariantList &uids)
+{
+    if (!isGroup() || _currentThreadId <= 0)
+        return;
+    QList<int> members;
+    for (const QVariant &value : uids) {
+        const int uid = value.toInt();
+        if (uid > 0 && !members.contains(uid))
+            members.append(uid);
+    }
+    if (members.isEmpty())
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->InviteMembers(_currentThreadId, members);
+}
+
+void ChatBridge::removeGroupMember(int uid)
+{
+    if (!isGroup() || _currentThreadId <= 0 || uid <= 0)
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->RemoveMember(_currentThreadId, uid);
+}
+
+void ChatBridge::setGroupAdmin(int uid, bool admin)
+{
+    if (!isGroup() || _currentThreadId <= 0 || uid <= 0)
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->SetAdmin(_currentThreadId, uid, admin);
+}
+
+void ChatBridge::leaveGroup()
+{
+    if (!isGroup() || _currentThreadId <= 0)
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->LeaveGroup(_currentThreadId);
+}
+
+void ChatBridge::dismissGroup()
+{
+    if (!isGroup() || _currentThreadId <= 0)
+        return;
+    setGroupState(true, QString());
+    GroupService::GetInstance()->DismissGroup(_currentThreadId);
+}
+
+void ChatBridge::clearGroupMessage()
+{
+    if (_groupMessage.isEmpty())
+        return;
+    _groupMessage.clear();
+    emit groupStateChanged();
+}
+
+void ChatBridge::setGroupState(bool busy, const QString &message)
+{
+    _groupBusy = busy;
+    //成功时不带文案，失败时保留服务端的原因
+    if (!message.isEmpty())
+        _groupMessage = message;
+    emit groupStateChanged();
 }

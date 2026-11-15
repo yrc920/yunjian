@@ -118,7 +118,8 @@ bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &d
     return changed;
 }
 
-//对端已读：只处理自己发的、已经有服务端消息号的那些，回执没回来的不参与
+//对端已读：只处理自己发的、已经有服务端消息号的那些，回执没回来的不参与。
+//群聊不做逐条已读，这条路径只服务单聊
 bool UserMgr::MarkMessagesReadTo(int peer_uid, qint64 last_read_id)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -140,75 +141,90 @@ bool UserMgr::MarkMessagesReadTo(int peer_uid, qint64 last_read_id)
     }
 
     if (changed)
-        emit FriendChatChanged(peer_uid);
+        emit ConversationChanged((*find_it)->_chat_thread->_thread_id, peer_uid);
     return changed;
 }
 
-//撤回：正文与资源一起清掉，只留一条可渲染的提示，避免旧图片还留在界面或磁盘上被点开
-bool UserMgr::MarkMessageRecalled(int peer_uid, qint64 message_id)
+//撤回：正文与资源一起清掉，只留一条可渲染的提示，避免旧图片还留在界面或磁盘上被点开。
+//消息号全局唯一，先找单聊再找群聊，调用方不需要知道会话类型
+bool UserMgr::MarkMessageRecalled(qint64 message_id)
 {
-    std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto find_it = _friend_map.find(peer_uid);
-    if (find_it == _friend_map.end() || !(*find_it) || message_id <= 0)
+    if (message_id <= 0)
         return false;
-
-    for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
-        if (!msg || msg->_message_id != message_id || msg->_recalled)
-            continue;
-        msg->_recalled = true;
-        //自己撤回时留一份原文，供「重新编辑」；对方撤回时本地本来就没有原文
-        if (msg->_from_uid == (_user_info ? _user_info->_uid : 0))
-            msg->_recalled_text = msg->_msg_content;
-        msg->_msg_content.clear();
-        msg->_msg_type = ChatMsgType::Text;
-        msg->_imageSource.clear();
-        msg->_imageWidth = 0;
-        msg->_imageHeight = 0;
-        msg->_file_name.clear();
-        msg->_file_size = 0;
-        msg->_thumb_name.clear();
-        msg->_transferProgress = -1;
-        msg->_transfer_state = ResourceTransferState::None;
-        emit FriendChatChanged(peer_uid);
-        return true;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    const int self_uid = _user_info ? _user_info->_uid : 0;
+    auto recall = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return false;
+        for (const auto &msg : thread->_chat_msgs) {
+            if (!msg || msg->_message_id != message_id || msg->_recalled)
+                continue;
+            msg->_recalled = true;
+            //自己撤回时留一份原文，供「重新编辑」；别人撤回时本地本来就没有原文
+            if (msg->_from_uid == self_uid)
+                msg->_recalled_text = msg->_msg_content;
+            msg->_msg_content.clear();
+            msg->_msg_type = ChatMsgType::Text;
+            msg->_imageSource.clear();
+            msg->_imageWidth = 0;
+            msg->_imageHeight = 0;
+            msg->_file_name.clear();
+            msg->_file_size = 0;
+            msg->_thumb_name.clear();
+            msg->_transferProgress = -1;
+            msg->_transfer_state = ResourceTransferState::None;
+            emit ConversationChanged(thread->_thread_id, peer);
+            return true;
+        }
+        return false;
+    };
+    for (const auto &info : _friend_list) {
+        if (info && recall(info->_chat_thread, info->_uid))
+            return true;
+    }
+    for (const auto &group : _group_list) {
+        if (group && recall(group->_chat_thread, 0))
+            return true;
     }
     return false;
 }
 
 //发送超时或回执报错：只改状态，内容保留，用户可以直接重发
-bool UserMgr::MarkMessageFailed(int friend_id, const QString &msg_id)
+bool UserMgr::MarkMessageFailed(const ConversationRef &conv, const QString &msg_id)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto find_it = _friend_map.find(friend_id);
-    if (find_it == _friend_map.end() || !(*find_it))
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return false;
 
-    for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
+    for (const auto &msg : thread->_chat_msgs) {
         if (!msg || msg->_msg_id != msg_id || msg->_status != ChatMessageStatus::Sending)
             continue;
         msg->_status = ChatMessageStatus::Failed;
-        emit FriendChatChanged(friend_id);
+        emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return true;
     }
     return false;
 }
 
 //重发前先移除旧的失败记录：沿用同一条会让界面出现两条相同内容
-bool UserMgr::RemoveChatMessage(int friend_id, const QString &msg_id)
+bool UserMgr::RemoveChatMessage(const ConversationRef &conv, const QString &msg_id)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto find_it = _friend_map.find(friend_id);
-    if (find_it == _friend_map.end() || !(*find_it))
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return false;
 
-    auto &msgs = (*find_it)->_chat_thread->_chat_msgs;
+    auto &msgs = thread->_chat_msgs;
     auto iter = std::find_if(msgs.begin(), msgs.end(), [&msg_id](const auto &msg) {
         return msg && msg->_msg_id == msg_id;
     });
     if (iter == msgs.end())
         return false;
     msgs.erase(iter);
-    emit FriendChatChanged(friend_id);
+    emit ConversationChanged(thread->_thread_id, conv._peer_uid);
     return true;
 }
 
@@ -232,29 +248,63 @@ void UserMgr::RestoreFriend(int uid)
     emit FriendTagsChanged();
 }
 
-//未读只对"对方发来的消息"累加；正在看的会话由 SetActivePeer 直接清零，不计数
-void UserMgr::IncUnread(int uid)
+//未读只对"别人发来的消息"累加；正在看的会话由 SetActiveThread 直接清零，不计数
+void UserMgr::IncThreadUnread(qint64 thread_id)
 {
-    if (uid <= 0 || uid == _active_peer)
+    if (thread_id <= 0 || thread_id == _active_thread)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    ++_unread[uid];
+    ++_unread[thread_id];
     emit UnreadChanged();
 }
 
-void UserMgr::ClearUnread(int uid)
+void UserMgr::ClearThreadUnread(qint64 thread_id)
 {
-    if (uid <= 0)
+    if (thread_id <= 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    if (_unread.remove(uid) > 0)
+    bool changed = _unread.remove(thread_id) > 0;
+    //@提醒跟着未读一起清：会话行不该在读完消息后还挂着"[有人@我]"
+    changed = _at_me_threads.remove(thread_id) || changed;
+    if (changed)
         emit UnreadChanged();
 }
 
-int UserMgr::UnreadCount(int uid) const
+int UserMgr::ThreadUnread(qint64 thread_id) const
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    return _unread.value(uid, 0);
+    return _unread.value(thread_id, 0);
+}
+
+bool UserMgr::ThreadAtMe(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _at_me_threads.contains(thread_id);
+}
+
+void UserMgr::MarkThreadAtMe(qint64 thread_id)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (_at_me_threads.contains(thread_id))
+        return;
+    _at_me_threads.insert(thread_id);
+    emit UnreadChanged();
+}
+
+void UserMgr::EnsureGroup(qint64 thread_id)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (_group_map.contains(thread_id))
+        return;
+    auto group = std::make_shared<GroupInfo>(thread_id);
+    group->_name = QStringLiteral("群聊");
+    _group_map[thread_id] = group;
+    _group_list.push_back(group);
+    emit GroupListChanged();
 }
 
 int UserMgr::UnreadTotal() const
@@ -267,13 +317,13 @@ int UserMgr::UnreadTotal() const
 }
 
 //切换当前会话：进入时清零未读，离开时置0；同一会话重复调用不会重复通知
-void UserMgr::SetActivePeer(int uid)
+void UserMgr::SetActiveThread(qint64 thread_id)
 {
-    if (_active_peer == uid)
+    if (_active_thread == thread_id)
         return;
-    _active_peer = uid;
-    if (uid > 0)
-        ClearUnread(uid);
+    _active_thread = thread_id;
+    if (thread_id > 0)
+        ClearThreadUnread(thread_id);
 }
 
 //所有好友标签去重后按名称排序，空标签不会出现在筛选条里
@@ -718,20 +768,26 @@ void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
     emit FriendListChanged();
 }
 
-void UserMgr::AppendFriendChatMsg(int friend_id, std::vector<std::shared_ptr<TextChatData>> msgs)
+//按会话追加消息：单聊写好友对象里的容器，群聊写群对象。
+//找到容器后统一走 ChatThreadData::AppendMsgs，去重、覆盖回执字段与排序只维护一份
+void UserMgr::AppendChatMsgs(const ConversationRef &conv,
+                             std::vector<std::shared_ptr<TextChatData>> msgs)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto find_iter = _friend_map.find(friend_id);
-    if(find_iter == _friend_map.end()){
-        qDebug()<<"append friend uid  " << friend_id << " not found";
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread) {
+        qDebug() << "append chat msg, thread" << conv._thread_id << "not found";
         return;
     }
-
-    find_iter.value()->AppendChatMsgs(msgs);
-    emit FriendChatChanged(friend_id);
+    thread->AppendMsgs(msgs);
+    if (conv._thread_id > 0)
+        thread->_thread_id = conv._thread_id;
+    emit ConversationChanged(thread->_thread_id, conv._peer_uid);
 }
 
-//登录返回的会话列表是当前账号的完整结果，先清空旧映射再逐条写入
+//登录返回的会话列表是当前账号的完整结果，先清空旧映射再逐条写入。
+//单聊只重置 thread_id，群聊由 AppendChatThreads 新建或更新对象
 void UserMgr::SetChatThreads(const QJsonArray &threads)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -742,13 +798,23 @@ void UserMgr::SetChatThreads(const QJsonArray &threads)
     emit FriendListChanged();
 }
 
-//只补 thread_id：会话里的消息由 1029 单独拉取
+//会话列表同时含单聊与群聊：按 thread_type 分流，未读与最后活动时间都按 thread 记
 void UserMgr::AppendChatThreads(const QJsonArray &threads)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &value : threads) {
         const QJsonObject item = value.toObject();
+        const qint64 thread_id = item.value("thread_id").toVariant().toLongLong();
+        if (thread_id <= 0)
+            continue;
+        if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group)) {
+            UpsertGroupThread(item);
+            continue;
+        }
+
         const int uid = item.value("uid").toInt();
+        if (uid <= 0)
+            continue;
         auto info = GetFriendById(uid);
         if (!info) {
             //已删好友但服务端仍有会话：保留一个"非好友"对象，会话列表照样能看到历史
@@ -758,16 +824,15 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
             info->_is_friend = false;
             _friend_map[uid] = info;
         }
-        info->_chat_thread->_thread_id = item.value("thread_id").toVariant().toLongLong();
+        info->_chat_thread->_thread_id = thread_id;
         //会话最后活动时间只用于首屏排序，拉回历史后会被真实消息时间覆盖
         info->_last_time = item.value("time").toVariant().toLongLong();
         //未读以服务端为准：登录时恢复，之后由本地收到消息与打开会话增减
         const int unread = item.value("unread").toInt(0);
-        info->_unread = unread;
         if (unread > 0)
-            _unread[uid] = unread;
+            _unread[thread_id] = unread;
         else
-            _unread.remove(uid);
+            _unread.remove(thread_id);
     }
     emit UnreadChanged();
 }
@@ -807,37 +872,89 @@ void UserMgr::MarkPrivateChatPending(int friend_id, bool pending)
         _pending_private_chats.remove(friend_id);
 }
 
+//按会话找消息容器：群聊查群索引，单聊先按 thread 再按对方 uid 回落
+std::shared_ptr<ChatThreadData> UserMgr::findThreadData(qint64 thread_id) const
+{
+    if (thread_id <= 0)
+        return {};
+    auto group = _group_map.constFind(thread_id);
+    if (group != _group_map.constEnd())
+        return (*group)->_chat_thread;
+    for (const auto &info : _friend_list) {
+        if (info && info->_chat_thread->_thread_id == thread_id)
+            return info->_chat_thread;
+    }
+    for (auto it = _friend_map.cbegin(); it != _friend_map.cend(); ++it) {
+        if (it.value() && it.value()->_chat_thread->_thread_id == thread_id)
+            return it.value()->_chat_thread;
+    }
+    return {};
+}
+
+bool UserMgr::resolveConversation(const ConversationRef &conv,
+                                  std::shared_ptr<ChatThreadData> &data,
+                                  ChatThreadKind &kind) const
+{
+    kind = conv._kind;
+    if (conv._kind == ChatThreadKind::Group) {
+        auto it = _group_map.constFind(conv._thread_id);
+        if (it == _group_map.constEnd() || !(*it))
+            return false;
+        data = (*it)->_chat_thread;
+        return true;
+    }
+
+    //单聊优先按 thread_id 找；刚加好友还没建会话时用对方 uid 回落到好友对象
+    if (conv._thread_id > 0) {
+        auto thread = findThreadData(conv._thread_id);
+        if (thread) {
+            data = thread;
+            return true;
+        }
+    }
+    auto it = _friend_map.constFind(conv._peer_uid);
+    if (it == _friend_map.constEnd() || !(*it))
+        return false;
+    data = (*it)->_chat_thread;
+    return true;
+}
+
 //发送回执按 msgid 找到原消息，补上服务端 ID 和状态；
 //待确认消息原本排在末尾，拿到 ID 后要重新排序才能落到正确位置
-void UserMgr::UpdateChatMessage(int friend_id, const QString &msg_id, qint64 message_id,
-                                ChatMessageStatus status)
+void UserMgr::UpdateChatMessage(const ConversationRef &conv, const QString &msg_id,
+                                qint64 message_id, ChatMessageStatus status)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto info = GetFriendById(friend_id);
-    if (!info)
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return;
-    for (auto &message : info->_chat_thread->_chat_msgs) {
-        if (message->_msg_id != msg_id)
+    for (const auto &message : thread->_chat_msgs) {
+        if (!message || message->_msg_id != msg_id)
             continue;
         if (message_id > 0)
             message->_message_id = message_id;
+        if (conv._thread_id > 0)
+            message->_thread_id = conv._thread_id;
         message->_status = status;
-        info->AppendChatMsgs({message});
-        emit FriendChatChanged(friend_id);
+        thread->AppendMsgs({message});
+        emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return;
     }
 }
 
 //资源上传是异步的：网络线程按资源名回推进度，同一资源可能被多条消息引用，
-//所以遍历所有会话一次性更新，再按好友逐个通知模型
+//所以遍历所有会话一次性更新，再按会话逐个通知模型
 void UserMgr::UpdateResourceUploadProgress(const QString &resource_name, qint64 trans, qint64 total)
 {
     if (resource_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name)
                 continue;
             //只推进还在发送中的消息；同内容的旧消息已经完成，不能被这次上传重新改成发送中
@@ -850,8 +967,12 @@ void UserMgr::UpdateResourceUploadProgress(const QString &resource_name, qint64 
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 void UserMgr::FinishResourceUpload(const QString &resource_name)
@@ -859,9 +980,11 @@ void UserMgr::FinishResourceUpload(const QString &resource_name)
     if (resource_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name
                 || message->_status != ChatMessageStatus::Sending)
                 continue;
@@ -871,8 +994,12 @@ void UserMgr::FinishResourceUpload(const QString &resource_name)
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 void UserMgr::FailResourceUpload(const QString &resource_name)
@@ -880,9 +1007,11 @@ void UserMgr::FailResourceUpload(const QString &resource_name)
     if (resource_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name
                 || message->_status != ChatMessageStatus::Sending)
                 continue;
@@ -892,8 +1021,12 @@ void UserMgr::FailResourceUpload(const QString &resource_name)
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 std::shared_ptr<UploadFileInfo> UserMgr::GetUploadFileByName(const QString &name) const
@@ -907,16 +1040,18 @@ std::shared_ptr<UploadFileInfo> UserMgr::GetUploadFileByName(const QString &name
 }
 
 //接收方收到资源通知：历史里可能已经有同一 msgid 的消息，只补齐字段，不重复插入
-void UserMgr::UpsertResourceMessage(int friend_id, std::shared_ptr<TextChatData> message)
+void UserMgr::UpsertResourceMessage(const ConversationRef &conv,
+                                    std::shared_ptr<TextChatData> message)
 {
     if (!message)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto info = GetFriendById(friend_id);
-    if (!info)
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return;
 
-    for (auto &existing : info->_chat_thread->_chat_msgs) {
+    for (auto &existing : thread->_chat_msgs) {
         if (!existing || existing->_msg_id != message->_msg_id)
             continue;
         if (message->_message_id > 0)
@@ -941,11 +1076,11 @@ void UserMgr::UpsertResourceMessage(int friend_id, std::shared_ptr<TextChatData>
             existing->_transfer_state = message->_transfer_state;
             existing->_transferProgress = message->_transferProgress;
         }
-        info->AppendChatMsgs({existing}); //拿到服务端 ID 后重新排序
-        emit FriendChatChanged(friend_id);
+        thread->AppendMsgs({existing}); //拿到服务端 ID 后重新排序
+        emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return;
     }
-    AppendFriendChatMsg(friend_id, {message});
+    AppendChatMsgs(conv, {message});
 }
 
 //下载进度只更新还没有完成的资源消息，已经显示出来的图片不再回退
@@ -954,9 +1089,11 @@ void UserMgr::UpdateResourceDownloadProgress(const QString &resource_name, qint6
     if (resource_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name)
                 continue;
             if (message->_transfer_state == ResourceTransferState::Done)
@@ -968,8 +1105,12 @@ void UserMgr::UpdateResourceDownloadProgress(const QString &resource_name, qint6
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 //下载完成：图片把气泡换成缩略图；视频/文件只记录完整资源位置与完成状态
@@ -981,9 +1122,11 @@ void UserMgr::FinishResourceDownload(const QString &resource_name, const QString
     const QString url = display_path.isEmpty()
         ? QString() : QUrl::fromLocalFile(display_path).toString();
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name)
                 continue;
             if (!local_path.isEmpty())
@@ -998,8 +1141,12 @@ void UserMgr::FinishResourceDownload(const QString &resource_name, const QString
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 void UserMgr::FailResourceDownload(const QString &resource_name)
@@ -1007,9 +1154,11 @@ void UserMgr::FailResourceDownload(const QString &resource_name)
     if (resource_name.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_resource_name != resource_name)
                 continue;
             if (message->_transfer_state == ResourceTransferState::Done)
@@ -1019,8 +1168,12 @@ void UserMgr::FailResourceDownload(const QString &resource_name)
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 //视频首帧是独立资源：下载完成后只换预览，视频本体仍等用户点击下载
@@ -1031,9 +1184,11 @@ void UserMgr::SetVideoThumb(const QString &thumb_name, const QString &local_path
         return;
     const QString url = QUrl::fromLocalFile(local_path).toString();
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto update = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread)
+            return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_msg_type != ChatMsgType::Video
                 || message->_thumb_name != thumb_name)
                 continue;
@@ -1043,8 +1198,12 @@ void UserMgr::SetVideoThumb(const QString &thumb_name, const QString &local_path
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
-    }
+            emit ConversationChanged(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list)
+        if (info) update(info->_chat_thread, info->_uid);
+    for (const auto &group : _group_list)
+        if (group) update(group->_chat_thread, 0);
 }
 
 void UserMgr::SetResourceState(qint64 message_id, ResourceTransferState state, int progress)
@@ -1053,67 +1212,92 @@ void UserMgr::SetResourceState(qint64 message_id, ResourceTransferState state, i
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
+        if (!info) continue;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
             if (!message || message->_message_id != message_id)
                 continue;
             message->_transfer_state = state;
             message->_transferProgress = progress;
-            emit FriendChatChanged(info->_uid);
+            emit ConversationChanged(info->_chat_thread->_thread_id, info->_uid);
+            return;
+        }
+    }
+    for (const auto &group : _group_list) {
+        if (!group) continue;
+        for (const auto &message : group->_chat_thread->_chat_msgs) {
+            if (!message || message->_message_id != message_id)
+                continue;
+            message->_transfer_state = state;
+            message->_transferProgress = progress;
+            emit ConversationChanged(group->_thread_id, 0);
             return;
         }
     }
 }
 
-void UserMgr::SetResourceStateByUniqueId(int friend_id, const QString &msg_id,
+void UserMgr::SetResourceStateByUniqueId(const ConversationRef &conv, const QString &msg_id,
                                          ResourceTransferState state, int progress)
 {
     if (msg_id.isEmpty())
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto info = GetFriendById(friend_id);
-    if (!info)
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return;
-    for (const auto &message : info->_chat_thread->_chat_msgs) {
+    for (const auto &message : thread->_chat_msgs) {
         if (!message || message->_msg_id != msg_id)
             continue;
         message->_transfer_state = state;
         message->_transferProgress = progress;
-        emit FriendChatChanged(friend_id);
+        emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return;
     }
 }
 
-void UserMgr::SetLocalVideoThumb(int friend_id, const QString &msg_id, const QString &local_path,
-                                 const QSize &pixel_size)
+void UserMgr::SetLocalVideoThumb(const ConversationRef &conv, const QString &msg_id,
+                                 const QString &local_path, const QSize &pixel_size)
 {
     if (msg_id.isEmpty() || local_path.isEmpty())
         return;
     const QString url = QUrl::fromLocalFile(local_path).toString();
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto info = GetFriendById(friend_id);
-    if (!info)
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return;
-    for (const auto &message : info->_chat_thread->_chat_msgs) {
+    for (const auto &message : thread->_chat_msgs) {
         if (!message || message->_msg_id != msg_id)
             continue;
         message->_imageSource = url;
         message->_imageWidth = pixel_size.width();
         message->_imageHeight = pixel_size.height();
-        emit FriendChatChanged(friend_id);
+        emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return;
     }
 }
 
-std::shared_ptr<TextChatData> UserMgr::FindMessage(qint64 message_id, int *friend_id) const
+std::shared_ptr<TextChatData> UserMgr::FindMessage(qint64 message_id, qint64 *thread_id) const
 {
     if (message_id <= 0)
         return {};
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
+        if (!info) continue;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
             if (message && message->_message_id == message_id) {
-                if (friend_id)
-                    *friend_id = info->_uid;
+                if (thread_id)
+                    *thread_id = info->_chat_thread->_thread_id;
+                return message;
+            }
+        }
+    }
+    for (const auto &group : _group_list) {
+        if (!group) continue;
+        for (const auto &message : group->_chat_thread->_chat_msgs) {
+            if (message && message->_message_id == message_id) {
+                if (thread_id)
+                    *thread_id = group->_thread_id;
                 return message;
             }
         }
@@ -1122,16 +1306,27 @@ std::shared_ptr<TextChatData> UserMgr::FindMessage(qint64 message_id, int *frien
 }
 
 std::shared_ptr<TextChatData> UserMgr::FindMessageByUniqueId(const QString &msg_id,
-                                                             int *friend_id) const
+                                                             qint64 *thread_id) const
 {
     if (msg_id.isEmpty())
         return {};
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list) {
+        if (!info) continue;
         for (const auto &message : info->_chat_thread->_chat_msgs) {
             if (message && message->_msg_id == msg_id) {
-                if (friend_id)
-                    *friend_id = info->_uid;
+                if (thread_id)
+                    *thread_id = info->_chat_thread->_thread_id;
+                return message;
+            }
+        }
+    }
+    for (const auto &group : _group_list) {
+        if (!group) continue;
+        for (const auto &message : group->_chat_thread->_chat_msgs) {
+            if (message && message->_msg_id == msg_id) {
+                if (thread_id)
+                    *thread_id = group->_thread_id;
                 return message;
             }
         }
@@ -1145,27 +1340,35 @@ void UserMgr::MarkResourceMissing(qint64 message_id)
     if (message_id <= 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
+    auto touch = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
+        if (!thread) return false;
+        for (const auto &message : thread->_chat_msgs) {
             if (!message || message->_message_id != message_id)
                 continue;
             message->_local_path.clear();
             message->_transfer_state = ResourceTransferState::None;
             message->_transferProgress = -1;
-            emit FriendChatChanged(info->_uid);
-            return;
+            emit ConversationChanged(thread->_thread_id, peer);
+            return true;
         }
-    }
+        return false;
+    };
+    for (const auto &info : _friend_list)
+        if (info && touch(info->_chat_thread, info->_uid)) return;
+    for (const auto &group : _group_list)
+        if (group && touch(group->_chat_thread, 0)) return;
 }
 
 //断线时把所有还在「发送中」的消息标失败，避免界面一直转圈
 void UserMgr::FailPendingMessages()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (const auto &info : _friend_list) {
+    auto fail = [](const std::shared_ptr<ChatThreadData> &thread, int peer,
+                   std::function<void(qint64, int)> notify) {
+        if (!thread) return;
         bool changed = false;
-        for (const auto &message : info->_chat_thread->_chat_msgs) {
-            if (message->_status != ChatMessageStatus::Sending)
+        for (const auto &message : thread->_chat_msgs) {
+            if (!message || message->_status != ChatMessageStatus::Sending)
                 continue;
             message->_status = ChatMessageStatus::Failed;
             //视频/文件可能停在准备或上传阶段，状态一起复位，否则卡片会一直显示“准备中”
@@ -1180,7 +1383,19 @@ void UserMgr::FailPendingMessages()
             changed = true;
         }
         if (changed)
-            emit FriendChatChanged(info->_uid);
+            notify(thread->_thread_id, peer);
+    };
+    for (const auto &info : _friend_list) {
+        if (!info) continue;
+        fail(info->_chat_thread, info->_uid, [this](qint64 thread, int peer) {
+            emit ConversationChanged(thread, peer);
+        });
+    }
+    for (const auto &group : _group_list) {
+        if (!group) continue;
+        fail(group->_chat_thread, 0, [this](qint64 thread, int peer) {
+            emit ConversationChanged(thread, peer);
+        });
     }
 }
 
@@ -1196,22 +1411,269 @@ int UserMgr::FriendIdByThread(qint64 thread_id) const
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     for (const auto &info : _friend_list)
-        if (info->_chat_thread->_thread_id == thread_id)
+        if (info && info->_chat_thread->_thread_id == thread_id)
             return info->_uid;
+    for (auto it = _friend_map.cbegin(); it != _friend_map.cend(); ++it) {
+        if (it.value() && it.value()->_chat_thread->_thread_id == thread_id)
+            return it.key();
+    }
     return 0;
 }
 
-//历史消息按最大 message_id 继续翻页；待确认消息 ID 为 0，不参与游标
-qint64 UserMgr::LastMessageId(int friend_id) const
+std::shared_ptr<ChatThreadData> UserMgr::ThreadData(qint64 thread_id) const
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto it = _friend_map.constFind(friend_id);
-    if (it == _friend_map.cend() || it.value()->_chat_thread->_chat_msgs.empty())
+    return findThreadData(thread_id);
+}
+
+ChatThreadKind UserMgr::ThreadKind(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _group_map.contains(thread_id) ? ChatThreadKind::Group : ChatThreadKind::Private;
+}
+
+int UserMgr::ThreadPeer(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return FriendIdByThread(thread_id);
+}
+
+QString UserMgr::ThreadTitle(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.constFind(thread_id);
+    if (group != _group_map.constEnd() && (*group))
+        return (*group)->_name;
+    const int peer = FriendIdByThread(thread_id);
+    auto info = peer > 0 ? _friend_map.value(peer) : nullptr;
+    if (!info)
+        return {};
+    return DisplayName(info->_back, info->_nick, info->_name);
+}
+
+int UserMgr::ThreadMemberCount(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.constFind(thread_id);
+    return group == _group_map.constEnd() || !(*group) ? 0 : (*group)->_member_count;
+}
+
+//历史消息按最大 message_id 继续翻页；待确认消息 ID 为 0，不参与游标
+qint64 UserMgr::LastMessageId(const ConversationRef &conv) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    std::shared_ptr<ChatThreadData> thread;
+    ChatThreadKind kind = ChatThreadKind::Private;
+    if (!resolveConversation(conv, thread, kind) || !thread)
         return 0;
     qint64 lastId = 0;
-    for (const auto &message : it.value()->_chat_thread->_chat_msgs)
+    for (const auto &message : thread->_chat_msgs)
         lastId = qMax(lastId, message->_message_id);
     return lastId;
+}
+
+// ---- 群聊 ----
+
+void UserMgr::UpsertGroupThread(const QJsonObject &item)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    const qint64 thread_id = item.value("thread_id").toVariant().toLongLong();
+    if (thread_id <= 0)
+        return;
+
+    auto group = _group_map.value(thread_id);
+    const bool created = !group;
+    if (created) {
+        group = std::make_shared<GroupInfo>(thread_id);
+        _group_map[thread_id] = group;
+        _group_list.push_back(group);
+    }
+    group->_name = item.value("group_name").toString();
+    if (group->_name.isEmpty())
+        group->_name = QStringLiteral("群聊");
+    group->_owner_id = item.value("owner").toInt();
+    group->_member_count = item.value("member_count").toInt();
+    group->_my_role = item.value("my_role").toInt();
+    group->_muted = item.value("muted").toBool();
+    group->_at_me = item.value("at_me").toBool();
+    group->_last_time = item.value("time").toVariant().toLongLong();
+    group->_chat_thread->_thread_id = thread_id;
+
+    const int unread = item.value("unread").toInt(0);
+    if (unread > 0)
+        _unread[thread_id] = unread;
+    else
+        _unread.remove(thread_id);
+    if (group->_at_me)
+        _at_me_threads.insert(thread_id);
+    else
+        _at_me_threads.remove(thread_id);
+
+    if (created)
+        emit GroupListChanged();
+    emit UnreadChanged();
+}
+
+//群资料：名称、公告、我的角色与免打扰。1063 与 1068 info 共用这一条路径
+void UserMgr::ApplyGroupProfile(const QJsonObject &group_json)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    const qint64 thread_id = group_json.value("thread_id").toVariant().toLongLong();
+    auto group = _group_map.value(thread_id);
+    if (!group) {
+        //收到未知群的资料（刚被邀请）：先建对象，成员列表由后续 1063 补齐
+        group = std::make_shared<GroupInfo>(thread_id);
+        _group_map[thread_id] = group;
+        _group_list.push_back(group);
+        emit GroupListChanged();
+    }
+    if (group_json.contains("name"))
+        group->_name = group_json.value("name").toString();
+    if (group_json.contains("notice"))
+        group->_notice = group_json.value("notice").toString();
+    if (group_json.contains("owner"))
+        group->_owner_id = group_json.value("owner").toInt();
+    if (group_json.contains("member_count"))
+        group->_member_count = group_json.value("member_count").toInt();
+    if (group_json.contains("my_role"))
+        group->_my_role = group_json.value("my_role").toInt();
+    if (group_json.contains("muted"))
+        group->_muted = group_json.value("muted").toBool();
+    if (group_json.contains("my_nick"))
+        group->_my_nick = group_json.value("my_nick").toString();
+    if (group_json.contains("created_at"))
+        group->_created_at = group_json.value("created_at").toVariant().toLongLong();
+    group->_chat_thread->_thread_id = thread_id;
+    emit GroupInfoChanged(thread_id);
+}
+
+void UserMgr::SetGroupMembers(qint64 thread_id, const QJsonArray &members)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group)
+        return;
+    group->_member_map.clear();
+    for (const auto &value : members) {
+        const QJsonObject item = value.toObject();
+        const int uid = item.value("uid").toInt();
+        if (uid <= 0)
+            continue;
+        group->_member_map.insert(uid, GroupMember(uid, item.value("name").toString(),
+            item.value("nick").toString(), item.value("icon").toString(),
+            item.value("sex").toInt(), item.value("role").toInt(),
+            item.value("group_nick").toString(),
+            item.value("joined_at").toVariant().toLongLong()));
+    }
+    if (group->_member_count <= 0)
+        group->_member_count = group->_member_map.size();
+    emit GroupInfoChanged(thread_id);
+}
+
+void UserMgr::AddGroupMember(qint64 thread_id, const GroupMember &member)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group || member._uid <= 0)
+        return;
+    group->_member_map.insert(member._uid, member);
+    emit GroupInfoChanged(thread_id);
+}
+
+void UserMgr::SetGroupMemberCount(qint64 thread_id, int count)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group || count < 0)
+        return;
+    group->_member_count = count;
+    emit GroupInfoChanged(thread_id);
+}
+
+//被移出或解散：消息随服务端级联删除，本地也一并丢弃
+void UserMgr::RemoveGroup(qint64 thread_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.take(thread_id);
+    if (!group)
+        return;
+    _group_list.erase(std::remove_if(_group_list.begin(), _group_list.end(),
+        [thread_id](const auto &item) { return !item || item->_thread_id == thread_id; }),
+        _group_list.end());
+    _unread.remove(thread_id);
+    _at_me_threads.remove(thread_id);
+    if (_active_thread == thread_id)
+        _active_thread = 0;
+    emit GroupListChanged();
+    emit UnreadChanged();
+}
+
+std::shared_ptr<GroupInfo> UserMgr::GetGroup(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _group_map.value(thread_id);
+}
+
+int UserMgr::GroupCount() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return static_cast<int>(_group_list.size());
+}
+
+std::shared_ptr<GroupInfo> UserMgr::GroupAt(int index) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (index < 0 || index >= static_cast<int>(_group_list.size()))
+        return nullptr;
+    return _group_list[index];
+}
+
+//群消息里的发送者显示名：群昵称 > 好友备注 > 昵称 > 用户名。
+//成员已退群时回落到"群成员"，不能把别人的私聊备注带进群
+QString UserMgr::GroupSenderName(qint64 thread_id, int uid) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group)
+        return QString::number(uid);
+    const GroupMember *member = group->Member(uid);
+    if (!member) {
+        //成员表还没拉回来时先用好友备注/昵称，至少不会把熟人显示成"群成员"
+        auto friend_info = _friend_map.value(uid);
+        if (friend_info)
+            return DisplayName(friend_info->_back, friend_info->_nick, friend_info->_name);
+        return QStringLiteral("群成员");
+    }
+    auto friend_info = _friend_map.value(uid);
+    const QString remark = friend_info ? friend_info->_back : QString();
+    if (!member->_group_nick.isEmpty())
+        return member->_group_nick;
+    return DisplayName(remark, member->_nick, member->_name);
+}
+
+QString UserMgr::GroupSenderIcon(qint64 thread_id, int uid) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    //好友头像有本机缓存，优先用它；不是好友时再用成员资料里的服务端字段
+    auto friend_info = _friend_map.value(uid);
+    if (friend_info && !friend_info->_icon.isEmpty())
+        return friend_info->_icon;
+    auto group = _group_map.value(thread_id);
+    if (!group)
+        return {};
+    const GroupMember *member = group->Member(uid);
+    return member ? member->_icon : QString();
+}
+
+void UserMgr::SetGroupMuted(qint64 thread_id, bool muted)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group || group->_muted == muted)
+        return;
+    group->_muted = muted;
+    emit GroupInfoChanged(thread_id);
+    emit GroupListChanged();
 }
 
 int UserMgr::FriendCount() const
@@ -1300,6 +1762,8 @@ void UserMgr::ClearSession()
     _apply_list.clear();
     _friend_list.clear();
     _friend_map.clear();
+    _group_list.clear();
+    _group_map.clear();
     _pending_private_chats.clear();
     _uploads.clear();
     _downloads.clear();
@@ -1307,9 +1771,11 @@ void UserMgr::ClearSession()
 
     emit ApplyListChanged();
     emit FriendListChanged();
+    emit GroupListChanged();
     emit FriendTagsChanged(); //换账号后筛选条不能留着上一个账号的标签
     _unread.clear(); //未读属于上一次登录，换账号必须清掉
-    _active_peer = 0;
+    _at_me_threads.clear();
+    _active_thread = 0;
     emit UnreadChanged();
     if (hadIcon)
         emit UserIconChanged();

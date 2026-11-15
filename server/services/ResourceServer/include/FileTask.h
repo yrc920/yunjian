@@ -37,6 +37,7 @@ struct FileTask {
 	long long _chat_msg_id = 0;
 	int _touid = 0;
 	long long _thread_id = 0;
+	int _thread_type = 1; //1 单聊 / 2 群聊：群聊完成通知要发给发送者所在实例再广播
 	std::string _unique_id;
 	ResultCallback _callback; //写盘结果，error由文件线程填
 };

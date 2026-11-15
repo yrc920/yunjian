@@ -319,7 +319,7 @@ void FileService::UploadAvatar(const QString &path)
 
 //聊天资源（图片、视频、文件、视频首帧）走通用上传通道(1037)，与头像状态互不影响
 bool FileService::UploadChatResource(const QString &name, const QString &path, const QString &md5,
-    qint64 messageId, int touid, qint64 threadId, const QString &uniqueId)
+    qint64 messageId, int touid, qint64 threadId, int threadType, const QString &uniqueId)
 {
     const QFileInfo file_info(path);
     if (name.isEmpty() || md5.isEmpty() || !file_info.exists() || file_info.size() <= 0) {
@@ -341,6 +341,7 @@ bool FileService::UploadChatResource(const QString &name, const QString &path, c
     info->_chat_msg_id = messageId;
     info->_touid = touid;
     info->_thread_id = threadId;
+    info->_thread_type = threadType;
     info->_unique_id = uniqueId;
     UserMgr::GetInstance()->AddUploadFile(info);
 

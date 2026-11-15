@@ -116,7 +116,9 @@ static bool        Verify(const std::string& plain,
 | 输出 | `crypto_pwhash_STRBYTES`（约 98 字节可见字符） | 自带随机 salt，存 `user.pwd` 的 `varchar(255)` |
 
 `sodium_init()` 用 `std::once_flag` 保证只初始化一次，且不依赖静态初始化顺序。
-**DAO 层接收明文并负责哈希**，因此调用方无需感知哈希细节，也不会出现明文落库。
+**DAO 层对收到的字符串直接哈希**，调用方无需感知哈希细节，也不会出现明文落库。
+注意客户端发送前会先做可逆 XOR 变形，网关不还原，所以哈希的原文是变形值；
+登录校验同样是对变形值做 Verify，两端必须保持同一个 `xorString()`。
 
 > 历史数据已在改造时统一重算为 Argon2id，库中不存在旧格式，因此没有兼容分支。
 

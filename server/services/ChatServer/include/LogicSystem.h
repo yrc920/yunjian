@@ -29,6 +29,10 @@ public:
     void SetServer(std::shared_ptr<CServer> pserver);
 	//资料变更后推给在线好友: 改资料成功后由逻辑层调用, 换头像时经 gRPC 从资源服务器触发
 	void NotifyFriendsProfileChanged(int uid);
+	//群事件广播：本实例成员直接投递，其他实例按 uip_ 聚合后走一次 gRPC。
+	//except_uid 用于跳过发送者；notify_id 是客户端协议号(1019/1033/1036/1057/1068)
+	void BroadcastGroupEvent(long long thread_id, const std::vector<int>& members,
+		int except_uid, const Json::Value& payload, int notify_id);
 
 private:
 	LogicSystem();
@@ -70,6 +74,23 @@ private:
 	void PushChatEvent(int from_uid, int to_uid, long long thread_id, long long message_id, int event);
 	//删除好友：双向删关系，不通知对方，会话与历史保留
 	void DeleteFriend(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//创建群聊：群名 + 勾选的好友，创建者成为群主
+	void CreateGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//拉群资料与成员，同时带回我的角色、群昵称与免打扰
+	void GetGroupInfo(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//改群名/群公告、改我在本群的昵称、切换免打扰
+	void UpdateGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//群成员操作：邀请、移除、设/撤管理员、退群、解散
+	void GroupMemberOp(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//群资料或成员变化后推送 1068：event 为 info/members/removed/dismissed
+	void PushGroupChanged(long long thread_id, const std::vector<int>& members, int except_uid,
+		const std::string& event, const Json::Value& detail);
+	//按 thread_id 判断会话类型；查询失败时按单聊处理，保持原有链路可用
+	int ThreadTypeOf(long long thread_id);
+	//把一条已落库的消息组装成客户端通知里的字段，文本/图片/视频文件共用
+	Json::Value BuildMessageItem(const ChatMessageInfo& message, int status);
+	//会话行统一序列化：登录首屏与 1028 分页共用，避免两处字段不一致
+	Json::Value BuildThreadItem(const ChatThreadInfo& thread) const;
 
 	bool isPureDigit(const std::string& str); //判断字符串是否纯数字
 	//根据用户ID查询用户信息，并将结果填充到Json值对象中

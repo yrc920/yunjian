@@ -10,8 +10,9 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
-#include "friendlistmodel.h"
 #include "applylistmodel.h"
+#include "conversationmodel.h"
+#include "friendlistmodel.h"
 #include "messagemodel.h"
 
 /**
@@ -23,26 +24,36 @@
  *
  *   点侧栏「聊天」   → mode=会话，右侧回到当前会话（没有会话则为空）
  *   点侧栏「联系人」 → mode=联系人，右侧显示「新的朋友」
- *   会话条目         → 右侧聊天页
+ *   会话条目         → 右侧聊天页（单聊或群聊）
  *   联系人条目       → 右侧好友资料页
- *   资料页「发消息」 → 回到会话页
+ *   群聊标题         → 右侧群资料页
  *
- * 同时托管：三个列表模型（会话与联系人共用一个好友模型，申请单独一个）、
- * 联系人页的加好友浮层状态、聊天页的好友过滤，以及发消息、加好友、同意申请的协议调用。
+ * 当前会话用 thread_id 标识：单聊的对方 uid 只是额外信息，群聊没有"对方"。
+ * 同时托管：会话模型、联系人模型、申请模型、消息模型、联系人页的加好友浮层、
+ * 发起群聊与群资料页的状态，以及发消息、加好友、同意申请、群管理的协议调用。
  */
 class ChatBridge : public QObject
 {
     Q_OBJECT
     QML_ELEMENT
+    Q_PROPERTY(ConversationModel *conversations READ conversations CONSTANT)
     Q_PROPERTY(FriendListModel *friends READ friends CONSTANT)
     Q_PROPERTY(ApplyListModel *applies READ applies CONSTANT)
     Q_PROPERTY(MessageModel *messages READ messages CONSTANT)
     Q_PROPERTY(int mode READ mode NOTIFY modeChanged)
     Q_PROPERTY(int pane READ pane NOTIFY paneChanged)
     Q_PROPERTY(QVariantMap profile READ profile NOTIFY profileChanged)
+    //当前会话：thread 是主键；单聊另有 uid，群聊另有群资料
+    Q_PROPERTY(qint64 currentThreadId READ currentThreadId NOTIFY currentChanged)
+    Q_PROPERTY(int currentKind READ currentKind NOTIFY currentChanged)
     Q_PROPERTY(int currentUid READ currentUid NOTIFY currentChanged)
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
     Q_PROPERTY(QString currentSubtitle READ currentSubtitle NOTIFY currentChanged)
+    Q_PROPERTY(bool isGroup READ isGroup NOTIFY currentChanged)
+    Q_PROPERTY(QVariantMap groupInfo READ groupInfo NOTIFY groupChanged)
+    Q_PROPERTY(QVariantList groupMembers READ groupMembers NOTIFY groupChanged)
+    Q_PROPERTY(bool canManageGroup READ canManageGroup NOTIFY groupChanged)
+    Q_PROPERTY(bool isGroupOwner READ isGroupOwner NOTIFY groupChanged)
     Q_PROPERTY(QStringList tagOptions READ tagOptions NOTIFY tagFilterChanged)
     Q_PROPERTY(QString tagFilter READ tagFilter NOTIFY tagFilterChanged)
     Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadChanged)
@@ -68,12 +79,23 @@ class ChatBridge : public QObject
     Q_PROPERTY(QString profileMessage READ profileMessage NOTIFY profileStateChanged)
     Q_PROPERTY(bool remarkSaving READ remarkSaving NOTIFY remarkStateChanged)
     Q_PROPERTY(QString remarkMessage READ remarkMessage NOTIFY remarkStateChanged)
+    //发起群聊：候选人是全部好友，勾选后在弹层里输入群名
+    Q_PROPERTY(bool createGroupOpen READ createGroupOpen NOTIFY createGroupChanged)
+    Q_PROPERTY(QVariantList groupCandidates READ groupCandidates NOTIFY createGroupChanged)
+    Q_PROPERTY(bool createGroupBusy READ createGroupBusy NOTIFY createGroupChanged)
+    Q_PROPERTY(QString createGroupMessage READ createGroupMessage NOTIFY createGroupChanged)
+    //群资料页与群操作的结果提示
+    Q_PROPERTY(QString groupMessage READ groupMessage NOTIFY groupStateChanged)
+    Q_PROPERTY(bool groupBusy READ groupBusy NOTIFY groupStateChanged)
+    //当前会话里可 @ 的成员（群聊用，排除自己）
+    Q_PROPERTY(QVariantList mentionCandidates READ mentionCandidates NOTIFY groupChanged)
 
 public:
     //左侧栏目：会话 / 联系人 / 设置
     enum Mode { ChatMode = 0, ContactMode = 1, SettingsMode = 2 };
     //右侧页面取值与 QML 的 pane 判断一致
-    enum Pane { EmptyPane = 0, ChatPage = 1, FriendInfoPage = 2, ApplyFriendPage = 3, UserInfoPage = 4 };
+    enum Pane { EmptyPane = 0, ChatPage = 1, FriendInfoPage = 2, ApplyFriendPage = 3,
+                UserInfoPage = 4, GroupInfoPage = 5 };
     //联系人页加好友浮层的展示状态，QML 按这些名字切换结果区域
     enum SearchState { SearchIdle = 0, SearchSearching, SearchStranger, SearchNotFound,
                        SearchSelf, SearchAlreadyFriend, SearchAlreadyApplied };
@@ -86,6 +108,7 @@ public:
 
     explicit ChatBridge(QObject *parent = nullptr);
 
+    ConversationModel *conversations() const { return _conversations; }
     FriendListModel *friends() const { return _friends; }
     ApplyListModel *applies() const { return _applies; }
     MessageModel *messages() const { return _messages; }
@@ -95,10 +118,19 @@ public:
     QVariantMap profile() const { return _profile; }
 
     // 当前会话
+    qint64 currentThreadId() const { return _currentThreadId; }
+    int currentKind() const { return _currentKind; }
     int currentUid() const { return _currentUid; }
     QString currentName() const { return _currentName; }
-    // 会话标题后面的个性签名，没有签名时为空，由界面决定不占位
     QString currentSubtitle() const { return _currentSubtitle; }
+    bool isGroup() const;
+    QVariantMap groupInfo() const;
+    QVariantList groupMembers() const;
+    QVariantList mentionCandidates() const;
+    bool canManageGroup() const;
+    bool isGroupOwner() const;
+    QString groupMessage() const { return _groupMessage; }
+    bool groupBusy() const { return _groupBusy; }
 
     // 联系人页的标签筛选：选项来自全部好友标签的并集，空串表示不筛选
     QStringList tagOptions() const;
@@ -166,10 +198,12 @@ public:
 
     //好友页面入口
     Q_INVOKABLE void openChat(int uid);
+    // 打开群聊：thread_id 已经确定，不再走建会话请求
+    Q_INVOKABLE void openGroup(qint64 threadId);
     // 撤回自己发的消息：服务端校验时间窗，成功后双方都换成提示行
     Q_INVOKABLE void recallMessage(qint64 messageId);
     // 重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新发送
-    Q_INVOKABLE bool retryMessage(int peerUid, const QString &msgId);
+    Q_INVOKABLE bool retryMessage(const QString &msgId);
     // 退出登录：断开长连接、清空账号数据、回到登录页
     Q_INVOKABLE void logout();
     // 删除好友：双向删除，不通知对方；会话与历史保留
@@ -184,6 +218,29 @@ public:
     QString deleteTargetName() const { return _deleteTargetName; }
     Q_INVOKABLE void openProfile(int uid);
     Q_INVOKABLE void openApplyList();
+
+    // ---- 群聊 ----
+    bool createGroupOpen() const { return _createGroupOpen; }
+    QVariantList groupCandidates() const;
+    bool createGroupBusy() const { return _createGroupBusy; }
+    QString createGroupMessage() const { return _createGroupMessage; }
+    Q_INVOKABLE void openCreateGroup();
+    Q_INVOKABLE void closeCreateGroup();
+    //uids 是勾选的好友；空群名由服务端回落到"群聊"
+    Q_INVOKABLE void createGroup(const QString &name, const QVariantList &uids);
+    //打开/刷新群资料页
+    Q_INVOKABLE void openGroupInfo();
+    //从群资料页回到会话，不重置消息模型与滚动位置
+    Q_INVOKABLE void backToChat();
+    //action: name / notice / nickname / mute
+    Q_INVOKABLE void updateGroupField(const QString &action, const QString &value);
+    Q_INVOKABLE void toggleGroupMute();
+    Q_INVOKABLE void inviteGroupMembers(const QVariantList &uids);
+    Q_INVOKABLE void removeGroupMember(int uid);
+    Q_INVOKABLE void setGroupAdmin(int uid, bool admin);
+    Q_INVOKABLE void leaveGroup();
+    Q_INVOKABLE void dismissGroup();
+    Q_INVOKABLE void clearGroupMessage();
 
     // 业务动作
     Q_INVOKABLE bool sendParts(const QVariantList &parts);
@@ -200,7 +257,7 @@ public:
     //优先复制完整图片，缺失时退回气泡里的 data/file URL
     Q_INVOKABLE bool copyImage(qint64 messageId, const QUrl &fallback = {});
     //当前会话可查看的图片与已下载视频，按消息顺序排列，供查看器左右切换
-    Q_INVOKABLE QVariantList mediaItems(); //当前会话可查看的图片与已下载视频
+    Q_INVOKABLE QVariantList mediaItems();
     Q_INVOKABLE void search();
     Q_INVOKABLE void clearSearch();
     // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录，tags 是给对方打的分组
@@ -215,6 +272,9 @@ signals:
     void profileChanged();
     void myProfileChanged();
     void currentChanged();
+    void groupChanged();
+    void groupStateChanged();
+    void createGroupChanged();
     void searchTextChanged();
     void searchStateChanged();
     void searchResultChanged();
@@ -242,19 +302,24 @@ signals:
 
 private:
     // 按当前模式与页面重新判断"正在看哪个会话"，供未读计数使用
-    void refreshActivePeer();
+    void refreshActiveThread();
     void setMode(int mode);
     void setPane(int pane);
+    //按当前会话重建标题、副标题与群资料快照
+    void refreshConversationSnapshot();
     //好友关系侧数据变化后，刷新聊天标题、副标题与打开中的资料页
     void refreshFriendSnapshot(int uid);
     //按好友当前数据重建资料页快照，openProfile 与刷新共用
     void rebuildProfile(const std::shared_ptr<FriendInfo> &info);
     void rebuildFriendMatches();
     void setApplyState(int state, const QString &message = {});
+    void setGroupState(bool busy, const QString &message);
     void processPendingSaves(); //消息下载完成后处理排队的另存为
     static bool copyToPath(const QString &source, const QString &destination);
     QString savedPath(qint64 messageId); //已另存的位置，文件不存在时清掉记录并返回空
+    ConversationRef currentConversation() const;
 
+    ConversationModel *_conversations = nullptr;
     FriendListModel *_friends = nullptr;
     ApplyListModel *_applies = nullptr;
     MessageModel *_messages = nullptr;
@@ -263,9 +328,11 @@ private:
     int _pane = EmptyPane;
     QVariantMap _profile; // 资料页展示的好友信息
 
+    qint64 _currentThreadId = 0;
+    int _currentKind = 1;
     int _currentUid = 0;
     QString _currentName;
-    QString _currentSubtitle; //当前会话好友的个性签名，空表示没写
+    QString _currentSubtitle; //单聊是好友签名，群聊是成员数
     QString _tagFilter;       //联系人页当前选中的标签，空串表示全部
     QString _chatNotice;      //一次性提示，界面显示后调用 clearChatNotice 清掉
     bool _deleteConfirmVisible = false;
@@ -296,6 +363,14 @@ private:
     QString _profileMessage;
     bool _remarkSaving = false;
     QString _remarkMessage;
+
+    //群聊：发起弹层与群资料页的状态
+    bool _createGroupOpen = false;
+    bool _createGroupBusy = false;
+    QString _createGroupMessage;
+    bool _groupBusy = false;
+    QString _groupMessage;
+    qint64 _pendingOpenGroup = 0; //群资料还没回来时先记下要打开的群
 
     //资源还没下载完时的另存为目标：下载完成后自动复制，失败则丢弃
     QHash<qint64, QString> _pending_saves;

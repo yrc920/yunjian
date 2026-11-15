@@ -17,23 +17,27 @@ class ChatService : public Singleton<ChatService>
 public:
     friend class Singleton<ChatService>;
     ~ChatService();
-    bool sendText(int uid, const QString &text);
+    //单聊与群聊共用同一条发送链路：会话上下文决定写哪张表、通知哪些人
+    bool sendText(const ConversationRef &conv, const QString &text,
+        const QStringList &mentions = {});
     //图片先发 1031 落库，收到回执后由 uploadPendingImage 启动 1037 断点上传；
     //thumbnail 是气泡用的缩略图，uploadPath 是输入区压缩好的上传文件
-    bool sendImage(int uid, const QString &thumbnail, const QString &uploadPath,
-        int width, int height);
+    bool sendImage(const ConversationRef &conv, const QString &thumbnail,
+        const QString &uploadPath, int width, int height);
     //视频先落一条本地消息，异步取首帧并上传；缩略图就绪后再发 1034，资源随后上传
-    bool sendVideo(int uid, const QString &path, const QString &fileName, qint64 fileSize);
+    bool sendVideo(const ConversationRef &conv, const QString &path, const QString &fileName,
+        qint64 fileSize);
     //文件不需要预览，直接落库并在回执后上传
-    bool sendFile(int uid, const QString &path, const QString &fileName, qint64 fileSize);
-    void uploadPendingImage(const QString &uniqueId, qint64 messageId, int touid, qint64 threadId);
+    bool sendFile(const ConversationRef &conv, const QString &path, const QString &fileName,
+        qint64 fileSize);
+    void uploadPendingImage(const QString &uniqueId, qint64 messageId, const ConversationRef &conv);
     void discardPendingImage(const QString &uniqueId); //服务端拒绝时丢掉待上传记录
     //把会话已读到最新：只在"正在看"的时候调用，同一位置不会重复上报
-    void MarkSessionRead(int peerUid);
+    void MarkSessionRead(const ConversationRef &conv);
     //撤回自己发的消息：服务端校验时间窗与归属，成功回执后本地换成提示
     void RecallMessage(qint64 messageId);
     //重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新走一遍发送流程
-    bool RetryMessage(int peerUid, const QString &msgId);
+    bool RetryMessage(const ConversationRef &conv, const QString &msgId);
     void HandleResourceRsp(const QJsonObject &data); //1035 视频/文件回执，启动资源上传
     //接收方收到 1033：补一条图片消息，本地没有压缩图时发起下载
     void HandleImageNotify(const QJsonObject &data);
@@ -72,18 +76,18 @@ private:
         QString path;
         QString name;
         QString md5;
-        int uid = 0;
+        ConversationRef conv;
     };
     QHash<QString, PendingImage> _pending_images; //unique_id -> 待上传图片
     //thread_id -> 已经上报到的 message_id；避免每次切回会话都重复发 1052
     QHash<qint64, qint64> _read_reported;
     //发出后等回执的兜底：超过时限仍是"发送中"就标失败，不等用户发现
-    void StartSendTimeout(int peerUid, const QString &msgId);
+    void StartSendTimeout(const ConversationRef &conv, const QString &msgId);
 
     //视频/文件在等 1035 回执：回执到达后才把资源本体交给 FileService
     struct PendingResource {
         ChatMsgType type = ChatMsgType::File;
-        int peer = 0;
+        ConversationRef conv;
         QString path;
         QString name;
         QString md5;
@@ -96,7 +100,7 @@ private:
 
     //视频首帧还在生成/上传时先把消息准备好，缩略图完成后才发 1034
     struct PendingVideo {
-        int peer = 0;
+        ConversationRef conv;
         QString path;
         QString name;
         QString md5;

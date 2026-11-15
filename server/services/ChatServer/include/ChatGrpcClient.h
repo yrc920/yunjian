@@ -34,6 +34,8 @@ using message::ProfileChangedReq;
 using message::ProfileChangedRsp;
 using message::ChatEventReq;
 using message::ChatEventRsp;
+using message::GroupEventReq;
+using message::GroupEventRsp;
 class ChatConPool; //连接池类, 用于管理Grpc连接(前置声明)
 
 class ChatGrpcClient :public Singleton<ChatGrpcClient>
@@ -53,6 +55,8 @@ public:
 	ProfileChangedRsp NotifyProfileChanged(std::string server_ip, const ProfileChangedReq& req);
 	//会话事件（已读/撤回）转给对方所在实例
 	ChatEventRsp NotifyChatEvent(std::string server_ip, const ChatEventReq& req);
+	//群事件：把同一份通知投递给目标实例上的若干群成员
+	GroupEventRsp NotifyGroupEvent(std::string server_ip, const GroupEventReq& req);
 
 private:
 	ChatGrpcClient();

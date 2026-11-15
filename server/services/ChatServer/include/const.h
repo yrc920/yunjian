@@ -21,6 +21,10 @@ enum ErrorCodes {
 	RecallExpired = 1012, //超过可撤回时间
 	RecallDenied = 1013, //这条消息不允许撤回（不是本人发的或已撤回）
 	NotFriend = 1014, //双方已不是好友，消息发不出去
+	GroupNotFound = 1015, //群不存在、已解散，或请求者不在群里
+	GroupDenied = 1016, //当前角色没有这个操作权限（改群名、踢人、设管理员等）
+	GroupFull = 1017, //群成员已达上限
+	GroupMemberExists = 1018, //被邀请的人已经在群里
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -46,6 +50,11 @@ constexpr int RECALL_WINDOW_SECONDS = 120;
 #define MAX_DESC_LEN 60 //个性签名最多 60 个字符
 #define MAX_TAG_LEN 12 //单个好友标签最多 12 个字符
 #define MAX_TAG_COUNT 10 //一个好友最多 10 个标签
+#define MAX_GROUP_NAME_LEN 30 //群名称最多 30 个字符，与界面输入上限一致
+#define MAX_GROUP_NOTICE_LEN 200 //群公告最多 200 个字符
+#define MAX_GROUP_NICK_LEN 16 //我在本群的昵称最多 16 个字符
+#define MAX_GROUP_MEMBER 200 //单个群的人数上限，建群邀请与后续加人都按它校验
+#define MAX_CREATE_GROUP_MEMBER 50 //一次建群最多勾选的好友数，避免单帧超过 TCP 请求体上限
 #define HEAD_TOTAL_LEN 4 //头部总长度
 #define HEAD_ID_LEN 2 //头部id长度
 #define HEAD_DATA_LEN 2 //头部数据长度
@@ -110,6 +119,15 @@ enum MSG_IDS {
 	ID_NOTIFY_MSG_RECALLED = 1057, //对端撤回通知
 	ID_DELETE_FRIEND_REQ = 1058, //删除好友（双向关系一起删，不通知对方）
 	ID_DELETE_FRIEND_RSP = 1059, //删除好友回包
+	ID_CREATE_GROUP_REQ = 1060, //创建群聊：群名 + 勾选的好友
+	ID_CREATE_GROUP_RSP = 1061, //创建结果，带回 thread_id 与群资料
+	ID_GET_GROUP_INFO_REQ = 1062, //拉群资料与成员列表
+	ID_GET_GROUP_INFO_RSP = 1063, //群资料、成员与我自己的群设置
+	ID_UPDATE_GROUP_REQ = 1064, //改群名/公告、改我在本群的昵称、免打扰
+	ID_UPDATE_GROUP_RSP = 1065, //群设置修改回包，带回生效后的值
+	ID_GROUP_MEMBER_OP_REQ = 1066, //群成员操作：邀请、移除、设/撤管理员、退群、解散
+	ID_GROUP_MEMBER_OP_RSP = 1067, //成员操作回包
+	ID_NOTIFY_GROUP_CHANGED = 1068, //群资料/成员/免打扰或被移出/解散的推送
 };
 
 #define USERIPPREFIX  "uip_" //用户登录ip server的名字前缀

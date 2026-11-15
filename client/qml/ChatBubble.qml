@@ -8,6 +8,7 @@ Item {
 
     property string avatar: ""
     property string name: ""
+    property string senderName: "" //群聊里别人发的消息：气泡上方显示成员名，单聊为空""
     property string text: ""
     property bool isSelf: false
     property bool isImage: false
@@ -49,7 +50,21 @@ Item {
     readonly property real bodyHeight: isImage ? pictureHeight : bubbleHeight
     readonly property color bubbleColor: isSelf ? Theme.bubbleSelf : Theme.bubbleOther
 
-    implicitHeight: Math.max(34, bodyHeight)
+    //群聊里要在气泡上方让出一行名字；单聊保持原来的紧凑高度
+    readonly property real nameOffset: senderName.length > 0 ? 18 : 0
+    implicitHeight: nameOffset + Math.max(34, bodyHeight)
+
+    Text {
+        visible: root.senderName.length > 0
+        x: userAvatar.width + 11
+        y: 0
+        width: Math.max(1, Math.min(implicitWidth, root.width - 140))
+        text: root.senderName
+        textFormat: Text.PlainText
+        color: Theme.textSecondary
+        font.pixelSize: 10
+        elide: Text.ElideRight
+    }
 
     TextMetrics {
         id: metrics
@@ -60,6 +75,7 @@ Item {
     Avatar {
         id: userAvatar
         x: root.isSelf ? root.width - width : 0
+        y: root.nameOffset
         width: 32
         height: 32
         radius: 10
@@ -72,7 +88,7 @@ Item {
         id: textBubble
         visible: !root.isImage
         x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
-        y: 0
+        y: root.nameOffset
         width: root.bubbleWidth
         height: root.bubbleHeight
         radius: 9
@@ -113,7 +129,7 @@ Item {
         id: pictureFrame
         visible: root.isImage
         x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
-        y: 0
+        y: root.nameOffset
         width: root.pictureWidth
         height: root.pictureHeight
         radius: 10

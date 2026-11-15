@@ -32,8 +32,9 @@ public:
     void UploadAvatar(const QString &path); //裁剪器保存后的PNG路径
     //聊天资源（图片/视频/文件，以及视频首帧）走通用上传通道(1037)；
     //messageId/touid/threadId/uniqueId 用于服务器最后一片写完后回写消息状态，首帧传0
+    //threadType: 1 单聊 / 2 群聊；群聊的 touid 为 0，资源服务器按 thread_type 广播
     bool UploadChatResource(const QString &name, const QString &path, const QString &md5,
-        qint64 messageId, int touid, qint64 threadId, const QString &uniqueId);
+        qint64 messageId, int touid, qint64 threadId, int threadType, const QString &uniqueId);
     void SetUploadPaused(bool paused); //头像暂停/继续，继续时会先同步服务器进度
     void ToggleUploadPaused(); //QML按钮用
     //视频/文件单独暂停，不影响头像与其他资源；继续前同样先同步服务器进度

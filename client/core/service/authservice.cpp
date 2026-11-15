@@ -68,7 +68,7 @@ void AuthService::login(const QString &email, const QString &password)
 {
     QJsonObject body;
     body["email"] = email;
-    body["passwd"] = xorString(password); //与网关约定：密码做可逆混淆后再传输
+    body["passwd"] = xorString(password); //与网关约定：密码做可逆变形后再发送
 
     HttpMgr::GetInstance()->PostHttpReq(
         QUrl(gate_url_prefix + "/user_login"), body,

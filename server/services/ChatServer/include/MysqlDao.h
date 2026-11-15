@@ -83,10 +83,61 @@ public:
 	bool GetChatMessage(long long message_id, ChatMessageInfo& message);
 	//资源服务器通知: 把指定消息的状态改成已上传; sender 用于确认消息归属
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
-	
+	//会话类型: 1 单聊 / 2 群聊; 不存在返回 false
+	bool GetThreadType(long long thread_id, int& thread_type);
+
+	//建群: 群主 + 勾选的好友(必须是群主的好友), 同时写 chat_thread/group_chat/成员与首条系统消息。
+	//返回 thread_id, 0 表示失败; error 带回具体原因
+	long long CreateGroup(int owner_id, const std::string& group_name,
+		const std::vector<int>& members, GroupInfo& info,
+		std::vector<GroupMemberInfo>& member_list, int& error);
+	//群资料与成员: 只允许群成员读取, 同时带回我的角色、群昵称与免打扰设置
+	bool GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
+		std::vector<GroupMemberInfo>& members);
+	//群设置字段: 与 group_chat / group_chat_member 的列一一对应
+	enum class GroupField { Name = 1, Notice = 2, MyNickname = 3, Muted = 4 };
+	//修改群设置: 群名与公告需要管理员及以上, 群昵称与免打扰改自己那一行。
+	//返回 ErrorCodes; 成功时 value 回填生效后的值
+	int UpdateGroupField(long long thread_id, int uid, GroupField field,
+		const std::string& value, std::string& applied);
+	//邀请成员: 只能邀请自己的好友, 已在群里的跳过; added 返回真正加入的人, count 返回新人数
+	int InviteGroupMembers(long long thread_id, int operator_uid,
+		const std::vector<int>& members, std::vector<int>& added, int& member_count);
+	//移除成员: 群主可移除任何人(含管理员), 管理员只能移除普通成员, 不能移除群主
+	int RemoveGroupMember(long long thread_id, int operator_uid, int target_uid,
+		int& member_count);
+	//设置或取消管理员: 只有群主可以操作, 目标必须是群成员
+	int SetGroupAdmin(long long thread_id, int operator_uid, int target_uid, bool admin);
+	//退群: 群主不能直接退群(需先解散); dismissed 恒为 false, 保留字段供上层扩展
+	int LeaveGroup(long long thread_id, int uid, bool& dismissed);
+	//解散: 只有群主可以操作; 删 chat_thread 时消息与成员按外键级联清理
+	int DismissGroup(long long thread_id, int uid);
+	//写入一条群系统消息(msg_type=4), 用于建群、邀请、移除、退群、改名等提示
+	bool AddGroupSystemMessage(long long thread_id, int actor, const std::string& content,
+		ChatMessageInfo& message);
+	//群成员 uid 列表, 用于消息广播与事件推送
+	bool GetGroupMemberIds(long long thread_id, std::vector<int>& members);
+	//批量写入群消息: 只校验群成员身份, recv_id 固定 0, mentions 是逗号分隔的 @ 名单
+	bool SaveGroupMessages(int sender_id, long long thread_id, const std::string& mentions,
+		const std::vector<std::pair<std::string, std::string>>& contents,
+		std::vector<ChatMessageInfo>& messages);
+	//写入一条群资源消息(图片/视频/文件), 资源上传完成后由资源服务器回写状态
+	bool SaveGroupResourceMessage(int sender_id, long long thread_id, const std::string& mentions,
+		const std::string& client_msg_id, int msg_type, const std::string& content,
+		ChatMessageInfo& message);
+	//群已读游标: 只前进不后退, 未读数与会话行"有人@我"都由它推导
+	bool MarkGroupRead(int uid, long long thread_id, long long last_message_id);
+	//群成员在某个群的单行设置, 不存在返回 false
+	bool GetGroupMember(long long thread_id, int uid, GroupMemberInfo& member,
+		bool& muted, long long& last_read_message_id);
+
 private:
 	//把客户端传入的会话ID解析成有效单聊: 为0时校验好友关系并补建, 失败返回0
 	long long EnsureChatThread(int sender_id, int recv_id, long long thread_id);
+	//在已有连接上确认群成员身份并取出角色/群昵称/免打扰/已读游标,
+	//供建群、邀请、权限判断与消息写入复用, 避免同一事务里重复借连接
+	bool GetGroupMemberOn(mysqlx::Session* session, long long thread_id, int uid,
+		GroupMemberInfo& member, bool& muted, long long& last_read_message_id);
 
 	//MySQL连接池对象, 用于管理MySQL连接, 提供线程安全的获取和归还连接的接口
 	std::unique_ptr<MySqlPool> pool_;

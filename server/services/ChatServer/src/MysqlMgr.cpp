@@ -159,3 +159,92 @@ bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int sta
 {
 	return _dao.UpdateChatMessageStatus(message_id, sender, status); //资源完成回调
 }
+
+bool MysqlMgr::GetThreadType(long long thread_id, int& thread_type)
+{
+	return _dao.GetThreadType(thread_id, thread_type);
+}
+
+long long MysqlMgr::CreateGroup(int owner_id, const std::string& group_name,
+	const std::vector<int>& members, GroupInfo& info,
+	std::vector<GroupMemberInfo>& member_list, int& error)
+{
+	//建群在DAO里用事务写会话、群资料、成员与首条系统消息
+	return _dao.CreateGroup(owner_id, group_name, members, info, member_list, error);
+}
+
+bool MysqlMgr::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
+	std::vector<GroupMemberInfo>& members)
+{
+	return _dao.GetGroupInfo(uid, thread_id, info, members);
+}
+
+int MysqlMgr::UpdateGroupField(long long thread_id, int uid, MysqlDao::GroupField field,
+	const std::string& value, std::string& applied)
+{
+	return _dao.UpdateGroupField(thread_id, uid, field, value, applied);
+}
+
+int MysqlMgr::InviteGroupMembers(long long thread_id, int operator_uid,
+	const std::vector<int>& members, std::vector<int>& added, int& member_count)
+{
+	return _dao.InviteGroupMembers(thread_id, operator_uid, members, added, member_count);
+}
+
+int MysqlMgr::RemoveGroupMember(long long thread_id, int operator_uid, int target_uid,
+	int& member_count)
+{
+	return _dao.RemoveGroupMember(thread_id, operator_uid, target_uid, member_count);
+}
+
+int MysqlMgr::SetGroupAdmin(long long thread_id, int operator_uid, int target_uid, bool admin)
+{
+	return _dao.SetGroupAdmin(thread_id, operator_uid, target_uid, admin);
+}
+
+int MysqlMgr::LeaveGroup(long long thread_id, int uid, bool& dismissed)
+{
+	return _dao.LeaveGroup(thread_id, uid, dismissed);
+}
+
+int MysqlMgr::DismissGroup(long long thread_id, int uid)
+{
+	return _dao.DismissGroup(thread_id, uid);
+}
+
+bool MysqlMgr::AddGroupSystemMessage(long long thread_id, int actor,
+	const std::string& content, ChatMessageInfo& message)
+{
+	return _dao.AddGroupSystemMessage(thread_id, actor, content, message);
+}
+
+bool MysqlMgr::GetGroupMemberIds(long long thread_id, std::vector<int>& members)
+{
+	return _dao.GetGroupMemberIds(thread_id, members);
+}
+
+bool MysqlMgr::SaveGroupMessages(int sender_id, long long thread_id, const std::string& mentions,
+	const std::vector<std::pair<std::string, std::string>>& contents,
+	std::vector<ChatMessageInfo>& messages)
+{
+	return _dao.SaveGroupMessages(sender_id, thread_id, mentions, contents, messages);
+}
+
+bool MysqlMgr::SaveGroupResourceMessage(int sender_id, long long thread_id,
+	const std::string& mentions, const std::string& client_msg_id, int msg_type,
+	const std::string& content, ChatMessageInfo& message)
+{
+	return _dao.SaveGroupResourceMessage(sender_id, thread_id, mentions, client_msg_id,
+		msg_type, content, message);
+}
+
+bool MysqlMgr::MarkGroupRead(int uid, long long thread_id, long long last_message_id)
+{
+	return _dao.MarkGroupRead(uid, thread_id, last_message_id);
+}
+
+bool MysqlMgr::GetGroupMember(long long thread_id, int uid, GroupMemberInfo& member,
+	bool& muted, long long& last_read_message_id)
+{
+	return _dao.GetGroupMember(thread_id, uid, member, muted, last_read_message_id);
+}

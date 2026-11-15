@@ -1,136 +1,74 @@
 #include "friendlistmodel.h"
 
-#include <algorithm>
-
 #include "usermgr.h"
 #include "userdata.h"
-#include "timeformat.h"
 
 FriendListModel::FriendListModel(QObject *parent) : QAbstractListModel(parent)
 {
     auto *mgr = UserMgr::GetInstance().get();
     connect(mgr, &UserMgr::FriendListAboutToChange, this, [this] { beginResetModel(); });
     connect(mgr, &UserMgr::FriendListChanged, this, &FriendListModel::onFriendListChanged);
-    //消息变化：会话模式可能改变排序，先算新顺序，顺序没变才只刷新这一行
-    connect(mgr, &UserMgr::FriendChatChanged, this, [this](int uid) {
-        if (_sortRecent) {
-            QVector<int> next = computeView();
-            if (next != _viewUids) {
-                beginResetModel();
-                _viewUids = std::move(next);
-                endResetModel();
-                emit countChanged();
-                return;
-            }
-        }
-        const int row = indexOfUid(uid);
-        if (row < 0)
-            return;
-        const QModelIndex idx = index(row, 0);
-        emit dataChanged(idx, idx, {LastTextRole, LastTimeRole});
-    });
-    // 头像下载完成只影响这一行，避免整表重置
-    connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
-        const int row = indexOfUid(uid);
-        if (row < 0)
-            return;
-        const QModelIndex idx = index(row, 0);
-        emit dataChanged(idx, idx, {IconRole});
-    });
     // 备注或标签变化会改显示名与分组；筛选状态下这条记录可能进出结果集，整表重置
     connect(mgr, &UserMgr::FriendRelationChanged, this, [this](int uid) {
-        if (_filterEnabled && !_tagFilter.isEmpty()) {
+        if (!_tagFilter.isEmpty()) {
             beginResetModel();
             _viewUids = computeView();
             endResetModel();
             emit countChanged();
             return;
         }
-        const int row = indexOfUid(uid);
+        const int row = _viewUids.indexOf(uid);
         if (row < 0)
             return;
         const QModelIndex idx = index(row, 0);
-        emit dataChanged(idx, idx, {DisplayNameRole, RemarkRole, TagsRole, InitialRole});
+        emit dataChanged(idx, idx,
+            {DisplayNameRole, RemarkRole, TagsRole, InitialRole});
     });
-    // 未读数变化：整列刷新 UnreadRole 就够了，行数很少，不做逐行定位
-    connect(mgr, &UserMgr::UnreadChanged, this, [this] {
-        const int rows = rowCount();
-        if (rows <= 0)
-            return;
-        emit dataChanged(index(0, 0), index(rows - 1, 0), {UnreadRole});
-    });
-    // 好友改了昵称或签名：显示名与资料页摘要跟着变，备注与标签不受影响
+    //好友改了昵称：显示名与资料页摘要跟着变，备注与标签不受影响
     connect(mgr, &UserMgr::FriendProfileChanged, this, [this](int uid) {
-        const int row = indexOfUid(uid);
+        const int row = _viewUids.indexOf(uid);
         if (row < 0)
             return;
         const QModelIndex idx = index(row, 0);
         emit dataChanged(idx, idx, {NickRole, DisplayNameRole, DescRole, InitialRole});
     });
+    // 头像下载完成只影响这一行
+    connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
+        const int row = _viewUids.indexOf(uid);
+        if (row < 0)
+            return;
+        const QModelIndex idx = index(row, 0);
+        emit dataChanged(idx, idx, {IconRole});
+    });
+    //标签集合变化后筛选条会重算，当前选中的标签可能已经不存在
+    connect(mgr, &UserMgr::FriendTagsChanged, this, [this] {
+        if (_tagFilter.isEmpty())
+            return;
+        beginResetModel();
+        _viewUids = computeView();
+        endResetModel();
+        emit countChanged();
+    });
 }
 
-//最后一条有时间的消息。按 message_id 升序排列，从尾部往前找第一个带时间的，
-//跳过刚发出、服务端还没回执的本地占位消息
-qint64 FriendListModel::lastMessageTime(const std::shared_ptr<FriendInfo> &info)
-{
-    if (!info)
-        return 0;
-    if (info->_chat_thread) {
-        const auto &msgs = info->_chat_thread->_chat_msgs;
-        for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
-            if (*it && (*it)->_time > 0)
-                return (*it)->_time;
-        }
-    }
-    //历史还没拉回来时用登录下发的线程时间，避免首屏顺序先按加好友顺序再跳
-    return info->_last_time;
-}
-
-//按筛选与排序算出完整的行视图。会话模式按最后消息时间倒序，没有消息的会话排最后，
-//相同时间保持加好友顺序（stable_sort），避免列表无谓跳动
+//按标签筛选取行视图；空串表示全部联系人，顺序保持加好友顺序
 QVector<int> FriendListModel::computeView() const
 {
     auto *mgr = UserMgr::GetInstance().get();
-    std::vector<std::shared_ptr<FriendInfo>> items;
-
-    if (_sortRecent) {
-        // 会话模式：好友 + 已删好友但仍有历史的人，会话记录不能因为关系没了就消失
-        const int total = mgr->PeerCount();
-        items.reserve(total);
-        for (int i = 0; i < total; ++i) {
-            auto info = mgr->PeerAt(i);
-            if (info)
-                items.push_back(std::move(info));
-        }
-    }
-    else {
-        const int total = mgr->FriendCount();
-        items.reserve(total);
-        for (int i = 0; i < total; ++i) {
-            auto info = mgr->FriendAt(i);
-            if (!info)
-                continue;
-            if (_filterEnabled && !_tagFilter.isEmpty() && !info->_tags.contains(_tagFilter))
-                continue;
-            items.push_back(std::move(info));
-        }
-    }
-
-    if (_sortRecent) {
-        std::stable_sort(items.begin(), items.end(),
-            [](const std::shared_ptr<FriendInfo> &left, const std::shared_ptr<FriendInfo> &right) {
-                return lastMessageTime(left) > lastMessageTime(right);
-            });
-    }
-
     QVector<int> view;
-    view.reserve(static_cast<int>(items.size()));
-    for (const auto &info : items)
+    const int total = mgr->FriendCount();
+    view.reserve(total);
+    for (int i = 0; i < total; ++i) {
+        auto info = mgr->FriendAt(i);
+        if (!info)
+            continue;
+        if (!_tagFilter.isEmpty() && !info->_tags.contains(_tagFilter))
+            continue;
         view.push_back(info->_uid);
+    }
     return view;
 }
 
-// 行数取当前行视图的长度；筛选与排序都只影响它，不动 UserMgr
 int FriendListModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid())
@@ -164,31 +102,7 @@ void FriendListModel::setTagFilter(const QString &tag)
     emit countChanged();
 }
 
-// 聊天模式关闭筛选，避免会话列表被联系人页选中的标签一起过滤
-void FriendListModel::setFilterEnabled(bool enabled)
-{
-    if (_filterEnabled == enabled)
-        return;
-    beginResetModel();
-    _filterEnabled = enabled;
-    _viewUids = computeView();
-    endResetModel();
-    emit countChanged();
-}
-
-// 会话模式按最近消息排序；联系人模式回到加好友顺序
-void FriendListModel::setSortByRecent(bool enabled)
-{
-    if (_sortRecent == enabled)
-        return;
-    beginResetModel();
-    _sortRecent = enabled;
-    _viewUids = computeView();
-    endResetModel();
-    emit countChanged();
-}
-
-// 按角色取字段；lastText 为空时界面显示「还没有消息」
+// 按角色取字段；displayName 统一走备注 > 昵称 > 用户名
 QVariant FriendListModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.model() != this || index.column() != 0
@@ -208,35 +122,6 @@ QVariant FriendListModel::data(const QModelIndex &index, int role) const
     case TagsRole: return friend_info->_tags;
     case IconRole: return friend_info->_icon;
     case DescRole: return friend_info->_desc;
-    case LastTextRole: {
-        if (!friend_info->_chat_thread->_chat_msgs.empty()) {
-            const auto &last = friend_info->_chat_thread->_chat_msgs.back();
-            if (!last)
-                return friend_info->_last_msg;
-            //撤回优先：最后一条被撤回时，摘要不再暴露原内容
-            if (last->_recalled)
-                return QStringLiteral("撤回了一条消息");
-            switch (last->_msg_type) {
-            case ChatMsgType::Image:
-                return QStringLiteral("[图片]");
-            case ChatMsgType::Video:
-                return QStringLiteral("[视频]");
-            case ChatMsgType::File:
-                return last->_file_name.isEmpty()
-                    ? QStringLiteral("[文件]")
-                    : QStringLiteral("[文件] ") + last->_file_name;
-            default:
-                return last->_msg_content;
-            }
-        }
-        return friend_info->_last_msg;
-    }
-    case LastTimeRole:
-        return TimeFormat::listTime(lastMessageTime(friend_info));
-    case UnreadRole:
-        return UserMgr::GetInstance()->UnreadCount(friend_info->_uid);
-    case ThreadIdRole:
-        return friend_info->_chat_thread->_thread_id;
     case InitialRole: {
         //首字取显示名，备注改了分组字母也跟着改
         const QString name = DisplayName(friend_info->_back, friend_info->_nick,
@@ -248,7 +133,6 @@ QVariant FriendListModel::data(const QModelIndex &index, int role) const
     }
 }
 
-// 暴露给 QML 的角色名，delegate 用 model.xxx 读取
 QHash<int, QByteArray> FriendListModel::roleNames() const
 {
     return {
@@ -260,11 +144,7 @@ QHash<int, QByteArray> FriendListModel::roleNames() const
         {TagsRole, "tags"},
         {IconRole, "icon"},
         {DescRole, "desc"},
-        {LastTextRole, "lastText"},
-        {LastTimeRole, "lastTime"},
-        {UnreadRole, "unread"},
         {InitialRole, "initial"},
-        {ThreadIdRole, "threadId"},
     };
 }
 
@@ -274,20 +154,7 @@ int FriendListModel::indexOfUid(int uid) const
     return _viewUids.indexOf(uid);
 }
 
-// 聊天模式只展示已经有 thread 的会话；空态判断不能用好友总数
-int FriendListModel::chatCount() const
-{
-    int count = 0;
-    const int total = UserMgr::GetInstance()->PeerCount();
-    for (int row = 0; row < total; ++row) {
-        auto friend_info = UserMgr::GetInstance()->PeerAt(row);
-        if (friend_info && friend_info->_chat_thread->_thread_id > 0)
-            ++count;
-    }
-    return count;
-}
-
-//把一行摊平成 map，字段与 roleNames 保持一致，方便 QML 做搜索结果等一次性读取
+//把一行摊平成 map，字段与 roleNames 保持一致
 QVariantMap FriendListModel::get(int row) const
 {
     const QModelIndex idx = index(row, 0);
@@ -300,15 +167,11 @@ QVariantMap FriendListModel::get(int row) const
         {QStringLiteral("tags"), data(idx, TagsRole)},
         {QStringLiteral("icon"), data(idx, IconRole)},
         {QStringLiteral("desc"), data(idx, DescRole)},
-        {QStringLiteral("lastText"), data(idx, LastTextRole)},
-        {QStringLiteral("lastTime"), data(idx, LastTimeRole)},
-        {QStringLiteral("unread"), data(idx, UnreadRole)},
         {QStringLiteral("initial"), data(idx, InitialRole)},
-        {QStringLiteral("threadId"), data(idx, ThreadIdRole)},
     };
 }
 
-// 好友列表整体变化（登录、通过验证）：按当前筛选与排序重建行视图
+// 好友列表整体变化（登录、通过验证）：按当前筛选重建行视图
 void FriendListModel::onFriendListChanged()
 {
     _viewUids = computeView();

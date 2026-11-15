@@ -303,6 +303,34 @@ void TcpMgr::initHandlers()
             emit sig_delete_friend_rsp(document.object());
     });
 
+    //群聊回包：失败要带原因，不能用只转发成功结果的辅助函数
+    _handlers.insert(ID_CREATE_GROUP_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_group_created(document.object());
+    });
+    _handlers.insert(ID_GET_GROUP_INFO_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_group_info(document.object());
+    });
+    _handlers.insert(ID_UPDATE_GROUP_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_group_updated(document.object());
+    });
+    _handlers.insert(ID_GROUP_MEMBER_OP_RSP, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_group_member_op(document.object());
+    });
+    //群资料/成员/被移出/解散的推送：所有在线成员都会收到同一份 JSON
+    _handlers.insert(ID_NOTIFY_GROUP_CHANGED, [this](ReqId, int, QByteArray data) {
+        const auto document = QJsonDocument::fromJson(data);
+        if (document.isObject())
+            emit sig_group_changed(document.object());
+    });
+
     //注册处理用户搜索响应的消息处理函数
     _handlers.insert(ID_SEARCH_USER_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
@@ -571,7 +599,8 @@ void TcpMgr::initHandlers()
         qDebug() << "Receive Text Chat Notify Success " ;
         auto msg_ptr = std::make_shared<TextChatMsg>(jsonObj["fromuid"].toInt(),
             jsonObj["touid"].toInt(),jsonObj["text_array"].toArray(),
-            jsonObj["thread_id"].toVariant().toLongLong());
+            jsonObj["thread_id"].toVariant().toLongLong(),
+            jsonObj.value("thread_type").toInt(1));
         emit sig_text_chat_msg(msg_ptr);
     });
 

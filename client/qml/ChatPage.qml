@@ -13,8 +13,18 @@ Item {
     property var messages: null
     property var bridge: null
     property int currentUid: 0
+    property double currentThreadId: 0 //thread_id 是 64 位，QML 用 double 承接
+    //会话键：两个刚加的好友都还没有 thread_id 时，也要能区分切换
+    readonly property string conversationKey: currentKind + ":" + currentThreadId + ":" + currentUid
+    property int currentKind: 1 //1 单聊 / 2 群聊
+    property var groupInfo: null
+    property var mentionCandidates: []
+    readonly property bool isGroup: currentKind === 2
+    readonly property bool hasNotice: isGroup && groupInfo
+        && String(groupInfo.notice || "").length > 0
     signal sendRequested(var parts)
     signal profileRequested()
+    signal groupInfoRequested()
     signal mediaViewRequested(var items, int index) //查看器：当前会话的图片与视频列表
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
     // 刚切进会话的一小段时间：模型在重建、图片在加载，contentY 会被反复改写。
@@ -32,17 +42,33 @@ Item {
     property int saveAsMessageId: 0
     property string actionMessage: ""
 
+    //@ 成员选择：anchor 是当前 "@" 在文档里的位置，用户继续输入时当作过滤词
+    property int mentionAnchor: -1
+    property string mentionQuery: ""
+    property bool mentionOpen: false
+    readonly property var filteredMentions: {
+        const all = root.mentionCandidates || []
+        const q = root.mentionQuery.toLowerCase()
+        if (q.length === 0)
+            return all
+        return all.filter(function(member) {
+            return String(member.name).toLowerCase().indexOf(q) >= 0
+        })
+    }
+
     ComposerBridge { id: composerBridge }
 
-    // 切换会话时把输入文档也切过去，每个好友保留自己的草稿；新会话先滚到底部
-    onCurrentUidChanged: {
-        composerBridge.switchConversation(input.textDocument, currentUid)
+    // 切换会话时把输入文档也切过去，每个会话保留自己的草稿；新会话先滚到底部。
+    // 草稿按 thread_id 存，群聊与单聊用同一套键，不会互相串
+    onConversationKeyChanged: {
+        composerBridge.switchConversation(input.textDocument, currentThreadId)
+        closeMentionPicker()
         root.stickBottom = true
         root.settling = true
         settleTimer.restart()
         Qt.callLater(messageList.positionViewAtEnd)
     }
-    Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentUid)
+    Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentThreadId)
     onVisibleChanged: if (visible) input.forceActiveFocus()
 
     // 输入区、消息气泡与媒体卡片共用一套右键菜单，父项是整页，坐标直接是页面坐标
@@ -77,7 +103,7 @@ Item {
         height: root.headerHeight
         color: Theme.chatBg
 
-        // 标题行：显示名 + 个性签名。签名只在好友写过时出现，用更小的字号跟在名字后面
+        // 标题行：显示名 + 个性签名/成员数。群聊里点标题直接进群资料
         Item {
             id: titleRow
             anchors.left: parent.left
@@ -113,6 +139,12 @@ Item {
                 color: Theme.textSecondary
                 elide: Text.ElideRight
             }
+            MouseArea {
+                anchors.fill: parent
+                enabled: root.isGroup
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: root.groupInfoRequested()
+            }
         }
 
         Rectangle {
@@ -126,8 +158,9 @@ Item {
             color: profileArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
-            Accessible.name: "查看好友资料"
-            Accessible.onPressAction: root.profileRequested()
+            Accessible.name: root.isGroup ? "查看群资料" : "查看好友资料"
+            Accessible.onPressAction: root.isGroup ? root.groupInfoRequested()
+                                                   : root.profileRequested()
             Keys.onSpacePressed: root.profileRequested()
             Keys.onReturnPressed: root.profileRequested()
             AppIcon {
@@ -140,7 +173,7 @@ Item {
             Text {
                 x: 34
                 anchors.verticalCenter: parent.verticalCenter
-                text: "资料"
+                text: root.isGroup ? "群资料" : "资料"
                 font.pixelSize: 12
                 color: Theme.textSecondary
             }
@@ -149,7 +182,7 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.profileRequested()
+                onClicked: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             }
         }
 
@@ -162,6 +195,35 @@ Item {
         }
     }
 
+    // 群公告：有内容时占一条，点一下进群资料；没有公告不占位
+    Rectangle {
+        id: groupNoticeBar
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        height: root.hasNotice ? 32 : 0
+        visible: height > 0
+        color: Theme.panelAlt
+
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 28
+            anchors.right: parent.right
+            anchors.rightMargin: 28
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.hasNotice ? "群公告：" + root.groupInfo.notice : ""
+            textFormat: Text.PlainText
+            color: Theme.textSecondary
+            font.pixelSize: 11
+            elide: Text.ElideRight
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.groupInfoRequested()
+        }
+    }
+
     // 消息列表：模型来自 MessageModel，条目高度由气泡内容决定；
     // 数量或内容高度变化后滚到底，正在翻历史时由模型增量插入避免重建
     ListView {
@@ -169,7 +231,7 @@ Item {
         objectName: "messageList"
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: header.bottom
+        anchors.top: root.hasNotice ? groupNoticeBar.bottom : header.bottom
         anchors.bottom: composer.top
         anchors.leftMargin: 28
         anchors.rightMargin: 28
@@ -239,10 +301,32 @@ Item {
                     }
                 }
 
+                // 群系统消息：居中灰字，不画头像与气泡，和前后的聊天内容区分开
+                Item {
+                    width: parent.width
+                    height: model.isSystem ? 30 : 0
+                    visible: model.isSystem
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: systemLabel.implicitWidth + 20
+                        height: 22
+                        radius: 11
+                        color: Theme.panelAlt
+                        Text {
+                            id: systemLabel
+                            anchors.centerIn: parent
+                            text: model.text
+                            textFormat: Text.PlainText
+                            color: Theme.textSecondary
+                            font.pixelSize: 10
+                        }
+                    }
+                }
+
                 Loader {
                     id: loader
                     width: parent.width
-                    visible: !model.recalled
+                    visible: !model.recalled && !model.isSystem
                     sourceComponent: model.msgType >= 2 ? mediaComponent : bubbleComponent
                 }
             }
@@ -256,6 +340,7 @@ Item {
                     isImage: model.isImage
                     avatar: model.avatar
                     name: model.name
+                    senderName: model.showSender ? model.senderName : ""
                     imageSource: model.imageSource
                     imageWidth: model.imageWidth
                     imageHeight: model.imageHeight
@@ -263,7 +348,7 @@ Item {
                     statusText: model.statusText
                     retryable: model.canRetry
                     onRetryRequested: {
-                        if (!root.bridge.retryMessage(root.currentUid, model.msgId))
+                        if (!root.bridge.retryMessage(model.msgId))
                             root.showActionMessage("无法重发：原文件已不在本机")
                     }
                     transferProgress: model.transferProgress
@@ -280,6 +365,7 @@ Item {
                     width: messageRow.width
                     avatar: model.avatar
                     name: model.name
+                    senderName: model.showSender ? model.senderName : ""
                     isSelf: model.isSelf
                     msgType: model.msgType
                     status: model.status
@@ -360,6 +446,67 @@ Item {
             text: "还没有消息"
             font.pixelSize: 12
             color: Theme.textHint
+        }
+    }
+
+    //@ 成员选择：浮在输入区上方，键盘上下选择、回车确认、Esc 收起
+    Rectangle {
+        id: mentionPicker
+        visible: root.mentionOpen && root.isGroup && root.filteredMentions.length > 0
+        x: composer.x + 16
+        y: composer.y - height - 8
+        width: 220
+        height: Math.min(240, mentionList.contentHeight + 8)
+        radius: 8
+        color: Theme.panelBg
+        border.width: 1
+        border.color: Theme.line
+        z: 40
+
+        ListView {
+            id: mentionList
+            anchors.fill: parent
+            anchors.margins: 4
+            clip: true
+            model: root.filteredMentions
+            spacing: 2
+            boundsBehavior: Flickable.StopAtBounds
+
+            delegate: Item {
+                width: mentionList.width
+                height: 34
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 6
+                    color: mentionArea.containsMouse ? Theme.selected : "transparent"
+                }
+                Avatar {
+                    x: 6
+                    width: 24
+                    height: 24
+                    radius: 7
+                    anchors.verticalCenter: parent.verticalCenter
+                    source: modelData.icon
+                    name: modelData.name
+                }
+                Text {
+                    x: 38
+                    width: parent.width - 46
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData.name
+                    textFormat: Text.PlainText
+                    color: Theme.textPrimary
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
+                }
+                MouseArea {
+                    id: mentionArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.pickMention(modelData.uid, modelData.name)
+                }
+            }
         }
     }
 
@@ -605,6 +752,7 @@ Item {
                 selectionColor: Theme.selected
                 selectedTextColor: Theme.textPrimary
                 onCursorRectangleChanged: root.followCursor()
+                onTextChanged: root.trackMention()
 
                 Keys.onPressed: (event) => {
                     if (event.matches(StandardKey.Paste)) {
@@ -680,7 +828,65 @@ Item {
     }
 
     function submit() {
-        root.sendRequested(composerBridge.parts(input.textDocument))
+        const parts = composerBridge.parts(input.textDocument)
+        closeMentionPicker()
+        root.sendRequested(parts)
+    }
+
+    //只跟踪群聊里的 @：从光标往前找最近的 "@"，遇到空格/换行就停。
+    //关键词超过 12 个字视为普通文字，不再弹成员列表
+    function trackMention() {
+        if (!root.isGroup) {
+            if (root.mentionOpen)
+                closeMentionPicker()
+            return
+        }
+        const pos = input.cursorPosition
+        if (pos <= 0) {
+            closeMentionPicker()
+            return
+        }
+        const plain = input.getText(0, pos)
+        let at = -1
+        for (let i = plain.length - 1; i >= 0; --i) {
+            const ch = plain.charAt(i)
+            if (ch === "@") {
+                at = i
+                break
+            }
+            if (ch === " " || ch === "\n" || ch === "\u00a0")
+                break
+        }
+        if (at < 0) {
+            closeMentionPicker()
+            return
+        }
+        const query = plain.substring(at + 1)
+        if (query.length > 12) {
+            closeMentionPicker()
+            return
+        }
+        root.mentionAnchor = at
+        root.mentionQuery = query
+        root.mentionOpen = true
+    }
+
+    function closeMentionPicker() {
+        root.mentionOpen = false
+        root.mentionAnchor = -1
+        root.mentionQuery = ""
+    }
+
+    //选中成员：删掉用户输入的 "@关键词"，插入规范的 "@名字 "，光标落在空格后
+    function pickMention(uid, name) {
+        if (root.mentionAnchor < 0)
+            return
+        const anchor = root.mentionAnchor
+        input.remove(anchor, input.cursorPosition)
+        if (composerBridge.insertMention(input.textDocument, anchor, name, uid))
+            input.cursorPosition = anchor + String(name).length + 2
+        closeMentionPicker()
+        input.forceActiveFocus()
     }
 
     // 仅在外层接受提交后清空，断线时原文仍留在编辑区。

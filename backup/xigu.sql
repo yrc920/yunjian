@@ -34,6 +34,7 @@ CREATE TABLE `chat_message` (
   `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
   `is_read` tinyint unsigned NOT NULL DEFAULT '0',
   `recalled` tinyint unsigned NOT NULL DEFAULT '0',
+  `mentions` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
   KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),
@@ -123,7 +124,9 @@ CREATE TABLE `group_chat` (
   `thread_id` bigint unsigned NOT NULL,
   `group_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `owner_id` int NOT NULL DEFAULT '0',
+  `notice` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`),
   CONSTRAINT `fk_group_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -142,6 +145,9 @@ CREATE TABLE `group_chat_member` (
   `thread_id` bigint unsigned NOT NULL,
   `user_id` int NOT NULL,
   `role` tinyint unsigned NOT NULL DEFAULT '0',
+  `nickname` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `last_read_message_id` bigint unsigned NOT NULL DEFAULT '0',
+  `muted` tinyint unsigned NOT NULL DEFAULT '0',
   `joined_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`,`user_id`),
   KEY `idx_group_member_user` (`user_id`,`thread_id`),

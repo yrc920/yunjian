@@ -286,6 +286,7 @@ void FileTcpMgr::sendWindow(const QString &md5)
         if (info->_chat_msg_id > 0) {
             frame["touid"] = info->_touid;
             frame["thread_id"] = static_cast<double>(info->_thread_id);
+            frame["thread_type"] = info->_thread_type;
             frame["unique_id"] = info->_unique_id;
         }
 

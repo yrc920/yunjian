@@ -29,7 +29,11 @@ public:
     bool hasAttachment() const { return !_attachments.isEmpty(); }
     Q_INVOKABLE int insertImage(QQuickTextDocument *document, int position, const QUrl &url);
     Q_INVOKABLE int paste(QQuickTextDocument *document, int position, int selectionEnd);
-    Q_INVOKABLE void switchConversation(QQuickTextDocument *document, int uid);
+    //草稿按会话保存：thread_id 是单聊与群聊共用的键，切换会话不丢未发送内容
+    Q_INVOKABLE void switchConversation(QQuickTextDocument *document, qint64 threadId);
+    //在光标处插入 @名字，并记下名字对应的 uid；发送时按纯文本里是否还含有这个名字过滤
+    Q_INVOKABLE bool insertMention(QQuickTextDocument *document, int position,
+                                   const QString &name, int uid);
     Q_INVOKABLE QVariantList parts(QQuickTextDocument *document) const;
     //按扩展名区分拖入/粘贴的本地文件：image 走富文本，video/file 走附件列表
     Q_INVOKABLE QString fileKind(const QUrl &url) const;
@@ -56,8 +60,9 @@ private:
     QString savePendingImage(const QByteArray &data, const QByteArray &suffix);
     static QString imageKey(const QString &source); //缩略图 data URL 的短哈希
     QString _errorText;
-    int _uid = 0;
-    QHash<int, QString> _drafts;
+    qint64 _threadId = 0;
+    QHash<qint64, QString> _drafts;
+    QHash<QString, int> _mentions; //@显示名 -> uid，发送时按正文里是否还有该名字过滤
     QHash<QString, InsertedImage> _images; //缩略图哈希 -> 上传文件与尺寸
     QVariantList _attachments; //待发送的视频/文件，每项含 kind/path/name/size
 };

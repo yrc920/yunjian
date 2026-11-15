@@ -9,6 +9,7 @@ Item {
 
     property string avatar: ""
     property string name: ""
+    property string senderName: "" //群聊里别人发的消息：卡片上方显示成员名""
     property bool isSelf: false
     property int msgType: 3 //2 视频 / 3 文件
     property int status: 1
@@ -68,7 +69,21 @@ Item {
     readonly property bool showProgress: preparing || uploading || uploadPaused
         || downloading || downloadPaused
 
-    implicitHeight: Math.max(34, card.height)
+    //群聊里要在卡片上方让出一行名字；单聊保持原来的紧凑高度
+    readonly property real nameOffset: senderName.length > 0 ? 18 : 0
+    implicitHeight: nameOffset + Math.max(34, card.height)
+
+    Text {
+        visible: root.senderName.length > 0
+        x: userAvatar.width + 11
+        y: 0
+        width: Math.max(1, Math.min(implicitWidth, root.width - 140))
+        text: root.senderName
+        textFormat: Text.PlainText
+        color: Theme.textSecondary
+        font.pixelSize: 10
+        elide: Text.ElideRight
+    }
 
     function formatSize(bytes) {
         if (!bytes || bytes <= 0)
@@ -85,6 +100,7 @@ Item {
     Avatar {
         id: userAvatar
         x: root.isSelf ? root.width - width : 0
+        y: root.nameOffset
         width: 32
         height: 32
         radius: 10
@@ -95,6 +111,7 @@ Item {
     Rectangle {
         id: card
         x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
+        y: root.nameOffset
         width: root.cardWidth
         height: root.video ? 190 : 82
         radius: 10

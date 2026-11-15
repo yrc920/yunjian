@@ -52,11 +52,20 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
             && positiveId("touid") && root["touid"].asInt() != session_uid
             ? Success : UidInvalid;
     }
+    //群消息：touid 固定 0，真实目标是 thread_id；thread_type 缺省按单聊处理
+    const bool group_msg = root.isMember("thread_type") && root["thread_type"].isInt()
+        && root["thread_type"].asInt() == 2;
     //图片消息先落库再上传资源, 字段约束与资源上传协议保持一致
     if (id == ID_IMG_CHAT_MSG_REQ) {
-        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid
-            || !positiveId("touid") || root["touid"].asInt() == session_uid)
+        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid)
             return UidInvalid;
+        if (group_msg) {
+            if (!root["thread_id"].isInt64() || root["thread_id"].asInt64() <= 0)
+                return Error_Json;
+        }
+        else if (!positiveId("touid") || root["touid"].asInt() == session_uid) {
+            return UidInvalid;
+        }
         if (root.isMember("thread_id")
             && (!root["thread_id"].isInt64() || root["thread_id"].asInt64() < 0))
             return Error_Json;
@@ -75,9 +84,15 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
     }
     //视频/文件消息：资源文件名、原始文件名、大小与可选的视频首帧资源一起落库
     if (id == ID_RESOURCE_CHAT_MSG_REQ) {
-        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid
-            || !positiveId("touid") || root["touid"].asInt() == session_uid)
+        if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid)
             return UidInvalid;
+        if (group_msg) {
+            if (!root["thread_id"].isInt64() || root["thread_id"].asInt64() <= 0)
+                return Error_Json;
+        }
+        else if (!positiveId("touid") || root["touid"].asInt() == session_uid) {
+            return UidInvalid;
+        }
         if (!root["msg_type"].isInt()
             || (root["msg_type"].asInt() != 2 && root["msg_type"].asInt() != 3))
             return Error_Json;
@@ -145,14 +160,64 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         return positiveId("touid") && root["touid"].asInt() != session_uid
             ? Success : UidInvalid;
     }
-    //好友申请用uid表示申请人，同意好友、文本消息和心跳用fromuid表示操作者
+    //好友申请用uid表示申请人，同意好友、文本消息、群操作和心跳用fromuid表示操作者
     //请求中声明的操作者必须与服务端绑定的用户一致，不能仅凭客户端传来的uid执行操作
     const char* actor = id == ID_ADD_FRIEND_REQ ? "uid" : "fromuid";
     if (!positiveId(actor)) return Error_Json;
     if (root[actor].asInt() != session_uid) return UidInvalid;
     if (id == ID_HEART_BEAT_REQ) return Success; //心跳没有目标用户，只需校验发送者
+
+    //群聊请求的目标是 thread_id，不是单个用户，先在这里拦掉格式错误
+    if (id == ID_CREATE_GROUP_REQ) {
+        if (!stringField("name") || !root["members"].isArray()
+            || root["members"].size() > MAX_CREATE_GROUP_MEMBER)
+            return Error_Json;
+        for (const auto& member : root["members"]) {
+            if (!member.isInt() || member.asInt() <= 0) return Error_Json;
+        }
+        return Success;
+    }
+    if (id == ID_GET_GROUP_INFO_REQ) {
+        return root["thread_id"].isInt64() && root["thread_id"].asInt64() > 0
+            ? Success : Error_Json;
+    }
+    if (id == ID_UPDATE_GROUP_REQ) {
+        if (!root["thread_id"].isInt64() || root["thread_id"].asInt64() <= 0
+            || !stringField("action") || !stringField("value"))
+            return Error_Json;
+        const auto action = root["action"].asString();
+        return (action == "name" || action == "notice" || action == "nickname"
+            || action == "mute") ? Success : Error_Json;
+    }
+    if (id == ID_GROUP_MEMBER_OP_REQ) {
+        if (!root["thread_id"].isInt64() || root["thread_id"].asInt64() <= 0
+            || !stringField("action"))
+            return Error_Json;
+        const auto action = root["action"].asString();
+        if (action == "invite") {
+            if (!root["members"].isArray() || root["members"].empty()
+                || root["members"].size() > MAX_CREATE_GROUP_MEMBER)
+                return Error_Json;
+            for (const auto& member : root["members"]) {
+                if (!member.isInt() || member.asInt() <= 0) return Error_Json;
+            }
+            return Success;
+        }
+        if (action == "remove" || action == "set_admin" || action == "unset_admin") {
+            return positiveId("target") ? Success : Error_Json;
+        }
+        if (action == "leave" || action == "dismiss") return Success;
+        return Error_Json;
+    }
+    //群消息的 touid 为 0，不能套用"发给其他用户"的约束
+    if (group_msg && (id == ID_TEXT_CHAT_MSG_REQ || id == ID_IMG_CHAT_MSG_REQ
+        || id == ID_RESOURCE_CHAT_MSG_REQ)) {
+        //下面的文本消息分支继续校验 text_array 与 thread_id
+    }
     //剩余请求都指向其他用户，这里只校验uid格式与非自身约束，不负责判断目标是否存在或是否为好友
-    if (!positiveId("touid") || root["touid"].asInt() == session_uid) return UidInvalid;
+    else if (!positiveId("touid") || root["touid"].asInt() == session_uid) {
+        return UidInvalid;
+    }
     //申请说明和备注允许为空，但必须是字符串；标签可以不带，带了就要符合长度与数量限制
     if (id == ID_ADD_FRIEND_REQ) {
         return stringField("applyname") && stringField("bakname") && tagsField("tags")

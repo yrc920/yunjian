@@ -242,7 +242,13 @@ QVariantList ComposerBridge::parts(QQuickTextDocument *document) const
     const auto flush = [&] {
         if (text.isEmpty())
             return;
-        result.append(QVariantMap{{"kind", "text"}, {"text", text}});
+        //@ 只在正文里还留着"@名字"时才算数：用户删掉名字后不该继续提醒对方
+        QStringList mentions;
+        for (auto it = _mentions.cbegin(); it != _mentions.cend(); ++it) {
+            if (text.contains(QLatin1Char('@') + it.key()))
+                mentions.append(QString::number(it.value()));
+        }
+        result.append(QVariantMap{{"kind", "text"}, {"text", text}, {"mentions", mentions}});
         text.clear();
     };
     for (QTextBlock block = document->textDocument()->begin(); block.isValid(); block = block.next()) {
@@ -334,15 +340,33 @@ void ComposerBridge::clearAttachments()
     emit attachmentsChanged();
 }
 
-void ComposerBridge::switchConversation(QQuickTextDocument *document, int uid)
+void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 threadId)
 {
-    if (!document || !document->textDocument() || uid == _uid)
+    if (!document || !document->textDocument() || threadId == _threadId)
         return;
     auto *doc = document->textDocument();
-    if (_uid != 0)
-        _drafts.insert(_uid, doc->toHtml());
-    _uid = uid;
-    doc->setHtml(_drafts.value(uid));
+    if (_threadId != 0)
+        _drafts.insert(_threadId, doc->toHtml());
+    _threadId = threadId;
+    _mentions.clear(); //草稿换人，上一条消息的 @ 名单不能带过来
+    doc->setHtml(_drafts.value(threadId));
     clearAttachments(); //附件不跨会话保留，避免把上一个会话的文件发错人
     setError({});
+}
+
+//在光标处插入 "@名字 "：只改文档，光标位置由 QML 按插入长度前移。
+//名字里不能带换行，否则会把一条消息拆成多行
+bool ComposerBridge::insertMention(QQuickTextDocument *document, int position,
+                                   const QString &name, int uid)
+{
+    if (!document || !document->textDocument() || uid <= 0 || name.isEmpty())
+        return false;
+    QString clean = name;
+    clean.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    clean.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    QTextCursor cursor(document->textDocument());
+    cursor.setPosition(qMax(0, position));
+    cursor.insertText(QStringLiteral("@%1 ").arg(clean));
+    _mentions.insert(clean, uid);
+    return true;
 }

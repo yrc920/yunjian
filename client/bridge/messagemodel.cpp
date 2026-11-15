@@ -8,76 +8,52 @@
 
 MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
 {
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendListAboutToChange,
-            this, [this] { beginResetModel(); });
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendListChanged, this, [this] {
-        auto info = UserMgr::GetInstance()->GetFriendById(_uid);
-        if (info)
-            syncCache(info->_chat_thread->_chat_msgs);
-        else {
-            _cachedCount = 0;
-            _cachedIds.clear();
-            _cachedStatus.clear();
-        }
-        endResetModel();
-        emit countChanged();
+    auto *mgr = UserMgr::GetInstance().get();
+    connect(mgr, &UserMgr::ConversationChanged, this, &MessageModel::onConversationChanged);
+    //头像/资料变化只刷新当前会话里相关的行，不重建列表
+    connect(mgr, &UserMgr::UserIconChanged, this, [this] {
+        for (int row = 0; row < _cachedCount; ++row)
+            emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
     });
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendChatChanged,
-            this, &MessageModel::onFriendChatChanged);
-    connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged, this, [this] {
-        auto *mgr = UserMgr::GetInstance().get();
-        const auto info = mgr->GetFriendById(_uid);
-        if (!info)
-            return;
-        const int count = qMin(_cachedCount, static_cast<int>(info->_chat_thread->_chat_msgs.size()));
-        for (int row = 0; row < count; ++row) {
-            if (info->_chat_thread->_chat_msgs.at(row)->_from_uid == mgr->GetUid())
+    connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
+        for (int row = 0; row < _cachedCount; ++row) {
+            if (data(index(row, 0), FromUidRole).toInt() == uid)
                 emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
         }
     });
-    // 好友头像换成本地缓存后，刷新对方消息行的头像
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendIconChanged, this,
-            [this](int uid) {
-        auto *mgr = UserMgr::GetInstance().get();
-        const auto info = mgr->GetFriendById(_uid);
-        if (!info)
-            return;
-        const int count = qMin(_cachedCount, static_cast<int>(info->_chat_thread->_chat_msgs.size()));
-        for (int row = 0; row < count; ++row) {
-            if (info->_chat_thread->_chat_msgs.at(row)->_from_uid == uid)
-                emit dataChanged(index(row, 0), index(row, 0), {AvatarRole});
-        }
-    });
-    // 备注、昵称或签名变化后，气泡上的名字按新的显示名重绘；头像与内容不变
+    //备注、昵称或群昵称变化后，气泡上的名字按新的显示名重绘
     auto refreshNames = [this] {
-        const int rows = rowCount();
-        for (int row = 0; row < rows; ++row)
-            emit dataChanged(index(row, 0), index(row, 0), {NameRole});
+        for (int row = 0; row < _cachedCount; ++row)
+            emit dataChanged(index(row, 0), index(row, 0), {NameRole, SenderNameRole});
     };
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendRelationChanged, this,
-            [this, refreshNames](int uid) {
-        if (uid == _uid)
+    connect(mgr, &UserMgr::FriendRelationChanged, this, [this, refreshNames](int uid) {
+        if (_kind == static_cast<int>(ChatThreadKind::Private) && uid == _peerUid)
             refreshNames();
     });
-    connect(UserMgr::GetInstance().get(), &UserMgr::FriendProfileChanged, this,
-            [this, refreshNames](int uid) {
-        if (uid == _uid)
+    connect(mgr, &UserMgr::FriendProfileChanged, this, [this, refreshNames](int uid) {
+        if (_kind == static_cast<int>(ChatThreadKind::Private) && uid == _peerUid)
             refreshNames();
     });
-    connect(UserMgr::GetInstance().get(), &UserMgr::UserProfileChanged, this, refreshNames);
+    connect(mgr, &UserMgr::UserProfileChanged, this, refreshNames);
+    connect(mgr, &UserMgr::GroupInfoChanged, this, [this, refreshNames](qint64 thread_id) {
+        if (thread_id == _threadId)
+            refreshNames();
+    });
 }
 
-// 切换当前会话；uid 为 0 时清空列表。同一个会话重复调用直接返回，
-// 否则点一次当前会话就会重置模型，界面跳回第一条消息
-void MessageModel::setFriend(int uid)
+// 切换当前会话：同一个会话重复调用直接返回，否则点一次当前会话就会重置模型
+void MessageModel::setConversation(qint64 thread_id, int kind, int peer_uid)
 {
-    if (uid == _uid && uid != 0)
+    if (thread_id == _threadId && kind == _kind && peer_uid == _peerUid
+        && (thread_id != 0 || peer_uid != 0))
         return;
     beginResetModel();
-    _uid = uid;
-    auto friend_info = UserMgr::GetInstance()->GetFriendById(uid);
-    if (friend_info)
-        syncCache(friend_info->_chat_thread->_chat_msgs);
+    _threadId = thread_id;
+    _kind = kind;
+    _peerUid = peer_uid;
+    auto data = threadData();
+    if (data)
+        syncCache(data->_chat_msgs);
     else {
         _cachedCount = 0;
         _cachedIds.clear();
@@ -85,6 +61,19 @@ void MessageModel::setFriend(int uid)
     }
     endResetModel();
     emit countChanged();
+}
+
+std::shared_ptr<ChatThreadData> MessageModel::threadData() const
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    if (_kind == static_cast<int>(ChatThreadKind::Group))
+        return mgr->ThreadData(_threadId);
+    if (_threadId > 0) {
+        if (auto data = mgr->ThreadData(_threadId))
+            return data;
+    }
+    auto info = mgr->GetFriendById(_peerUid);
+    return info ? info->_chat_thread : nullptr;
 }
 
 // 记录当前行顺序和状态，供下一次变更做前缀比较
@@ -104,45 +93,48 @@ void MessageModel::syncCache(const std::vector<std::shared_ptr<TextChatData>>& m
     }
 }
 
-// 行数取当前好友的消息条数
 int MessageModel::rowCount(const QModelIndex &parent) const
 {
-    if (parent.isValid() || _uid == 0)
+    if (parent.isValid())
         return 0;
     return _cachedCount;
 }
 
-// 按角色取字段；isSelf 决定气泡左右
+// 按角色取字段；isSelf 决定气泡左右，群聊还要给出送者名字与头像
 QVariant MessageModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.model() != this || index.column() != 0
         || index.row() < 0 || index.row() >= rowCount())
         return {};
-    auto friend_info = UserMgr::GetInstance()->GetFriendById(_uid);
-    if (!friend_info || index.row() < 0
-        || index.row() >= static_cast<int>(friend_info->_chat_thread->_chat_msgs.size())) {
+    auto thread = threadData();
+    if (!thread || index.row() >= static_cast<int>(thread->_chat_msgs.size()))
         return {};
-    }
 
-    const auto &msg = friend_info->_chat_thread->_chat_msgs.at(index.row());
+    auto *mgr = UserMgr::GetInstance().get();
+    const int self_uid = mgr->GetUid();
+    const auto &msg = thread->_chat_msgs.at(index.row());
+    if (!msg)
+        return {};
+
     switch (role) {
     case TextRole: return msg->_msg_content;
     case TimeTextRole: {
+        //返回空串而不是无效 QVariant：QML 里 model.timeText.length 不能读 undefined
         if (msg->_time <= 0)
-            return {};
+            return QString();
         //与上一条间隔不到 5 分钟就沿用上一条的时间条，避免每句都挂一个时间
         if (index.row() > 0) {
-            const auto &prev = friend_info->_chat_thread->_chat_msgs.at(index.row() - 1);
+            const auto &prev = thread->_chat_msgs.at(index.row() - 1);
             if (prev && prev->_time > 0
                 && msg->_time - prev->_time < TimeFormat::kSeparatorSeconds)
-                return {};
+                return QString();
         }
         return TimeFormat::messageTime(msg->_time);
     }
     case RecalledRole:
         return msg->_recalled;
     case CanRecallRole: {
-        if (msg->_recalled || msg->_from_uid != UserMgr::GetInstance()->GetUid())
+        if (msg->_recalled || msg->_from_uid != self_uid)
             return false;
         if (msg->_message_id <= 0 || msg->_time <= 0)
             return false;
@@ -151,17 +143,20 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return std::time(nullptr) - msg->_time <= kRecallWindowSeconds;
     }
     case StatusTextRole: {
+        //群里不做逐条已读，只有单聊才给"已读/未读"结论
+        if (_kind != static_cast<int>(ChatThreadKind::Private))
+            return QString();
         //只有"自己发的最后一条"值得给结论：一屏十几条都挂状态，噪声大于信息
-        if (msg->_recalled || msg->_from_uid != UserMgr::GetInstance()->GetUid())
-            return {};
+        if (msg->_recalled || msg->_from_uid != self_uid)
+            return QString();
         if (msg->_status != ChatMessageStatus::Sent && msg->_status != ChatMessageStatus::Read)
-            return {};
-        const auto &msgs = friend_info->_chat_thread->_chat_msgs;
-        for (int i = static_cast<int>(msgs.size()) - 1; i >= 0; --i) {
-            if (!msgs[i] || msgs[i]->_from_uid != msg->_from_uid)
+            return QString();
+        for (int i = static_cast<int>(thread->_chat_msgs.size()) - 1; i >= 0; --i) {
+            const auto &item = thread->_chat_msgs[i];
+            if (!item || item->_from_uid != self_uid)
                 continue;
             if (i != index.row())
-                return {};
+                return QString();
             break;
         }
         return msg->_status == ChatMessageStatus::Read
@@ -171,25 +166,34 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return msg->_status == ChatMessageStatus::Failed && !msg->_recalled;
     case RecallTextRole:
         //只有自己撤回的文本才有可编辑的原文
-        return msg->_recalled && msg->_from_uid == UserMgr::GetInstance()->GetUid()
+        return msg->_recalled && msg->_from_uid == self_uid
             ? msg->_recalled_text : QString();
-    case SelfRole: return msg->_from_uid == UserMgr::GetInstance()->GetUid();
+    case SelfRole: return msg->_from_uid == self_uid;
     case FromUidRole: return msg->_from_uid;
     case ImageSourceRole: return msg->_imageSource;
     case ImageWidthRole: return msg->_imageWidth;
     case ImageHeightRole: return msg->_imageHeight;
-    case AvatarRole:
-    case NameRole: {
-        auto self = UserMgr::GetInstance()->GetUserInfo();
-        if (self && msg->_from_uid == self->_uid) {
-            //自己的气泡用昵称优先；昵称为空时回落到用户名
-            return role == AvatarRole ? UserMgr::GetInstance()->GetIcon()
-                                      : DisplayName(QString(), self->_nick, self->_name);
+    case AvatarRole: {
+        if (msg->_from_uid == self_uid)
+            return mgr->GetIcon();
+        if (_kind == static_cast<int>(ChatThreadKind::Group))
+            return mgr->GroupSenderIcon(_threadId, msg->_from_uid);
+        auto friend_info = mgr->GetFriendById(_peerUid);
+        return friend_info ? friend_info->_icon : QString();
+    }
+    case NameRole:
+    case SenderNameRole: {
+        if (msg->_from_uid == self_uid) {
+            auto self = mgr->GetUserInfo();
+            if (!self)
+                return QString();
+            return DisplayName(QString(), self->_nick, self->_name);
         }
-        //对方气泡与好友列表保持同一条规则：备注 > 昵称 > 用户名
-        return role == AvatarRole ? friend_info->_icon
-                                  : DisplayName(friend_info->_back, friend_info->_nick,
-                                                friend_info->_name);
+        if (_kind == static_cast<int>(ChatThreadKind::Group))
+            return mgr->GroupSenderName(_threadId, msg->_from_uid);
+        auto friend_info = mgr->GetFriendById(_peerUid);
+        return friend_info ? DisplayName(friend_info->_back, friend_info->_nick,
+                                         friend_info->_name) : QString();
     }
     case StatusRole:
         return static_cast<int>(msg->_status);
@@ -209,6 +213,15 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return QVariant::fromValue(msg->_file_size);
     case TransferStateRole:
         return static_cast<int>(msg->_transfer_state);
+    case ShowSenderRole:
+        return _kind == static_cast<int>(ChatThreadKind::Group)
+            && msg->_from_uid != self_uid && msg->_msg_type != ChatMsgType::System;
+    case SystemRole:
+        return msg->_msg_type == ChatMsgType::System;
+    case MentionedRole:
+        return msg->_mentions.contains(QString::number(self_uid));
+    case KindRole:
+        return _kind;
     default: return {};
     }
 }
@@ -240,17 +253,37 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {StatusTextRole, "statusText"},
         {CanRetryRole, "canRetry"},
         {RecallTextRole, "recallText"},
+        {SenderNameRole, "senderName"},
+        {ShowSenderRole, "showSender"},
+        {SystemRole, "isSystem"},
+        {MentionedRole, "mentioned"},
+        {KindRole, "threadKind"},
     };
 }
 
-// 当前会话消息变化：顺序不变时按增量插入或按行刷新，只有重排/缩表才 reset
-void MessageModel::onFriendChatChanged(int uid)
+QVariantMap MessageModel::get(int row) const
 {
-    if (uid != _uid || _uid == 0)
+    const QModelIndex idx = index(row, 0);
+    QVariantMap map;
+    //roleNames() 每次返回一个新容器，必须取一份再遍历，不能同时用两个临时对象
+    const auto roles = roleNames();
+    for (auto it = roles.cbegin(); it != roles.cend(); ++it)
+        map.insert(QString::fromUtf8(it.value()), data(idx, it.key()));
+    return map;
+}
+
+// 当前会话消息变化：顺序不变时按增量插入或按行刷新，只有重排/缩表才 reset
+void MessageModel::onConversationChanged(qint64 thread_id, int peer_uid)
+{
+    const bool group = _kind == static_cast<int>(ChatThreadKind::Group);
+    const bool match = group ? thread_id == _threadId
+                             : (thread_id == _threadId
+                                || (peer_uid != 0 && peer_uid == _peerUid));
+    if (!match)
         return;
 
-    auto friend_info = UserMgr::GetInstance()->GetFriendById(uid);
-    if (!friend_info) {
+    auto thread = threadData();
+    if (!thread) {
         if (_cachedCount > 0) {
             beginResetModel();
             _cachedCount = 0;
@@ -262,7 +295,7 @@ void MessageModel::onFriendChatChanged(int uid)
         return;
     }
 
-    const auto &msgs = friend_info->_chat_thread->_chat_msgs;
+    const auto &msgs = thread->_chat_msgs;
     const int newCount = static_cast<int>(msgs.size());
 
     if (newCount == _cachedCount) {

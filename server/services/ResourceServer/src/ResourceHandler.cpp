@@ -111,7 +111,8 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	if ((root.isMember("message_id") && !root["message_id"].isInt64())
 		|| (root.isMember("touid") && !root["touid"].isInt())
 		|| (root.isMember("thread_id") && !root["thread_id"].isInt64())
-		|| (root.isMember("unique_id") && !root["unique_id"].isString())) {
+		|| (root.isMember("unique_id") && !root["unique_id"].isString())
+		|| (root.isMember("thread_type") && !root["thread_type"].isInt())) {
 		SendUploadResponse(session, avatar, ErrorCodes::Error_Json, "", "", 0, 0, 0, 0, 0);
 		return;
 	}
@@ -119,6 +120,8 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	const int touid = root.get("touid", 0).asInt();
 	const long long chat_thread_id = root.get("thread_id", Json::Int64(0)).asInt64();
 	const std::string unique_id = root.get("unique_id", "").asString();
+	//群聊资源上传带 2，资源服务器据此把完成通知发到发送者所在实例再广播
+	const int thread_type = root.get("thread_type", 1).asInt() == 2 ? 2 : 1;
 
 	const std::string md5 = root["md5"].asString(); //资源内容ID，也是续传键
 	const std::string name = root["name"].asString(); //落盘文件名
@@ -224,6 +227,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	task->_chat_msg_id = chat_msg_id;
 	task->_touid = touid;
 	task->_thread_id = chat_thread_id;
+	task->_thread_type = thread_type;
 	task->_unique_id = unique_id;
 	FileSystem::GetInstance()->PostUploadTask(std::move(task));
 }

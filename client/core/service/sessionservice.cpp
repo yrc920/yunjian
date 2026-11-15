@@ -12,6 +12,7 @@
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "fileservice.h"
+#include "groupservice.h"
 
 namespace {
 constexpr int kSessionTimeoutMs = 12000; // 连接 + 登录帧回包的整体上限
@@ -41,40 +42,65 @@ SessionService::SessionService() : _ready(false)
 
     auto *tcp = TcpMgr::GetInstance().get();
 
-    // 收到新消息：写进 UserMgr。好友模型只刷新那一行的摘要，
-    // 消息模型在同一个好友下会增量插入，界面不需要重建
+    // 收到新消息：单聊与群聊都按 thread 落到 UserMgr。
+    // 只有别人发来的才计未读；正在看的会话立刻上报已读。
+    // 群聊先把 conv 归到群，未读按 thread 计，@我 单独标出来
     connect(tcp, &TcpMgr::sig_text_chat_msg, this,
             [](std::shared_ptr<TextChatMsg> msg) {
                 if (!msg)
                     return;
                 auto *mgr = UserMgr::GetInstance().get();
-                const int peerUid = msg->_from_uid == UserMgr::GetInstance()->GetUid()
-                    ? msg->_to_uid : msg->_from_uid;
-                if (msg->_thread_id > 0)
-                    UserMgr::GetInstance()->SetThreadId(peerUid, msg->_thread_id);
-                //只有对方发来的才计未读；1018 回包与自己的消息不算
-                bool incoming = false;
-                for (const auto &chat : msg->_chat_msgs) {
-                    if (chat && chat->_from_uid != mgr->GetUid()) {
-                        incoming = true;
-                        break;
+                const int self = mgr->GetUid();
+                ConversationRef conv;
+                conv._thread_id = msg->_thread_id;
+                conv._kind = static_cast<ChatThreadKind>(msg->_thread_type);
+                if (conv._kind == ChatThreadKind::Group) {
+                    //被邀请的人可能还没拿到群资料：先占位并补拉，消息不能丢
+                    if (!mgr->GetGroup(conv._thread_id)) {
+                        mgr->EnsureGroup(conv._thread_id);
+                        GroupService::GetInstance()->RequestGroupInfo(conv._thread_id);
                     }
                 }
-                if (incoming)
-                    mgr->IncUnread(peerUid);
-                UserMgr::GetInstance()->AppendFriendChatMsg(peerUid, msg->_chat_msgs);
-                //正在看这个会话时，消息一落地就上报已读，对方那边立刻变双勾
-                if (peerUid == mgr->ActivePeer())
-                    ChatService::GetInstance()->MarkSessionRead(peerUid);
+                else {
+                    conv._peer_uid = msg->_from_uid == self ? msg->_to_uid : msg->_from_uid;
+                    if (msg->_thread_id > 0)
+                        mgr->SetThreadId(conv._peer_uid, msg->_thread_id);
+                    else
+                        conv._thread_id = mgr->ThreadId(conv._peer_uid);
+                }
+
+                int incoming = 0;
+                bool at_me = false;
+                for (const auto &chat : msg->_chat_msgs) {
+                    if (!chat || chat->_from_uid == self)
+                        continue;
+                    ++incoming;
+                    if (chat->_mentions.contains(QString::number(self)))
+                        at_me = true;
+                }
+                for (int i = 0; i < incoming; ++i)
+                    mgr->IncThreadUnread(conv._thread_id);
+                if (at_me)
+                    mgr->MarkThreadAtMe(conv._thread_id);
+
+                mgr->AppendChatMsgs(conv, msg->_chat_msgs);
+                //服务端可能刚刚补建了会话，这里同步 thread_id
+                if (conv._kind == ChatThreadKind::Private && msg->_thread_id > 0)
+                    conv._thread_id = msg->_thread_id;
+                if (conv._thread_id == mgr->ActiveThread())
+                    ChatService::GetInstance()->MarkSessionRead(conv);
             });
+    //1018 回执带错误：按 msgid 把对应会话里的消息标失败
     connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [](const QJsonObject &data) {
-        auto *mgr = UserMgr::GetInstance().get();
-        const int peerUid = data.value("touid").toInt();
+        ConversationRef conv;
+        conv._thread_id = data.value("thread_id").toVariant().toLongLong();
+        conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+        conv._peer_uid = conv._kind == ChatThreadKind::Private ? data.value("touid").toInt() : 0;
         for (const auto &value : data.value("text_array").toArray())
-            mgr->UpdateChatMessage(peerUid, value.toObject().value("msgid").toString(), 0,
-                ChatMessageStatus::Failed);
+            UserMgr::GetInstance()->UpdateChatMessage(conv,
+                value.toObject().value("msgid").toString(), 0, ChatMessageStatus::Failed);
     });
-    //对端已读：把自己发的、消息号不超过它的消息换成双勾
+    //对端已读：把自己发的、消息号不超过它的消息换成双勾（仅单聊）
     connect(tcp, &TcpMgr::sig_message_read, this, [](const QJsonObject &data) {
         const int uid = data.value("uid").toInt();
         if (uid <= 0)
@@ -82,74 +108,90 @@ SessionService::SessionService() : _ready(false)
         UserMgr::GetInstance()->MarkMessagesReadTo(uid,
             data.value("message_id").toVariant().toLongLong());
     });
-    //自己撤回成功 / 对方撤回：本地都换成同一行提示，不再显示正文与资源
+    //自己撤回成功 / 别人撤回：消息号全局唯一，直接按号定位，不再依赖会话类型
     connect(tcp, &TcpMgr::sig_recall_rsp, this, [](const QJsonObject &data) {
         if (data.value("error").toInt(1) != 0)
             return;
-        auto *mgr = UserMgr::GetInstance().get();
-        const int peer = mgr->FriendIdByThread(data.value("thread_id").toVariant().toLongLong());
-        if (peer > 0)
-            mgr->MarkMessageRecalled(peer, data.value("message_id").toVariant().toLongLong());
+        UserMgr::GetInstance()->MarkMessageRecalled(
+            data.value("message_id").toVariant().toLongLong());
     });
     connect(tcp, &TcpMgr::sig_message_recalled, this, [](const QJsonObject &data) {
-        const int from = data.value("fromuid").toInt();
-        if (from > 0)
-            UserMgr::GetInstance()->MarkMessageRecalled(from,
-                data.value("message_id").toVariant().toLongLong());
+        UserMgr::GetInstance()->MarkMessageRecalled(
+            data.value("message_id").toVariant().toLongLong());
     });
     //图片消息回执：补上 message_id/thread_id 后启动资源上传；失败则结束本地消息
     connect(tcp, &TcpMgr::sig_chat_img_rsp, this, [](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const QString uniqueId = data.value("unique_id").toString();
-        const int peerUid = data.value("touid").toInt();
-        if (uniqueId.isEmpty() || peerUid <= 0)
+        if (uniqueId.isEmpty())
             return;
+
+        ConversationRef conv;
+        conv._thread_id = data.value("thread_id").toVariant().toLongLong();
+        conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+        conv._peer_uid = conv._kind == ChatThreadKind::Private ? data.value("touid").toInt() : 0;
 
         if (data.value("error").toInt(1) != 0) {
             ChatService::GetInstance()->discardPendingImage(uniqueId);
-            mgr->UpdateChatMessage(peerUid, uniqueId, 0, ChatMessageStatus::Failed);
+            mgr->UpdateChatMessage(conv, uniqueId, 0, ChatMessageStatus::Failed);
             return;
         }
 
-        const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
-        if (threadId > 0)
-            mgr->SetThreadId(peerUid, threadId);
+        if (conv._kind == ChatThreadKind::Private && conv._thread_id > 0)
+            mgr->SetThreadId(conv._peer_uid, conv._thread_id);
         //消息已落库但资源还没上传；状态保持发送中，由资源上传进度推进到已发送
         const qint64 messageId = data.value("message_id").toVariant().toLongLong();
-        mgr->UpdateChatMessage(peerUid, uniqueId, messageId, ChatMessageStatus::Sending);
-        ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, peerUid, threadId);
+        mgr->UpdateChatMessage(conv, uniqueId, messageId, ChatMessageStatus::Sending);
+        ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, conv);
     });
-    //对方图片上传完成：补消息并下载资源，界面先在会话里显示占位和进度
+    //接收方图片上传完成：补消息并下载资源，界面先在会话里显示占位和进度
     connect(tcp, &TcpMgr::sig_image_notify, this, [](const QJsonObject &data) {
-        //对方图片已上传：先计未读，再交给聊天服务建气泡
+        const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         const int from = data.value("fromuid").toInt();
-        if (from > 0 && from != UserMgr::GetInstance()->GetUid())
-            UserMgr::GetInstance()->IncUnread(from);
+        const int self = UserMgr::GetInstance()->GetUid();
+        if (from > 0 && from != self && threadId > 0 && threadId != UserMgr::GetInstance()->ActiveThread())
+            UserMgr::GetInstance()->IncThreadUnread(threadId);
         ChatService::GetInstance()->HandleImageNotify(data);
-        if (from > 0 && from == UserMgr::GetInstance()->ActivePeer())
-            ChatService::GetInstance()->MarkSessionRead(from);
+        if (threadId > 0 && threadId == UserMgr::GetInstance()->ActiveThread()) {
+            ConversationRef conv;
+            conv._thread_id = threadId;
+            conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+            conv._peer_uid = conv._kind == ChatThreadKind::Private ? from : 0;
+            ChatService::GetInstance()->MarkSessionRead(conv);
+        }
     });
     //视频/文件回执与上传完成通知：卡片先出现，资源等用户点击后再下载
     connect(tcp, &TcpMgr::sig_resource_chat_rsp, this, [](const QJsonObject &data) {
         ChatService::GetInstance()->HandleResourceRsp(data);
     });
     connect(tcp, &TcpMgr::sig_resource_notify, this, [](const QJsonObject &data) {
+        const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         const int from = data.value("fromuid").toInt();
-        if (from > 0 && from != UserMgr::GetInstance()->GetUid())
-            UserMgr::GetInstance()->IncUnread(from);
+        const int self = UserMgr::GetInstance()->GetUid();
+        if (from > 0 && from != self && threadId > 0 && threadId != UserMgr::GetInstance()->ActiveThread())
+            UserMgr::GetInstance()->IncThreadUnread(threadId);
         ChatService::GetInstance()->HandleResourceNotify(data);
-        if (from > 0 && from == UserMgr::GetInstance()->ActivePeer())
-            ChatService::GetInstance()->MarkSessionRead(from);
+        if (threadId > 0 && threadId == UserMgr::GetInstance()->ActiveThread()) {
+            ConversationRef conv;
+            conv._thread_id = threadId;
+            conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+            conv._peer_uid = conv._kind == ChatThreadKind::Private ? from : 0;
+            ChatService::GetInstance()->MarkSessionRead(conv);
+        }
     });
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const auto threads = data.value("thread_list").toArray();
         mgr->AppendChatThreads(threads);
         mgr->RefreshFriendList();
-        //每个会话先拿第一页，剩下的由 load_more 继续
+        //每个会话先拿第一页，剩下的由 load_more 继续；群聊再补一次成员，
+        //会话行的"谁说了什么"与气泡名字都要用成员表
         for (const auto &value : threads) {
             const auto item = value.toObject();
-            requestMessages(item.value("thread_id").toVariant().toLongLong());
+            const qint64 threadId = item.value("thread_id").toVariant().toLongLong();
+            requestMessages(threadId);
+            if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
+                GroupService::GetInstance()->RequestGroupInfo(threadId);
         }
         if (data.value("load_more").toBool() && !threads.isEmpty())
             loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
@@ -157,9 +199,23 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_chat_messages, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
-        const int peerUid = mgr->FriendIdByThread(threadId);
-        if (peerUid <= 0)
+        if (threadId <= 0)
             return;
+        ConversationRef conv;
+        conv._thread_id = threadId;
+        conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+        if (conv._kind == ChatThreadKind::Group) {
+            if (!mgr->GetGroup(threadId)) {
+                mgr->EnsureGroup(threadId);
+                GroupService::GetInstance()->RequestGroupInfo(threadId);
+            }
+        }
+        else {
+            conv._peer_uid = mgr->FriendIdByThread(threadId);
+            if (conv._peer_uid <= 0)
+                return;
+        }
+
         std::vector<std::shared_ptr<TextChatData>> messages;
         for (const auto &value : data.value("text_array").toArray()) {
             const auto item = value.toObject();
@@ -175,13 +231,19 @@ SessionService::SessionService() : _ready(false)
             //落库时间：历史补拉与实时消息用同一套字段，界面据此画时间条与排序
             message->_time = item.value("time").toVariant().toLongLong();
             message->_recalled = item.value("recalled").toBool();
-            //自己发的消息如果库里已标已读，直接按双勾显示，不必等下一次通知
+            const QString mentions = item.value("mentions").toString();
+            for (const QString &uid : mentions.split(QLatin1Char(','), Qt::SkipEmptyParts))
+                message->_mentions.append(uid.trimmed());
+            //自己发的消息如果库里已标已读，直接按已读显示，不必等下一次通知
             if (message->_status == ChatMessageStatus::Sent && item.value("read").toBool())
                 message->_status = ChatMessageStatus::Read;
             //图片消息的 content 是资源文件名；视频/文件的 content 是元数据 JSON。
             //图片自动补全，视频只补首帧，视频/文件本体等用户点击下载
             const int msgType = item.value("msg_type").toInt(0);
-            if (msgType == static_cast<int>(ChatMsgType::Image)) {
+            if (msgType == static_cast<int>(ChatMsgType::System)) {
+                message->_msg_type = ChatMsgType::System;
+            }
+            else if (msgType == static_cast<int>(ChatMsgType::Image)) {
                 message->_msg_type = ChatMsgType::Image;
                 message->_resource_name = item.value("content").toString();
                 QSize pixel_size;
@@ -236,16 +298,20 @@ SessionService::SessionService() : _ready(false)
             }
             messages.push_back(std::move(message));
         }
-        mgr->AppendFriendChatMsg(peerUid, std::move(messages));
+        mgr->AppendChatMsgs(conv, std::move(messages));
         //打开会话后历史一落地就上报已读；不在前台时不报，等用户真正进入会话再报
-        if (peerUid == mgr->ActivePeer())
-            ChatService::GetInstance()->MarkSessionRead(peerUid);
+        if (threadId == mgr->ActiveThread())
+            ChatService::GetInstance()->MarkSessionRead(conv);
         if (data.value("load_more").toBool()) {
             const auto items = data.value("text_array").toArray();
             if (!items.isEmpty())
-                requestMessages(threadId, items.last().toObject().value("message_id").toVariant().toLongLong());
+                requestMessages(threadId,
+                    items.last().toObject().value("message_id").toVariant().toLongLong());
         }
     });
+    //中途被拉进新群：群资料到位后拉第一页历史，邀请前的消息也能看到
+    connect(GroupService::GetInstance().get(), &GroupService::groupActivated, this,
+            [this](qint64 threadId) { requestMessages(threadId); });
     connect(tcp, &TcpMgr::sig_private_chat_created, this, [](const QJsonObject &data) {
         if (data.value("error").toInt() != 0) {
             UserMgr::GetInstance()->MarkPrivateChatPending(data.value("uid").toInt(), false);
@@ -277,8 +343,12 @@ SessionService::SessionService() : _ready(false)
                 // 对方通过了我的申请，我发出去的那条记录也跟着变成已通过
                 mgr->SetApplyStatus(info->_uid, 1, 1);
                 mgr->SetThreadId(info->_uid, info->_thread_id);
-                if (!info->_welcome_msgs.empty())
-                    mgr->AppendFriendChatMsg(info->_uid, info->_welcome_msgs);
+                if (!info->_welcome_msgs.empty()) {
+                    ConversationRef conv;
+                    conv._thread_id = info->_thread_id;
+                    conv._peer_uid = info->_uid;
+                    mgr->AppendChatMsgs(conv, info->_welcome_msgs);
+                }
             });
     //同意方与被同意方都要有的本地装配：好友、会话、欢迎消息。
     //incoming 表示"对方通过我的申请"，只有这一侧才把默认招呼算成未读；
@@ -289,14 +359,17 @@ SessionService::SessionService() : _ready(false)
         if (!mgr->CheckFriendById(rsp->_uid))
             mgr->AddFriend(rsp);
         mgr->SetThreadId(rsp->_uid, rsp->_thread_id);
+        ConversationRef conv;
+        conv._thread_id = rsp->_thread_id;
+        conv._peer_uid = rsp->_uid;
         if (!rsp->_welcome_msgs.empty())
-            mgr->AppendFriendChatMsg(rsp->_uid, rsp->_welcome_msgs);
+            mgr->AppendChatMsgs(conv, rsp->_welcome_msgs);
         if (!incoming)
             return;
         //默认招呼是为了让申请方知道"对方通过了"，对申请方就是一条普通未读消息
         for (const auto &message : rsp->_welcome_msgs) {
             if (message && message->_from_uid == rsp->_uid)
-                mgr->IncUnread(rsp->_uid);
+                mgr->IncThreadUnread(rsp->_thread_id);
         }
     };
     connect(tcp, &TcpMgr::sig_auth_rsp, this, [this, applyFriendAdded](std::shared_ptr<AuthRsp> rsp) {
@@ -429,8 +502,13 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     mgr->SetChatThreads(data["thread_list"].toArray());
     //登录响应只带一页会话；先给每个会话拉第一页消息，会话更多时按游标继续
     const auto threads = data["thread_list"].toArray();
-    for (const auto &value : threads)
-        requestMessages(value.toObject().value("thread_id").toVariant().toLongLong());
+    for (const auto &value : threads) {
+        const auto item = value.toObject();
+        const qint64 threadId = item.value("thread_id").toVariant().toLongLong();
+        requestMessages(threadId);
+        if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
+            GroupService::GetInstance()->RequestGroupInfo(threadId);
+    }
     if (data.value("thread_more").toBool() && !threads.isEmpty())
         loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
     _connecting = false;
