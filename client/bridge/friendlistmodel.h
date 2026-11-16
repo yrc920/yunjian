@@ -53,7 +53,6 @@ signals:
     void countChanged();
 
 private:
-    void onFriendListChanged();
     //按当前标签筛选取出行视图，不改动 UserMgr 的原始顺序
     QVector<int> computeView() const;
     //按当前行视图取第 row 行对应的好友，行号越界返回空

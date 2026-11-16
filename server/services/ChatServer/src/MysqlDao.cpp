@@ -351,7 +351,8 @@ bool MysqlDao::AddFriendApply(const int& from, const int& to, const std::string&
 
 bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 	const std::vector<std::string>& tags, std::string& apply_desc,
-	std::string& reverse_back, std::vector<std::string>& reverse_tags) {
+	std::string& reverse_back, std::vector<std::string>& reverse_tags,
+	bool& first_approve) {
 	auto con = pool_->getConnection();
 	if (con == nullptr)
 		return false;
@@ -374,6 +375,8 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
             con->_session->rollback();
             return false;
         }
+        //状态在 0 时才写欢迎语与推送；重复点同意只回包，不再制造重复消息
+        first_approve = apply[0].get<int>() == 0;
         apply_desc = apply[1].get<std::string>();
         //reverse_back / reverse_tags 是申请方当初给通过方设的备注与分组，回传给申请方用于本地显示
         reverse_back = apply[2].isNull() ? std::string() : apply[2].get<std::string>();
@@ -586,9 +589,9 @@ bool MysqlDao::GetApplyList(int touid,
 	try {
 		//申请列表直接关联用户表取当前资料，头像必须一起查，
 		//否则申请人换了头像后「新的朋友」仍只能显示空图标
-		auto res = con->_session->sql("select apply.from_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs "
+		auto res = con->_session->sql("select apply.from_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs, apply.id "
 			"from friend_apply as apply join user on apply.from_uid = user.uid where apply.to_uid = ? "
-			"and apply.id > ? order by apply.id ASC LIMIT ? ")
+			"and apply.id > ? order by apply.id DESC LIMIT ? ")
 			.bind(touid).bind(begin).bind(limit).execute();
 
 		auto row = res.fetchOne();
@@ -603,6 +606,7 @@ bool MysqlDao::GetApplyList(int touid,
 			auto desc = row[6].get<std::string>();
 			//将查询结果中的好友申请信息封装成ApplyInfo对象
 			auto apply_ptr = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status);
+			apply_ptr->_id = row[7].get<int64_t>();
 			applyList.push_back(apply_ptr); //将查询结果中的好友申请信息存储在applyList中
 			row = res.fetchOne();
 		}
@@ -631,9 +635,9 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 	try {
 		//我发出的申请展示的是对方头像，同样要取 user.icon
 		auto res = con->_session->sql(
-			"select apply.to_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs "
+			"select apply.to_uid, apply.status, user.name, user.nick, user.sex, user.icon, apply.descs, apply.id "
 			"from friend_apply as apply join user on apply.to_uid = user.uid where apply.from_uid = ? "
-			"and apply.id > ? order by apply.id ASC LIMIT ? ")
+			"and apply.id > ? order by apply.id DESC LIMIT ? ")
 			.bind(from_uid).bind(begin).bind(limit).execute();
 
 		auto row = res.fetchOne();
@@ -646,7 +650,9 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 			auto icon = row[5].get<std::string>();
 			auto desc = row[6].get<std::string>();
 			//desc 存的是我填的留言, 界面据此显示自己发出去的内容
-			applyList.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status));
+			auto apply_ptr = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status);
+			apply_ptr->_id = row[7].get<int64_t>();
+			applyList.push_back(apply_ptr);
 			row = res.fetchOne();
 		}
 
@@ -656,6 +662,46 @@ bool MysqlDao::GetSentApplyList(int from_uid,
 		if (con) con->_healthy = false;
 		std::cerr << "Mysqlx Error loading sent apply list: " << e.what() << std::endl;
 		return false;
+	}
+}
+
+//关系判定统一走这里：搜索页据此决定给"添加/已申请/发消息"，客户端不再靠本地缓存猜。
+//单向行说明被删过，既不是好友也不能显示"已申请"，要允许重新申请
+int MysqlDao::GetFriendRelation(int me, int peer)
+{
+	if (me <= 0 || peer <= 0 || me == peer)
+		return 0;
+	auto con = pool_->getConnection();
+	if (con == nullptr)
+		return 0;
+	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
+	try {
+		auto row = con->_session->sql(
+			"SELECT "
+			"(SELECT COUNT(*) FROM friend WHERE self_id = ? AND friend_id = ?), "
+			"(SELECT COUNT(*) FROM friend WHERE self_id = ? AND friend_id = ?), "
+			"(SELECT COUNT(*) FROM friend_apply WHERE from_uid = ? AND to_uid = ? AND status = 0), "
+			"(SELECT COUNT(*) FROM friend_apply WHERE from_uid = ? AND to_uid = ? AND status = 0)")
+			.bind(me).bind(peer).bind(peer).bind(me)
+			.bind(me).bind(peer).bind(peer).bind(me).execute().fetchOne();
+		if (row.isNull())
+			return 0;
+		const int mine = row[0].get<int>();
+		const int theirs = row[1].get<int>();
+		if (mine > 0 && theirs > 0)
+			return 1;
+		if (mine > 0 || theirs > 0)
+			return 4; //单向关系：之前是好友，其中一方删除了
+		if (row[2].get<int>() > 0)
+			return 2;
+		if (row[3].get<int>() > 0)
+			return 3;
+		return 0;
+	}
+	catch (mysqlx::Error& e) {
+		con->_healthy = false;
+		std::cerr << "Mysqlx Error loading friend relation: " << e.what() << std::endl;
+		return 0;
 	}
 }
 

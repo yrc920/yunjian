@@ -6,8 +6,15 @@
 FriendListModel::FriendListModel(QObject *parent) : QAbstractListModel(parent)
 {
     auto *mgr = UserMgr::GetInstance().get();
-    connect(mgr, &UserMgr::FriendListAboutToChange, this, [this] { beginResetModel(); });
-    connect(mgr, &UserMgr::FriendListChanged, this, &FriendListModel::onFriendListChanged);
+    //好友集合变化时自己开合 reset，不再依赖 AboutToChange 配对。
+    //之前 beginResetModel 挂在 AboutToChange 上，只要有一条路径只发了 Changed，
+    //endResetModel 就落空，列表停在空表，直到切换标签触发一次完整重置才恢复
+    connect(mgr, &UserMgr::FriendListChanged, this, [this] {
+        beginResetModel();
+        _viewUids = computeView();
+        endResetModel();
+        emit countChanged();
+    });
     // 备注或标签变化会改显示名与分组；筛选状态下这条记录可能进出结果集，整表重置
     connect(mgr, &UserMgr::FriendRelationChanged, this, [this](int uid) {
         if (!_tagFilter.isEmpty()) {
@@ -49,6 +56,9 @@ FriendListModel::FriendListModel(QObject *parent) : QAbstractListModel(parent)
         endResetModel();
         emit countChanged();
     });
+    //界面可能在登录数据落地之后才创建：这里必须按当前好友先算一次行视图，
+    //否则列表停在 0 行，只有切换标签触发重建才会突然出现（真实出现过的 bug）
+    _viewUids = computeView();
 }
 
 //按标签筛选取行视图；空串表示全部联系人，顺序保持加好友顺序
@@ -169,12 +179,4 @@ QVariantMap FriendListModel::get(int row) const
         {QStringLiteral("desc"), data(idx, DescRole)},
         {QStringLiteral("initial"), data(idx, InitialRole)},
     };
-}
-
-// 好友列表整体变化（登录、通过验证）：按当前筛选重建行视图
-void FriendListModel::onFriendListChanged()
-{
-    _viewUids = computeView();
-    endResetModel();
-    emit countChanged();
 }

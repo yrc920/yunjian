@@ -82,8 +82,9 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
         connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [this](const QJsonObject &data) {
             if (!data.value("not_friend").toBool())
                 return;
-            _chatNotice = tr("对方已不是你的好友，消息未发送");
-            emit chatNoticeChanged();
+            //顶部横条已经常驻说明原因，这里不再弹一次性提示，避免同一句话出现两次
+            _notFriendUid = data.value("touid").toInt();
+            emit chatBlockedChanged();
         });
     }
 
@@ -113,7 +114,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     auto *friendService = FriendService::GetInstance().get();
     connect(friendService, &FriendService::userFound, this,
             [this](int uid, const QString &name, const QString &nick,
-                   const QString &desc, const QString &icon, int) {
+                   const QString &desc, const QString &icon, int, int relation) {
                 if (_searchState != SearchSearching)
                     return;
                 // 用户在等待期间改了关键词：这次结果已经过期，回到空闲让界面重新搜
@@ -132,10 +133,25 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                                  {QStringLiteral("icon"), icon},
                                  {QStringLiteral("desc"), desc}};
                 _searchMessage.clear();
+                //关系以服务端为准：自己的本地缓存可能还留着"好友"对象（会话要保留），
+                //但对方早已单方面删除，这时必须允许重新申请
                 if (uid == UserMgr::GetInstance()->GetUid()) {
                     _searchState = SearchSelf;
                     _searchMessage = tr("这是你自己的账号");
+                } else if (relation == 1) {
+                    _searchState = SearchAlreadyFriend;
+                } else if (relation == 2) {
+                    _searchState = SearchAlreadyApplied;
+                } else if (relation == 3) {
+                    _searchState = SearchStranger;
+                    _searchMessage = tr("对方已向你发送好友申请，可在「新的朋友」里处理");
+                } else if (relation == 4) {
+                    _searchState = SearchStranger;
+                    _searchMessage = tr("你们曾是好友，可以重新添加");
+                } else if (relation == 0) {
+                    _searchState = SearchStranger;
                 } else if (UserMgr::GetInstance()->CheckFriendById(uid)) {
+                    //服务端未返回关系（旧版本）时退回本地判断
                     _searchState = SearchAlreadyFriend;
                 } else if (UserMgr::GetInstance()->AlreadySentApply(uid)) {
                     _searchState = SearchAlreadyApplied;
@@ -166,6 +182,8 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     // 好友列表变化时，聊天页的过滤结果要跟着更新；没有查询词就不用算
     auto *userMgr = UserMgr::GetInstance().get();
     connect(userMgr, &UserMgr::FriendListChanged, this, [this] {
+        //关系恢复（重新通过验证）后顶部的关系提示要立刻收起来
+        emit chatBlockedChanged();
         if (!_friendQuery.trimmed().isEmpty())
             rebuildFriendMatches();
     });
@@ -196,6 +214,11 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 mgr->AddSentApply(_applyUid, _applyName, _applyNick, _applyIcon, _applyVerify);
                 if (sameTarget)
                     setApplyState(ApplySent, tr("申请已发送，等待对方通过"));
+                //从聊天页补的验证：顶部横条改成"等待对方通过"，不用再点一次
+                if (_applyUid == _currentUid) {
+                    _reAddSentUid = _applyUid;
+                    emit chatBlockedChanged();
+                }
             });
 
     // 群服务：建群、群资料、群设置与成员操作的回包都在这里落到界面状态
@@ -276,10 +299,27 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 emit groupChanged();
             });
 
-    // 我自己同意了别人的申请：直接进入会话，欢迎消息就是开场白
-    connect(SessionService::GetInstance().get(), &SessionService::friendAdded,
-            this, &ChatBridge::openChat);
-    // 别人通过我的申请：只更新列表与红点，不切页，避免打断当前操作
+    // 我自己同意了别人的申请：直接进入会话，欢迎消息就是开场白。
+    //通过之后关系已恢复，"不是好友"的失败标记要一起清掉
+    connect(SessionService::GetInstance().get(), &SessionService::friendAdded, this,
+            [this](int uid) {
+                if (_notFriendUid == uid || _reAddSentUid == uid) {
+                    _notFriendUid = 0;
+                    _reAddSentUid = 0;
+                    emit chatBlockedChanged();
+                }
+                openChat(uid);
+            });
+    // 别人通过我的申请：只更新列表与红点，不切页，避免打断当前操作。
+    //关系恢复后要把"发送失败"的标记清掉，否则顶部横条会一直挂着
+    connect(SessionService::GetInstance().get(), &SessionService::friendApproved, this,
+            [this](int uid) {
+                if (_notFriendUid != uid && _reAddSentUid != uid)
+                    return;
+                _notFriendUid = 0;
+                _reAddSentUid = 0;
+                emit chatBlockedChanged();
+            });
 }
 
 void ChatBridge::setSearchText(const QString &text)
@@ -537,9 +577,40 @@ void ChatBridge::clearTagFilter()
     setTagFilter(QString());
 }
 
+//角标只统计会打扰人的会话：免打扰的群不计入，会话行仍自己显示小圆点
 int ChatBridge::unreadTotal() const
 {
-    return UserMgr::GetInstance()->UnreadTotal();
+    return UserMgr::GetInstance()->UnreadBadgeTotal();
+}
+
+//单聊顶部的常驻提示：我删了对方、被对方删除后发送失败、验证已经发出。
+//三种情况都要给同一位置的一致文案，用户不需要猜"为什么发不出去"
+QString ChatBridge::chatBlockedText() const
+{
+    if (isGroup() || _currentUid <= 0)
+        return {};
+    auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
+    const bool sent = _reAddSentUid == _currentUid;
+    if (info && !info->_is_friend)
+        return sent ? tr("朋友验证已发送，等待对方通过")
+                    : tr("你已删除对方，发送朋友验证后可继续聊天");
+    if (_notFriendUid == _currentUid)
+        return sent ? tr("朋友验证已发送，等待对方通过")
+                    : tr("对方还不是你的好友，消息未发送");
+    return {};
+}
+
+//不离开当前聊天，直接补一条验证：弹层收集一句话，这里负责按当前会话对象发出去。
+//走联系人页的加好友浮层会强制切换左栏，聊天上下文被打断，这是之前"割裂"的来源
+void ChatBridge::sendReAdd(const QString &text)
+{
+    if (isGroup() || _currentUid <= 0)
+        return;
+    auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
+    if (!info)
+        return;
+    applyTo(_currentUid, DisplayName(info->_back, info->_nick, info->_name),
+            info->_nick, info->_icon, text, QString(), QStringList());
 }
 
 void ChatBridge::clearChatNotice()
@@ -625,8 +696,8 @@ void ChatBridge::showChatMode()
     clearFriendSearch();
     setMode(ChatMode);
 
-    // 有当前会话就回到会话页，没有就停在空态
-    setPane(_currentUid != 0 ? ChatPage : EmptyPane);
+    // 有当前会话就回到会话页，没有就停在空态；群聊没有 peer uid，用 thread 判断
+    setPane(_currentThreadId > 0 ? ChatPage : EmptyPane);
 }
 
 void ChatBridge::showContactMode()
@@ -635,8 +706,11 @@ void ChatBridge::showContactMode()
     clearFriendSearch();
     setMode(ContactMode);
 
-    // 点「联系人」直接落在「新的朋友」，这是列表里第一个入口
-    setPane(ApplyFriendPage);
+    // 第一次进入落在「新的朋友」；之后回到联系人区域沿用上次停留的页面
+    if (_pane != ApplyFriendPage && _pane != FriendInfoPage) {
+        _lastContactPane = ApplyFriendPage;
+        setPane(ApplyFriendPage);
+    }
 }
 
 void ChatBridge::showSettings()
@@ -653,9 +727,16 @@ void ChatBridge::recallMessage(qint64 messageId)
     ChatService::GetInstance()->RecallMessage(messageId);
 }
 
-bool ChatBridge::retryMessage(const QString &msgId)
+int ChatBridge::retryMessage(const QString &msgId)
 {
-    return ChatService::GetInstance()->RetryMessage(currentConversation(), msgId);
+    const ConversationRef conv = currentConversation();
+    //关系已经断开时不再把消息重新塞进队列：服务端只会再拒一次，界面却像没反应
+    if (conv._kind == ChatThreadKind::Private && conv._peer_uid > 0) {
+        auto info = UserMgr::GetInstance()->GetFriendById(conv._peer_uid);
+        if ((info && !info->_is_friend) || _notFriendUid == conv._peer_uid)
+            return 1;
+    }
+    return ChatService::GetInstance()->RetryMessage(conv, msgId) ? 0 : 2;
 }
 
 // 退出登录交给外壳处理：它负责切页与关闭会话，ChatBridge 只做转发
@@ -742,6 +823,7 @@ void ChatBridge::openChat(int uid)
     _messages->setConversation(_currentThreadId, _currentKind, uid);
     emit currentChanged();
     emit groupChanged();
+    emit chatBlockedChanged();
 
     setMode(ChatMode);
     setPane(ChatPage);
@@ -784,6 +866,7 @@ void ChatBridge::openGroup(qint64 threadId)
     _messages->setConversation(threadId, _currentKind, 0);
     emit currentChanged();
     emit groupChanged();
+    emit chatBlockedChanged();
 
     setMode(ChatMode);
     setPane(ChatPage);
@@ -919,6 +1002,7 @@ void ChatBridge::openProfile(int uid)
     //资料页同样拉一次最新昵称与签名
     ProfileService::GetInstance()->requestProfile(uid);
 
+    _lastContactPane = FriendInfoPage;
     setMode(ContactMode);
     setPane(FriendInfoPage);
 }
@@ -964,15 +1048,29 @@ void ChatBridge::refreshFriendSnapshot(int uid)
 void ChatBridge::openApplyList()
 {
     closeAddFriend();
+    _lastContactPane = ApplyFriendPage;
     setMode(ContactMode);
     setPane(ApplyFriendPage);
 }
 
+//区域决定左栏与中栏，页决定右栏；两者必须属于同一区域，
+//否则会出现"左边联系人、右边还在聊天"的割裂状态
 void ChatBridge::setMode(int mode)
 {
     if (_mode == mode)
         return;
     _mode = mode;
+
+    const bool chatPane = _pane == ChatPage || _pane == GroupInfoPage || _pane == EmptyPane;
+    const bool contactPane = _pane == ApplyFriendPage || _pane == FriendInfoPage;
+    if (mode == ContactMode && !contactPane) {
+        setPane(_lastContactPane); //回到联系人区域：恢复上次看的资料/申请页
+    } else if (mode == ChatMode && !chatPane) {
+        setPane(_currentThreadId > 0 ? ChatPage : EmptyPane);
+    } else if (mode == SettingsMode && _pane != UserInfoPage) {
+        setPane(UserInfoPage);
+    }
+
     //回到会话模式且仍停在会话页时，恢复"正在看"，否则新消息会被算成未读
     refreshActiveThread();
     emit modeChanged();
@@ -1006,6 +1104,17 @@ bool ChatBridge::sendParts(const QVariantList &parts)
         : UserMgr::GetInstance()->GetFriendById(conv._peer_uid) != nullptr;
     if (!SessionService::GetInstance()->isReady() || !ready)
         return false;
+
+    //单聊关系已断：不再把消息塞进队列。顶部横条说明原因，这里补一条即时提示，
+    //让"点发送没反应"变成"明确告诉我发不出去"
+    if (conv._kind == ChatThreadKind::Private) {
+        auto info = UserMgr::GetInstance()->GetFriendById(conv._peer_uid);
+        if (info && !info->_is_friend) {
+            _chatNotice = tr("你已删除对方，发送朋友验证后才能继续聊天");
+            emit chatNoticeChanged();
+            return false;
+        }
+    }
 
     bool hasContent = false;
     for (const QVariant &part : parts) {

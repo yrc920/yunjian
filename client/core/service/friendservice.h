@@ -30,7 +30,7 @@ public:
 
 signals:
     void userFound(int uid, const QString &name, const QString &nick,
-                   const QString &desc, const QString &icon, int sex);
+                   const QString &desc, const QString &icon, int sex, int relation);
     void searchFailed(const QString &message);
     // 申请回执：服务端确认写入 friend_apply 后成功，否则带上可展示的原因
     void applyFinished(bool ok, const QString &message);

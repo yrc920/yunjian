@@ -41,7 +41,7 @@ FriendService::FriendService()
                     return;
                 }
                 emit userFound(info->_uid, info->_name, info->_nick,
-                               info->_desc, info->_icon, info->_sex);
+                               info->_desc, info->_icon, info->_sex, info->_relation);
             });
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connection_closed,
             this, [this] {

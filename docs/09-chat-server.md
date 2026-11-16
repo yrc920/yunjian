@@ -330,6 +330,15 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 消息保存失败时用 `IsMutualFriend` 复核（仅失败路径），回包里带 `not_friend: true`，
 客户端才能给出「对方已不是你的好友」而不是笼统的发送失败。
 
+重新加回沿用同一套流程：申请记录允许重复（`ON DUPLICATE KEY UPDATE status=0`），
+`AddFriend` 用 `INSERT IGNORE` 补回被删掉的那一行，`first_approve` 只在状态从 0 变 1 时为真，
+重复点同意不会重复写欢迎语；欢迎语的 `client_msg_id` 带时间戳，删后重新通过能生成新消息。
+
+搜索结果额外返回 `relation`：一次查询里同时看 `friend` 两行与 `friend_apply` 待处理状态，
+避免客户端把"被对方删除但本地仍留着会话对象"的人当成好友。
+
+申请列表按 `friend_apply.id DESC` 返回，客户端首屏与新通知都保持"最新的在上"。
+
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
 资源全部落盘后，ResourceServer 按 Redis `uip_<receiver>` 选择接收方所在实例，通过 gRPC

@@ -1,5 +1,6 @@
 import QtQuick
 import QtCore
+import QtQuick.Controls
 import QtQuick.Dialogs
 import XiguChat
 
@@ -26,6 +27,11 @@ Item {
     signal profileRequested()
     signal groupInfoRequested()
     signal mediaViewRequested(var items, int index) //查看器：当前会话的图片与视频列表
+    //单聊关系提示（已删除对方 / 被对方删除 / 验证已发送），空串表示正常
+    property string blockedText: ""
+    //发送朋友验证的小弹层：留在当前聊天里完成，不切到联系人区域
+    property bool reAddOpen: false
+    property string reAddDraft: ""
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
     // 刚切进会话的一小段时间：模型在重建、图片在加载，contentY 会被反复改写。
     // 这段时间内不改写 stickBottom，并持续贴底，避免"打开会话停在第一条"。
@@ -224,6 +230,136 @@ Item {
         }
     }
 
+    // 关系提示条：比公告更靠下，说明"为什么发不出去"并给出补加好友的入口
+    Rectangle {
+        id: blockedBar
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: root.hasNotice ? groupNoticeBar.bottom : header.bottom
+        height: root.blockedText.length > 0 ? 38 : 0
+        visible: height > 0
+        color: Theme.panelAlt
+
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 28
+            anchors.right: blockedAction.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.blockedText
+            textFormat: Text.PlainText
+            color: Theme.danger
+            font.pixelSize: 11
+            elide: Text.ElideRight
+        }
+        Rectangle {
+            id: blockedAction
+            anchors.right: parent.right
+            anchors.rightMargin: 24
+            anchors.verticalCenter: parent.verticalCenter
+            width: blockedActionText.implicitWidth + 22
+            height: 24
+            radius: 12
+            color: blockedActionArea.containsMouse ? Theme.selected : "transparent"
+            border.width: 1
+            border.color: Theme.danger
+
+            Text {
+                id: blockedActionText
+                anchors.centerIn: parent
+                text: "发送朋友验证"
+                color: Theme.danger
+                font.pixelSize: 11
+            }
+            MouseArea {
+                id: blockedActionArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                enabled: root.blockedText.indexOf("已发送") < 0
+                onClicked: {
+                    root.reAddDraft = "你好，我是" + (root.bridge ? root.bridge.myName : "")
+                    root.reAddOpen = true
+                }
+            }
+        }
+    }
+
+    // 发送朋友验证：轻量遮罩，不切区域、不打断聊天上下文
+    Rectangle {
+        id: reAddOverlay
+        anchors.fill: parent
+        visible: root.reAddOpen
+        color: Theme.overlay
+        z: 60
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: root.reAddOpen = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(380, parent.width - 48)
+            implicitHeight: reAddColumn.implicitHeight + 40
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+
+            Column {
+                id: reAddColumn
+                x: 20
+                y: 20
+                width: parent.width - 40
+                spacing: 10
+
+                Text {
+                    text: "发送朋友验证"
+                    color: Theme.textPrimary
+                    font.pixelSize: 15
+                    font.bold: true
+                }
+                Text {
+                    width: parent.width
+                    text: "验证通过后即可继续聊天"
+                    color: Theme.textSecondary
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+                TextField {
+                    id: reAddInput
+                    width: parent.width
+                    height: 36
+                    text: root.reAddDraft
+                    placeholderText: "说点什么…"
+                    selectByMouse: true
+                    onTextChanged: root.reAddDraft = text
+                }
+                Row {
+                    spacing: 10
+                    anchors.right: parent.right
+                    AppButton {
+                        width: 80
+                        height: 32
+                        text: "取消"
+                        onClicked: root.reAddOpen = false
+                    }
+                    AppButton {
+                        width: 92
+                        height: 32
+                        text: "发送"
+                        enabled: root.reAddDraft.trim().length > 0
+                        onClicked: {
+                            root.bridge.sendReAdd(root.reAddDraft.trim())
+                            root.reAddOpen = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 消息列表：模型来自 MessageModel，条目高度由气泡内容决定；
     // 数量或内容高度变化后滚到底，正在翻历史时由模型增量插入避免重建
     ListView {
@@ -231,7 +367,8 @@ Item {
         objectName: "messageList"
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: root.hasNotice ? groupNoticeBar.bottom : header.bottom
+        anchors.top: root.blockedText.length > 0 ? blockedBar.bottom
+                   : (root.hasNotice ? groupNoticeBar.bottom : header.bottom)
         anchors.bottom: composer.top
         anchors.leftMargin: 28
         anchors.rightMargin: 28
@@ -348,8 +485,13 @@ Item {
                     statusText: model.statusText
                     retryable: model.canRetry
                     onRetryRequested: {
-                        if (!root.bridge.retryMessage(model.msgId))
-                            root.showActionMessage("无法重发：原文件已不在本机")
+                        const code = root.bridge.retryMessage(model.msgId)
+                        if (code === 1)
+                            root.showActionMessage(root.blockedText.length > 0
+                                ? root.blockedText : "对方还不是你的好友，发送朋友验证后才能重发")
+                        else if (code === 2)
+                            root.showActionMessage(model.msgType >= 2
+                                ? "无法重发：原文件已不在本机" : "这条消息无法重发")
                     }
                     transferProgress: model.transferProgress
                     onImageClicked: root.openImage(model.messageId, model.imageSource)

@@ -23,6 +23,7 @@ struct UserInfo {
 
 //好友申请信息结构体
 struct ApplyInfo {
+	long long _id = 0; //friend_apply 自增ID, 申请列表按它倒序
 	ApplyInfo(int uid, std::string name, std::string desc,
 		std::string icon, std::string nick, int sex, int status)
 		:_uid(uid), _name(name), _desc(desc),

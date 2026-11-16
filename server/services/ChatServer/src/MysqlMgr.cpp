@@ -36,8 +36,10 @@ bool MysqlMgr::AddFriendApply(const int& from, const int& to, const std::string&
 
 bool MysqlMgr::AddFriend(const int& from, const int& to, std::string back_name,
 	const std::vector<std::string>& tags, std::string& apply_desc,
-	std::string& reverse_back, std::vector<std::string>& reverse_tags) {
-	return _dao.AddFriend(from, to, back_name, tags, apply_desc, reverse_back, reverse_tags);
+	std::string& reverse_back, std::vector<std::string>& reverse_tags,
+	bool& first_approve) {
+	return _dao.AddFriend(from, to, back_name, tags, apply_desc, reverse_back,
+		reverse_tags, first_approve);
 }
 
 bool MysqlMgr::UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc)
@@ -106,6 +108,11 @@ bool MysqlMgr::IsFriend(int uid, int touid)
 bool MysqlMgr::IsMutualFriend(int uid, int touid)
 {
 	return _dao.IsMutualFriend(uid, touid);
+}
+
+int MysqlMgr::GetFriendRelation(int me, int peer)
+{
+	return _dao.GetFriendRelation(me, peer);
 }
 
 bool MysqlMgr::DeleteFriend(int uid, int touid)

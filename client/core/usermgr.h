@@ -75,7 +75,6 @@ public:
     void AppendApplyList(QJsonArray array);
     //登录下发的会话列表：单聊补 thread_id，群聊写入群会话；两者共用同一份游标
     void AppendFriendList(QJsonArray array);
-    bool AlreadyApply(int uid); //是否已经收到这个人的好友申请
     bool AlreadySentApply(int uid); //是否已经向这个人发过还未通过的申请
     void AddApplyList(std::shared_ptr<ApplyInfo> app); //别人申请我，追加到申请列表
     void AddSentApply(int uid, const QString &name, const QString &nick,
@@ -122,6 +121,8 @@ public:
     //收到未知群的消息时先建占位，避免系统消息与首条聊天没有容器可放
     void EnsureGroup(qint64 thread_id);
     int UnreadTotal() const;
+    //导航角标：跳过免打扰的群，其余的未读照常累加
+    int UnreadBadgeTotal() const;
     //当前正在看的会话；设置后该会话的未读立即清零，收到新消息也不再计数
     void SetActiveThread(qint64 thread_id);
     qint64 ActiveThread() const { return _active_thread; }
@@ -228,7 +229,8 @@ private:
     std::shared_ptr<UserInfo> _user_info;
     QString _token;
     QString _localIcon; //本机头像 data URL, 为空时回落到服务端 icon
-    std::vector<std::shared_ptr<ApplyInfo>> _apply_list; //好友申请列表
+    std::vector<std::shared_ptr<ApplyInfo>> _apply_list; //好友申请列表，新的排最前
+    long long _apply_seq = 0; //申请列表的自增序号，保证新条目一定比旧的大
     std::vector<std::shared_ptr<FriendInfo>> _friend_list; //列表模型按行读取的顺序容器
     QMap<int, std::shared_ptr<FriendInfo>> _friend_map; //uid 索引, 与列表指向同一对象
     std::vector<std::shared_ptr<GroupInfo>> _group_list; //群会话按加入顺序保存

@@ -316,6 +316,21 @@ int UserMgr::UnreadTotal() const
     return total;
 }
 
+//导航角标用的总数：免打扰的群不计入，会话行仍然自己显示小圆点。
+//这样"消息免打扰"才真的不打扰，而不是只把会话行的数字换成圆点
+int UserMgr::UnreadBadgeTotal() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    int total = 0;
+    for (auto it = _unread.cbegin(); it != _unread.cend(); ++it) {
+        auto group = _group_map.constFind(it.key());
+        if (group != _group_map.constEnd() && *group && (*group)->_muted)
+            continue;
+        total += it.value();
+    }
+    return total;
+}
+
 //切换当前会话：进入时清零未读，离开时置0；同一会话重复调用不会重复通知
 void UserMgr::SetActiveThread(qint64 thread_id)
 {
@@ -636,9 +651,14 @@ void UserMgr::AppendApplyList(QJsonArray array)
         auto uid = value["uid"].toInt();
         auto status = value["status"].toInt();
         auto direction = value["direction"].toInt();
-        auto info = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, sex, status, direction);
-        _apply_list.push_back(info);
+        auto id = value["id"].toVariant().toLongLong();
+        _apply_list.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick,
+            sex, status, direction, id));
     }
+    //新的申请排在上面：登录首屏也按 id 倒序，和收到通知时的插入方向一致
+    std::stable_sort(_apply_list.begin(), _apply_list.end(),
+        [](const auto &left, const auto &right) { return left->_id > right->_id; });
+    _apply_seq = _apply_list.empty() ? 0 : _apply_list.front()->_id;
 
     emit ApplyListChanged();
 }
@@ -672,18 +692,6 @@ void UserMgr::AppendFriendList(QJsonArray array) {
     emit FriendTagsChanged(); //整表重建后筛选条按新的标签并集刷新
 }
 
-bool UserMgr::AlreadyApply(int uid)
-{
-    std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for(auto& apply: _apply_list){
-        //只统计别人申请我的方向；我发出去的申请不能拦住对方的新申请
-        if(apply->_uid == uid && apply->_direction == 0){
-            return true;
-        }
-    }
-    return false;
-}
-
 bool UserMgr::AlreadySentApply(int uid)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -694,11 +702,21 @@ bool UserMgr::AlreadySentApply(int uid)
     return false;
 }
 
+//收到新申请：同一个人只保留一条，更新后挪到最前面（列表按新旧从上往下）
 void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
 {
+    if (!app)
+        return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit ApplyListAboutToChange();
-    _apply_list.push_back(std::move(app));
+    app->_id = ++_apply_seq;
+    auto existing = std::find_if(_apply_list.begin(), _apply_list.end(),
+        [&app](const auto &item) {
+            return item && item->_uid == app->_uid && item->_direction == app->_direction;
+        });
+    if (existing != _apply_list.end())
+        _apply_list.erase(existing);
+    _apply_list.insert(_apply_list.begin(), std::move(app));
     emit ApplyListChanged();
 }
 
@@ -707,21 +725,26 @@ void UserMgr::AddSentApply(int uid, const QString &name, const QString &nick,
                            const QString &icon, const QString &desc)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    for (auto &apply : _apply_list) {
-        if (apply->_uid != uid || apply->_direction != 1)
+    for (auto it = _apply_list.begin(); it != _apply_list.end(); ++it) {
+        if (!(*it) || (*it)->_uid != uid || (*it)->_direction != 1)
             continue;
         emit ApplyListAboutToChange();
+        auto apply = *it;
         apply->_name = name;
         apply->_nick = nick;
         apply->_icon = icon;
         apply->_desc = desc;
         apply->_status = 0;
+        apply->_id = ++_apply_seq;
+        _apply_list.erase(it);
+        _apply_list.insert(_apply_list.begin(), apply); //刚发出的申请排最上面
         emit ApplyListChanged();
         return;
     }
 
     emit ApplyListAboutToChange();
-    _apply_list.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick, 0, 0, 1));
+    _apply_list.insert(_apply_list.begin(), std::make_shared<ApplyInfo>(
+        uid, name, desc, icon, nick, 0, 0, 1, ++_apply_seq));
     emit ApplyListChanged();
 }
 
@@ -738,18 +761,48 @@ void UserMgr::SetApplyStatus(int uid, int status, int direction)
     }
 }
 
+//对方目前是否仍是好友：删好友后对象仍留在 _friend_map 里承载会话，
+//所以必须看 _is_friend，否则搜索时会把已删的人当成好友，导致无法重新申请
 bool UserMgr::CheckFriendById(int uid)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    return _friend_map.contains(uid);
+    auto it = _friend_map.constFind(uid);
+    return it != _friend_map.constEnd() && *it && (*it)->_is_friend;
+}
+
+//把已有对象恢复成好友：删过好友后对象还留在 _friend_map 里（会话与历史要保留），
+//重新通过验证时不能直接 return，否则联系人列表永远少这个人
+static void restoreFriendEntry(std::vector<std::shared_ptr<FriendInfo>> &list,
+                               const std::shared_ptr<FriendInfo> &info)
+{
+    if (!info)
+        return;
+    info->_is_friend = true;
+    const bool listed = std::any_of(list.begin(), list.end(),
+        [&info](const auto &item) { return item && item->_uid == info->_uid; });
+    if (!listed)
+        list.push_back(info);
 }
 
 void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto friend_info = std::make_shared<FriendInfo>(auth_rsp);
-    if (_friend_map.contains(friend_info->_uid))
+    auto existing = _friend_map.value(auth_rsp->_uid);
+    if (existing) {
+        emit FriendListAboutToChange();
+        existing->_name = auth_rsp->_name;
+        existing->_nick = auth_rsp->_nick;
+        existing->_icon = auth_rsp->_icon;
+        existing->_sex = auth_rsp->_sex;
+        existing->_back = auth_rsp->_back;
+        if (!auth_rsp->_tags.isEmpty())
+            existing->_tags = auth_rsp->_tags;
+        restoreFriendEntry(_friend_list, existing);
+        emit FriendListChanged();
+        emit FriendTagsChanged();
         return;
+    }
+    auto friend_info = std::make_shared<FriendInfo>(auth_rsp);
     emit FriendListAboutToChange();
     _friend_map[friend_info->_uid] = friend_info;
     _friend_list.push_back(friend_info); //列表与索引必须同时维护，否则新好友不会出现在列表里
@@ -759,9 +812,22 @@ void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
 void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto friend_info = std::make_shared<FriendInfo>(auth_info);
-    if (_friend_map.contains(friend_info->_uid))
+    auto existing = _friend_map.value(auth_info->_uid);
+    if (existing) {
+        emit FriendListAboutToChange();
+        existing->_name = auth_info->_name;
+        existing->_nick = auth_info->_nick;
+        existing->_icon = auth_info->_icon;
+        existing->_sex = auth_info->_sex;
+        existing->_back = auth_info->_back;
+        if (!auth_info->_tags.isEmpty())
+            existing->_tags = auth_info->_tags;
+        restoreFriendEntry(_friend_list, existing);
+        emit FriendListChanged();
+        emit FriendTagsChanged();
         return;
+    }
+    auto friend_info = std::make_shared<FriendInfo>(auth_info);
     emit FriendListAboutToChange();
     _friend_map[friend_info->_uid] = friend_info;
     _friend_list.push_back(friend_info);
@@ -1674,6 +1740,7 @@ void UserMgr::SetGroupMuted(qint64 thread_id, bool muted)
     group->_muted = muted;
     emit GroupInfoChanged(thread_id);
     emit GroupListChanged();
+    emit UnreadChanged(); //角标口径与免打扰有关，开关后立即重算
 }
 
 int UserMgr::FriendCount() const

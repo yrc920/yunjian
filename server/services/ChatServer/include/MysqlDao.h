@@ -28,10 +28,12 @@ public:
 	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
 		const std::string& back_name, const std::vector<std::string>& tags); //添加好友申请、留言、备注与标签
-	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签
+	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签。
+	//first_approve 表示这次调用之前申请还是未处理状态, 用来避免重复同意时再写一遍欢迎语
 	bool AddFriend(const int& from, const int& to, std::string back_name,
 		const std::vector<std::string>& tags, std::string& apply_desc,
-		std::string& reverse_back, std::vector<std::string>& reverse_tags);
+		std::string& reverse_back, std::vector<std::string>& reverse_tags,
+		bool& first_approve);
 	//更新本人可编辑的资料字段; 昵称与签名的长度由调用方按字符数校验
 	bool UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc);
 	//修改自己给好友设的备注与标签: 返回 1 已更新, 0 不是好友, -1 数据库错误
@@ -57,6 +59,8 @@ public:
 		bool& changed, int& peer_uid);
 	//撤回自己发的消息：返回 ErrorCodes，成功时把撤回后的消息写进 message
 	int RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message);
+	//两个人当前的关系：0 无关系, 1 互为好友, 2 我已申请待通过, 3 对方申请待我处理, 4 单向(被删过)
+	int GetFriendRelation(int me, int peer);
 	//双方是否还是好友：删好友后用于判断消息能否发出
 	bool IsFriend(int uid, int touid);
 	//双向关系是否完整（两行都在）：发消息的前提

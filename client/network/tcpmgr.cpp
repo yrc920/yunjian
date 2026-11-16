@@ -363,9 +363,11 @@ void TcpMgr::initHandlers()
         }
 
         //从JSON对象中提取用户信息并创建一个SearchInfo对象的智能指针
+        //relation 由服务端计算（两行好友关系 + 待处理申请），客户端不再用本地缓存判断
         auto search_info = std::make_shared<SearchInfo>(jsonObj["uid"].toInt(),
             jsonObj["name"].toString(), jsonObj["nick"].toString(),
-            jsonObj["desc"].toString(), jsonObj["sex"].toInt(), jsonObj["icon"].toString());
+            jsonObj["desc"].toString(), jsonObj["sex"].toInt(), jsonObj["icon"].toString(),
+            jsonObj.contains("relation") ? jsonObj["relation"].toInt() : -1);
 
         emit sig_user_search(search_info); //发出用户搜索结果的信号
     });
@@ -459,7 +461,9 @@ void TcpMgr::initHandlers()
         QString icon = jsonObj["icon"].toString();
         int sex = jsonObj["sex"].toInt();
 
-        auto auth_info = std::make_shared<AuthInfo>(from_uid, name, nick, icon, sex,
+        //1015 是"对方通过我的申请"：用 AuthRsp 交给会话层，走和 1014 同一套装配，
+        //否则通过语不会计未读、顶部关系提示也不会清
+        auto auth_info = std::make_shared<AuthRsp>(from_uid, name, nick, icon, sex,
             jsonObj["thread_id"].toVariant().toLongLong());
         //申请时填过备注和标签的话，通过后立刻能按备注显示、按分组筛选，不必重新登录
         auth_info->_back = jsonObj["back"].toString();
@@ -481,7 +485,7 @@ void TcpMgr::initHandlers()
             auth_info->_welcome_msgs.push_back(welcome);
         }
 
-        emit sig_add_auth_friend(auth_info);
+        emit sig_auth_rsp(auth_info);
     });
 
     //注册处理好友申请认证通知的消息处理函数(我同意了对方的好友申请，对方收到通知)

@@ -26,9 +26,12 @@
 //用户数据结构
 class SearchInfo {
 public:
-    SearchInfo(int uid, QString name, QString nick, QString desc, int sex, QString icon);
+    SearchInfo(int uid, QString name, QString nick, QString desc, int sex, QString icon,
+               int relation = -1);
 
     int _uid; //用户ID
+    //服务端给出的关系：0 陌生人, 1 互为好友, 2 我已申请, 3 对方申请我, 4 单向(被删过)
+    int _relation = -1;
     QString _name; //用户名
     QString _nick; //用户昵称
     QString _desc; //用户描述
@@ -52,9 +55,9 @@ public:
 //_direction 区分方向：0 别人申请我，1 我申请别人；两边都显示在「新的朋友」里
 struct ApplyInfo {
     ApplyInfo(int uid, QString name, QString desc, QString icon, QString nick, int sex, int status,
-              int direction = 0) :
+              int direction = 0, long long id = 0) :
         _uid(uid),_name(name),_desc(desc), _icon(icon),_nick(nick),_sex(sex),_status(status),
-        _direction(direction){}
+        _direction(direction), _id(id){}
 
     ApplyInfo(std::shared_ptr<AddFriendApply> addinfo) : _uid(addinfo->_from_uid),
         _name(addinfo->_name), _desc(addinfo->_desc), _icon(addinfo->_icon),
@@ -70,6 +73,7 @@ struct ApplyInfo {
     int _sex;
     int _status;
     int _direction = 0;
+    long long _id = 0; //friend_apply 自增ID：列表按它倒序，越新越靠上
 };
 
 struct TextChatData;

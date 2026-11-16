@@ -58,6 +58,8 @@ class ChatBridge : public QObject
     Q_PROPERTY(QString tagFilter READ tagFilter NOTIFY tagFilterChanged)
     Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadChanged)
     Q_PROPERTY(QString chatNotice READ chatNotice NOTIFY chatNoticeChanged)
+    //单聊被关系问题挡住时的常驻提示；为空表示可以正常发送
+    Q_PROPERTY(QString chatBlockedText READ chatBlockedText NOTIFY chatBlockedChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -143,6 +145,10 @@ public:
     // 一次性提示（如"对方已不是你的好友"），界面弹完即清
     QString chatNotice() const { return _chatNotice; }
     Q_INVOKABLE void clearChatNotice();
+    // 单聊关系断开时的常驻提示：已删除对方、被删除后发送失败、验证已发出
+    QString chatBlockedText() const;
+    // 在当前会话里直接发一条朋友验证（不切换区域），验证内容由弹层传入
+    Q_INVOKABLE void sendReAdd(const QString &text);
 
     // 自己：myName 用于显示（昵称优先），myUserName 用于申请文案（用户名）
     QString myIcon() const;
@@ -203,7 +209,8 @@ public:
     // 撤回自己发的消息：服务端校验时间窗，成功后双方都换成提示行
     Q_INVOKABLE void recallMessage(qint64 messageId);
     // 重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新发送
-    Q_INVOKABLE bool retryMessage(const QString &msgId);
+    // 0 成功重发, 1 关系已断开, 2 本地文件缺失或消息不可重发
+    Q_INVOKABLE int retryMessage(const QString &msgId);
     // 退出登录：断开长连接、清空账号数据、回到登录页
     Q_INVOKABLE void logout();
     // 删除好友：双向删除，不通知对方；会话与历史保留
@@ -294,6 +301,8 @@ signals:
     void unreadChanged();
     //一次性提示变化：聊天页弹一条短提示
     void chatNoticeChanged();
+    //单聊关系提示变化：聊天页顶部横条显示/隐藏
+    void chatBlockedChanged();
     //删除确认弹层开关
     void deleteConfirmChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
@@ -335,6 +344,9 @@ private:
     QString _currentSubtitle; //单聊是好友签名，群聊是成员数
     QString _tagFilter;       //联系人页当前选中的标签，空串表示全部
     QString _chatNotice;      //一次性提示，界面显示后调用 clearChatNotice 清掉
+    int _notFriendUid = 0;    //最近一次因"对方不是好友"发送失败的会话对象
+    int _reAddSentUid = 0;    //已经从这里发过验证的会话对象，提示改成"等待通过"
+    int _lastContactPane = ApplyFriendPage; //联系人区域的停留页，切回来时恢复
     bool _deleteConfirmVisible = false;
     int _deleteTargetUid = 0;
     QString _deleteTargetName;

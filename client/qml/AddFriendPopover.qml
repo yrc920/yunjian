@@ -174,6 +174,19 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
+                // 陌生人但服务端给了额外说明（曾经是好友 / 对方已申请你），
+                // 让用户知道为什么这里还能点"添加"
+                Text {
+                    width: parent.width
+                    visible: root.controller.searchState === ChatBridge.SearchStranger
+                        && root.controller.searchMessage.length > 0
+                    text: root.controller.searchMessage
+                    textFormat: Text.PlainText
+                    color: Theme.textSecondary
+                    font.pixelSize: 10
+                    wrapMode: Text.Wrap
+                }
+
                 // 陌生人：打开申请表单
                 AppButton {
                     width: parent.width

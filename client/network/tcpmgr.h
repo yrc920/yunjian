@@ -74,7 +74,6 @@ signals:
     void sig_user_search(std::shared_ptr<SearchInfo>); //用户搜索结果的信号
     void sig_friend_apply(std::shared_ptr<AddFriendApply>); //申请对方为好友的信号
     void sig_add_friend_rsp(const QJsonObject &data); //1010 申请回执，失败也要交给界面判断
-    void sig_add_auth_friend(std::shared_ptr<AuthInfo>); //对方同意好友申请的信号
     void sig_auth_rsp(std::shared_ptr<AuthRsp>); //1015 别人通过我的申请
     //1014 我自己同意别人：与 1015 分开处理，我要跳进会话，对方只需要红点
     void sig_auth_friend_rsp(std::shared_ptr<AuthRsp>);

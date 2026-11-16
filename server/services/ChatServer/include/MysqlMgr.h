@@ -22,7 +22,8 @@ public:
 	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签
 	bool AddFriend(const int& from, const int& to, std::string back_name,
 		const std::vector<std::string>& tags, std::string& apply_desc,
-		std::string& reverse_back, std::vector<std::string>& reverse_tags);
+		std::string& reverse_back, std::vector<std::string>& reverse_tags,
+		bool& first_approve);
 
 	//更新本人可编辑的资料字段; 昵称与签名的长度由调用方按字符数校验
 	bool UpdateUserProfile(int uid, const std::string& nick, int sex, const std::string& desc);
@@ -44,6 +45,7 @@ public:
 	bool MarkChatMessagesRead(int uid, long long thread_id, long long last_message_id,
 		bool& changed, int& peer_uid);
 	int RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message);
+	int GetFriendRelation(int me, int peer);
 	bool IsFriend(int uid, int touid);
 	bool IsMutualFriend(int uid, int touid);
 	bool DeleteFriend(int uid, int touid);

@@ -321,41 +321,24 @@ SessionService::SessionService() : _ready(false)
             data.value("thread_id").toVariant().toLongLong());
     });
 
-    // 收到新的好友申请：同一个人只留一条，重复通知直接丢掉
+    // 收到新的好友申请：交给 UserMgr 去重并挪到列表最前面。
+    //不能再按"以前收到过这个人的申请"直接丢弃：旧记录可能早已通过（status=1），
+    //删好友后对方重新申请时会被这条判断吞掉，接收方既看不到条目也没有红点
     connect(tcp, &TcpMgr::sig_friend_apply, this,
             [](std::shared_ptr<AddFriendApply> apply) {
                 if (!apply)
                     return;
-                if (UserMgr::GetInstance()->AlreadyApply(apply->_from_uid))
-                    return;
                 UserMgr::GetInstance()->AddApplyList(std::make_shared<ApplyInfo>(apply));
             });
 
-    // 互相通过验证：把对方加进好友列表。两个信号分别对应
-    // 「别人同意了我」和「我同意了别人」，都要落到同一份好友数据里
-    connect(tcp, &TcpMgr::sig_add_auth_friend, this,
-            [](std::shared_ptr<AuthInfo> info) {
-                if (!info)
-                    return;
-                auto *mgr = UserMgr::GetInstance().get();
-                if (!mgr->CheckFriendById(info->_uid))
-                    mgr->AddFriend(info);
-                // 对方通过了我的申请，我发出去的那条记录也跟着变成已通过
-                mgr->SetApplyStatus(info->_uid, 1, 1);
-                mgr->SetThreadId(info->_uid, info->_thread_id);
-                if (!info->_welcome_msgs.empty()) {
-                    ConversationRef conv;
-                    conv._thread_id = info->_thread_id;
-                    conv._peer_uid = info->_uid;
-                    mgr->AppendChatMsgs(conv, info->_welcome_msgs);
-                }
-            });
     //同意方与被同意方都要有的本地装配：好友、会话、欢迎消息。
     //incoming 表示"对方通过我的申请"，只有这一侧才把默认招呼算成未读；
     //我自己同意时正进入会话，算未读反而会立刻被清掉
     auto applyFriendAdded = [](const std::shared_ptr<AuthRsp> &rsp, bool incoming) {
         auto *mgr = UserMgr::GetInstance().get();
-        mgr->SetApplyStatus(rsp->_uid, 1);
+        //两个方向都置为已通过：申请方那侧是"我发出的"，同意方那侧是"别人申请我"
+        mgr->SetApplyStatus(rsp->_uid, 1, 0);
+        mgr->SetApplyStatus(rsp->_uid, 1, 1);
         if (!mgr->CheckFriendById(rsp->_uid))
             mgr->AddFriend(rsp);
         mgr->SetThreadId(rsp->_uid, rsp->_thread_id);

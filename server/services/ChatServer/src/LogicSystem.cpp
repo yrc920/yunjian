@@ -9,12 +9,14 @@
 #include "CServer.h"
 #include "RequestValidation.h"
 #include <charconv>
+#include <ctime>
 #include <map>
 
 namespace {
-//加好友双方各自的第一句: 申请方留言为空时用默认值, 同意方固定发通过语
+//加好友双方各自的第一句: 申请方留言为空时用默认值, 同意方固定发通过语。
+//通过语是申请方唯一能看到的"对方同意了"的信号, 要像正常聊天消息一样可读、可提醒
 constexpr const char* kDefaultFriendWelcome = "你好，很高兴认识你";
-constexpr const char* kDefaultApproveWelcome = "We are friends now!";
+constexpr const char* kDefaultApproveWelcome = "好友验证通过了，随时可以找我聊天";
 
 //@ 名单在请求里是 uid 数组，落库与未读查询用逗号分隔串。
 //去重并忽略非正数，避免客户端传入的脏值拼进 SQL 参数
@@ -286,6 +288,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 			obj["sex"] = apply->_sex;
 			obj["desc"] = apply->_desc;
 			obj["status"] = apply->_status;
+			obj["id"] = Json::Int64(apply->_id); //前端按它倒序，新申请排最上面
 			obj["direction"] = 0; //别人申请我
 			rtvalue["apply_list"].append(obj); //将好友申请信息添加到Json值对象的apply_list数组中
 		}
@@ -303,6 +306,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 			obj["sex"] = apply->_sex;
 			obj["desc"] = apply->_desc;
 			obj["status"] = apply->_status;
+			obj["id"] = Json::Int64(apply->_id);
 			obj["direction"] = 1; //我申请别人
 			rtvalue["apply_list"].append(obj);
 		}
@@ -414,6 +418,16 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session,
 	}
 	else {
 		GetUserByName(uid_str, rtvalue); //如果用户ID字符串不是纯数字，则按照用户名查询用户信息
+	}
+
+	//关系状态由服务端给出：客户端本地缓存里的"好友"可能早已被对方删除，
+	//只有库里两行都在才算好友，否则搜索页会一直显示"发消息"而无法重新申请
+	const int target = rtvalue.get("uid", 0).asInt();
+	const int me = session->GetUserId();
+	if (rtvalue.get("error", ErrorCodes::Error_Json).asInt() == ErrorCodes::Success
+		&& target > 0 && me > 0) {
+		rtvalue["relation"] = target == me ? -1
+			: MysqlMgr::GetInstance()->GetFriendRelation(me, target);
 	}
 	return;
 }
@@ -553,8 +567,9 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
         if (tag.isString() && !tag.asString().empty())
             my_tags.push_back(tag.asString());
     }
+	bool first_approve = false;
 	if (!MysqlMgr::GetInstance()->AddFriend(uid, touid, back_name, my_tags, apply_desc,
-        peer_back, peer_tags)) {
+        peer_back, peer_tags, first_approve)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
 	}
@@ -567,6 +582,10 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	else
 		std::cerr << "create private chat failed, friend relation kept: " << uid << " - " << touid << std::endl;
 
+	//重复同意（例如连点两次）只回成功：关系与欢迎语都已经写过，再写会造出重复消息
+	if (!first_approve)
+		return;
+
 	std::vector<ChatMessageInfo> applicant_msgs;
 	std::vector<ChatMessageInfo> approver_msgs;
 	if (thread_id > 0) {
@@ -574,9 +593,13 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 		std::string applicant_welcome = apply_desc;
 		if (applicant_welcome.empty())
 			applicant_welcome = kDefaultFriendWelcome;
-		//client_msg_id 由双方 uid 拼成固定值: 重复审批同一条申请时不会再多写两条欢迎语
-		const std::string applicant_id = "friend-welcome-" + std::to_string(touid) + "-" + std::to_string(uid);
-		const std::string approver_id = "friend-welcome-" + std::to_string(uid) + "-" + std::to_string(touid);
+		//client_msg_id 带上通过时间：删好友后重新通过会复用同一对 uid，
+		//固定 ID 会被唯一键挡掉，申请方就再也收不到新的通过语
+		const std::string stamp = std::to_string(std::time(nullptr));
+		const std::string applicant_id = "friend-welcome-" + std::to_string(touid) + "-"
+			+ std::to_string(uid) + "-" + stamp;
+		const std::string approver_id = "friend-welcome-" + std::to_string(uid) + "-"
+			+ std::to_string(touid) + "-" + stamp;
 		//先写申请方的留言，再写同意方的默认句，message_id 顺序就是聊天里的显示顺序
 		if (!MysqlMgr::GetInstance()->SaveChatMessages(touid, uid, thread_id,
 			{{applicant_id, applicant_welcome}}, applicant_msgs))

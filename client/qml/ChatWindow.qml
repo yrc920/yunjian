@@ -31,12 +31,30 @@ Item {
     onTagBarVisibleChanged: if (!tagBarVisible) tagFilterOpen = false
     property bool functionMenuOpen: false
 
-    readonly property string emptyTitle: friendCount === 0
-        ? (pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理" : "还没有好友，先添加一位吧")
-        : (chatCount === 0 ? "还没有会话，去联系人看看" : "选一位朋友，聊聊吧")
-    readonly property string emptyAction: friendCount === 0
-        ? (pendingCount > 0 ? "去处理" : "添加朋友")
-        : (chatCount === 0 ? "去联系人" : "")
+    // 右栏空态跟着区域走：会话区说"聊天"，联系人区说"联系人"，不能混用
+    readonly property string emptyTitle: {
+        if (bridge.mode === ChatBridge.ContactMode) {
+            if (friendCount === 0)
+                return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
+                                        : "还没有联系人，先添加一位吧"
+            return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
+                                    : "选择一位联系人，查看资料"
+        }
+        if (friendCount === 0)
+            return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
+                                    : "还没有好友，先添加一位吧"
+        return chatCount === 0 ? "还没有会话，去联系人看看" : "选一位朋友，聊聊吧"
+    }
+    readonly property string emptyAction: {
+        if (bridge.mode === ChatBridge.ContactMode) {
+            if (pendingCount > 0)
+                return "去处理"
+            return friendCount === 0 ? "添加朋友" : ""
+        }
+        if (friendCount === 0)
+            return pendingCount > 0 ? "去处理" : "添加朋友"
+        return chatCount === 0 ? "去联系人" : ""
+    }
 
     function handlePlus() {
         if (bridge.mode === ChatBridge.ChatMode) {
@@ -67,6 +85,13 @@ Item {
     }
 
     function runEmptyAction() {
+        if (bridge.mode === ChatBridge.ContactMode) {
+            if (pendingCount > 0)
+                bridge.openApplyList()
+            else if (friendCount === 0)
+                bridge.openAddFriend()
+            return
+        }
         if (friendCount === 0) {
             if (pendingCount > 0) {
                 bridge.openApplyList()
@@ -564,7 +589,8 @@ Item {
                     id: convRow
                     width: conversationList.width
                     height: 76
-                    readonly property bool chosen: bridge.pane === ChatBridge.ChatPage
+                    readonly property bool chosen: (bridge.pane === ChatBridge.ChatPage
+                        || bridge.pane === ChatBridge.GroupInfoPage)
                         && bridge.currentThreadId === model.threadId
                     readonly property bool group: model.kind === 2
                     activeFocusOnTab: true
@@ -1106,6 +1132,7 @@ Item {
                 title: bridge.currentName
                 subtitle: bridge.currentSubtitle
                 messages: bridge.messages
+                blockedText: bridge.chatBlockedText
                 onProfileRequested: bridge.openProfile(bridge.currentUid)
                 onGroupInfoRequested: bridge.openGroupInfo()
                 onMediaViewRequested: (items, index) => viewer.openPlaylist(items, index)
