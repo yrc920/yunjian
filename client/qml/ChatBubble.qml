@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Effects
+import XiguChat
 
 // 文本用气泡，图片直接显示圆角缩略图；自己发的消息左侧留状态位。
 // 图片上方没有百分比数字，只在底部叠一条随上传推进的细进度条，完成后整条消失。
@@ -42,10 +43,14 @@ Item {
     readonly property real pictureWidth: Math.max(48, sourceWidth * pictureScale)
     readonly property real pictureHeight: Math.max(36, sourceHeight * pictureScale)
 
-    readonly property real textWidth: Math.max(1,
-        Math.min(Math.ceil(metrics.advanceWidth), Math.max(1, availableWidth - 30)))
+    //气泡宽度直接取文档排完版的内容宽度：表情是等宽行内对象，混排、换行、
+    //连续表情都算得准，不再用 token 原文宽度去猜。
+    //窗口极窄时至少留出一个表情的宽度，否则图片会画到气泡外面
+    readonly property real maxTextWidth: Math.max(1, availableWidth - 30)
+    readonly property real textWidth: Math.max(emojiSpots.length > 0 ? Emoji.size : 1,
+        Math.min(Math.ceil(label.implicitWidth), maxTextWidth))
     readonly property real bubbleWidth: Math.max(36, textWidth + 30)
-    readonly property real bubbleHeight: label.implicitHeight + 22
+    readonly property real bubbleHeight: label.contentHeight + 22
     readonly property real bodyWidth: isImage ? pictureWidth : bubbleWidth
     readonly property real bodyHeight: isImage ? pictureHeight : bubbleHeight
     readonly property color bubbleColor: isSelf ? Theme.bubbleSelf : Theme.bubbleOther
@@ -66,10 +71,24 @@ Item {
         elide: Text.ElideRight
     }
 
-    TextMetrics {
-        id: metrics
-        font: label.font
-        text: root.text
+    MessageText { id: messageText }
+
+    // 表情在文档里的位置；正文只留等宽占位，图片由 textBubble 里的覆盖层画
+    property var emojiSpots: []
+    // 文字颜色随主题/气泡方向变化，颜色变了要重新排一次文档
+    readonly property color labelColor: root.isSelf ? Theme.bubbleSelfText : Theme.textPrimary
+    onLabelColorChanged: refreshMessageText()
+    onTextChanged: refreshMessageText()
+    Component.onCompleted: refreshMessageText()
+
+    function refreshMessageText() {
+        //先摘掉旧位置：apply 会清空文档，覆盖层不能拿着上一份 pos 去算矩形
+        emojiSpots = []
+        if (!label)
+            return
+        //空正文也要清文档：气泡复用到下一条消息时不能残留上一条的内容
+        emojiSpots = messageText.apply(label.textDocument, root.text, root.labelColor,
+                                       Theme.fontBody, Emoji.size, Emoji.items)
     }
 
     Avatar {
@@ -102,15 +121,49 @@ Item {
             x: 15
             y: 11
             width: root.textWidth
+            height: contentHeight
             readOnly: true
             selectByMouse: true
             selectionColor: Theme.selected
             selectedTextColor: Theme.textPrimary
-            text: root.text
+            //正文由 MessageText 排版：表情是不参与行高的行内对象，
+            //纯文字、混排、纯表情的行高都等于字体本身的自然行高
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
             font.pixelSize: Theme.fontBody
-            color: root.isSelf ? Theme.bubbleSelfText : Theme.textPrimary
+            color: labelColor
+            //TextEdit 默认给文档留 4px 边距，会把文字和表情整体推进去，
+            //气泡按 15/11 的内边距排版，这里必须清零
+            textMargin: 0
+        }
+
+        // 表情覆盖层：位置取自文本布局，尺寸独立于行高。
+        // 图片按行盒垂直居中，画在文本节点之上，不会被行盒或对象矩形裁剪
+        Repeater {
+            model: root.emojiSpots
+            delegate: Image {
+                //读一下宽度与高度，文本重排时让位置跟着更新
+                readonly property real layoutTick: label.width + label.contentHeight
+                //横向位置取自光标矩形，纵向用行盒：纯表情行的光标矩形只有 1px 高，
+                //拿它的 y/height 居中会整体偏下
+                readonly property rect spot: {
+                    layoutTick
+                    return label.positionToRectangle(modelData.pos)
+                }
+                readonly property var lineInfo: {
+                    layoutTick
+                    return messageText.lineMetrics(label.textDocument, modelData.pos)
+                }
+                x: label.x + spot.x
+                y: label.y + lineInfo.top + (lineInfo.height - Emoji.height) / 2
+                width: Emoji.size
+                height: Emoji.height
+                source: modelData.url
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                z: 2
+                visible: lineInfo.height > 0
+            }
         }
 
         //只接收右键，左键选择文字仍由上面的 TextEdit 处理

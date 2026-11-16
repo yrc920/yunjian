@@ -29,6 +29,8 @@ Item {
     signal mediaViewRequested(var items, int index) //查看器：当前会话的图片与视频列表
     //单聊关系提示（已删除对方 / 被对方删除 / 验证已发送），空串表示正常
     property string blockedText: ""
+    //表情面板：本地内置资源，展开后停在输入框上方
+    property bool emojiOpen: false
     //发送朋友验证的小弹层：留在当前聊天里完成，不切到联系人区域
     property bool reAddOpen: false
     property string reAddDraft: ""
@@ -69,6 +71,7 @@ Item {
     onConversationKeyChanged: {
         composerBridge.switchConversation(input.textDocument, currentThreadId)
         closeMentionPicker()
+        root.emojiOpen = false //换会话时收起面板，避免停在新会话上
         root.stickBottom = true
         root.settling = true
         settleTimer.restart()
@@ -683,7 +686,9 @@ Item {
                 spacing: 2
                 ToolIcon {
                     kind: "emoji"
+                    usable: true
                     Accessible.name: "表情"
+                    onClicked: root.emojiOpen = !root.emojiOpen
                 }
                 ToolIcon {
                     kind: "image"
@@ -729,6 +734,7 @@ Item {
                 iconName: "send"
                 enabled: (input.length > 0 || root.hasAttachment) && !input.inputMethodComposing
                 onClicked: {
+                    root.emojiOpen = false
                     root.submit()
                     input.forceActiveFocus()
                 }
@@ -891,6 +897,9 @@ Item {
                 wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                 font.pixelSize: Theme.fontBody
                 color: Theme.textPrimary
+                //默认 4px 文档边距会让输入文字比占位提示缩进一截，
+                //表情也和气泡里的位置对不上，这里清零
+                textMargin: 0
                 selectionColor: Theme.selected
                 selectedTextColor: Theme.textPrimary
                 onCursorRectangleChanged: root.followCursor()
@@ -904,6 +913,11 @@ Item {
                     }
                     if (inputMethodComposing)
                         return
+                    if (event.key === Qt.Key_Escape && root.emojiOpen) {
+                        root.emojiOpen = false
+                        event.accepted = true
+                        return
+                    }
                     if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                         const forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier)
                         const target = input.nextItemInFocusChain(forward)
@@ -953,6 +967,78 @@ Item {
                 drop.acceptProposedAction()
             }
         }
+    }
+
+    // 表情面板：Grid 按可用宽度自动换行，窄窗口不会把表情挤出边界
+    Rectangle {
+        id: emojiPanel
+        visible: root.emojiOpen
+        anchors.left: composer.left
+        anchors.right: composer.right
+        anchors.bottom: composer.top
+        anchors.bottomMargin: 8
+        readonly property int cell: 56
+        readonly property int gap: 6
+        readonly property int columns: Math.max(1, Math.floor((width - 24 + gap) / (cell + gap)))
+        readonly property int rows: Math.ceil(Emoji.items.length / columns)
+        height: 20 + rows * cell + Math.max(0, rows - 1) * gap
+        radius: 10
+        color: Theme.panelBg
+        border.width: 1
+        border.color: Theme.line
+        z: 30
+
+        Grid {
+            x: 12
+            y: 10
+            columns: emojiPanel.columns
+            rowSpacing: emojiPanel.gap
+            columnSpacing: emojiPanel.gap
+
+            Repeater {
+                model: Emoji.items
+                delegate: Rectangle {
+                    width: emojiPanel.cell
+                    height: emojiPanel.cell
+                    radius: 9
+                    color: emojiHover.containsMouse ? Theme.selected : "transparent"
+
+                    Image {
+                        anchors.centerIn: parent
+                        //面板按素材比例放大到两倍消息内尺寸，和消息里长得一样，不压扁
+                        width: Emoji.size * 2
+                        height: Emoji.height * 2
+                        source: Emoji.assetUrl(modelData.file)
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                    }
+                    MouseArea {
+                        id: emojiHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.insertEmoji(modelData.token, Emoji.assetUrl(modelData.file))
+                    }
+                    ToolTip.visible: emojiHover.containsMouse
+                    ToolTip.text: modelData.name
+                    ToolTip.delay: 350
+                }
+            }
+        }
+    }
+
+    // 在光标处插入表情；有选区时先替换选区，和普通输入保持一致
+    function insertEmoji(token, url) {
+        if (!input || !composerBridge)
+            return
+        if (input.selectedText.length > 0)
+            input.remove(input.selectionStart, input.selectionEnd)
+        const pos = composerBridge.insertEmoji(input.textDocument, input.cursorPosition,
+                                               token, url, Emoji.size, Emoji.height)
+        if (pos >= 0)
+            input.cursorPosition = pos
+        //面板保持打开：连续发几个表情不用反复点工具按钮，发送或按 Esc 时再收起
+        input.forceActiveFocus()
     }
 
     // 光标移出视口时把编辑区滚到可见位置，留 4px 余量避免贴边

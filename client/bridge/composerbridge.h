@@ -34,6 +34,10 @@ public:
     //在光标处插入 @名字，并记下名字对应的 uid；发送时按纯文本里是否还含有这个名字过滤
     Q_INVOKABLE bool insertMention(QQuickTextDocument *document, int position,
                                    const QString &name, int uid);
+    //在光标处插入一个内置表情：编辑器里显示图片，取文本时还原成 token。
+    //size 是显示宽高（按素材比例，不是正方形），避免富文本拉伸变形
+    Q_INVOKABLE int insertEmoji(QQuickTextDocument *document, int position,
+                                const QString &token, const QUrl &url, int width, int height);
     Q_INVOKABLE QVariantList parts(QQuickTextDocument *document) const;
     //按扩展名区分拖入/粘贴的本地文件：image 走富文本，video/file 走附件列表
     Q_INVOKABLE QString fileKind(const QUrl &url) const;
@@ -59,8 +63,11 @@ private:
     void setError(const QString &message);
     QString savePendingImage(const QByteArray &data, const QByteArray &suffix);
     static QString imageKey(const QString &source); //缩略图 data URL 的短哈希
+    //草稿从 HTML 恢复后，给每个表情重新发一个唯一格式号，避免相邻同款表情被合并
+    void normalizeEmoji(QQuickTextDocument *document);
     QString _errorText;
     qint64 _threadId = 0;
+    int _emojiSerial = 0; //表情格式序号：每个表情一个，仅用于拆开相邻 fragment
     QHash<qint64, QString> _drafts;
     QHash<QString, int> _mentions; //@显示名 -> uid，发送时按正文里是否还有该名字过滤
     QHash<QString, InsertedImage> _images; //缩略图哈希 -> 上传文件与尺寸

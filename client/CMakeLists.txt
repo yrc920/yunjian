@@ -185,6 +185,7 @@ set(BRIDGE_SOURCES
     bridge/applylistmodel.cpp
     bridge/messagemodel.cpp
     bridge/composerbridge.cpp
+    bridge/messagetext.cpp
     bridge/chatbridge.cpp
     bridge/imagecropper.cpp
 )
@@ -199,6 +200,7 @@ set(BRIDGE_HEADERS
     bridge/applylistmodel.h
     bridge/messagemodel.h
     bridge/composerbridge.h
+    bridge/messagetext.h
     bridge/chatbridge.h
     bridge/imagecropper.h
 )
@@ -229,10 +231,13 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}"
 #  单例声明必须写在 qt_add_qml_module 之前，否则属性全读成 undefined。
 # ------------------------------------------------------------
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+# 表情目录同样是只读单例：token 与资源名集中在一处，气泡与输入框共用
+set_source_files_properties(qml/Emoji.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 set(QML_FILES
     qml/Main.qml
     qml/Theme.qml
+    qml/Emoji.qml
     qml/BrandMark.qml
     qml/AppIcon.qml
     qml/PaperCompanion.qml

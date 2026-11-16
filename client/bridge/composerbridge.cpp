@@ -13,7 +13,9 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextDocumentFragment>
 #include <QTextFragment>
+#include <QTextImageFormat>
 #include <QUuid>
 
 #include "usermgr.h"
@@ -25,6 +27,9 @@ constexpr int ThumbMaxHeight = 360;
 constexpr int PreviewMaxWidth = 160; //输入区里的显示尺寸，与图片像素尺寸分开
 constexpr int PreviewMaxHeight = 100;
 constexpr int ImageQuality = 86;
+//表情图片的唯一格式号：Qt 会把相邻且格式完全相同的图片并成一个 fragment，
+//TextEdit 只画这个 fragment 的第一张，连打两个同款表情就会少一个
+constexpr int EmojiSerialProperty = QTextFormat::UserProperty + 40;
 
 //带透明像素的图必须存 PNG，否则透明区域会变黑；不透明照片一律 JPEG，体积小很多
 bool hasTransparency(const QImage &image)
@@ -227,6 +232,14 @@ int ComposerBridge::paste(QQuickTextDocument *document, int position, int select
             position = insertImage(document, position, url);
         return position;
     }
+    //从气泡或输入框复制出来的富文本可能带内置表情：按片段还原，
+    //否则纯文本里只剩一个对象替换符，粘进来是个空白
+    if (mime->hasHtml() && mime->html().contains(QStringLiteral("qrc:/res/emoji/"))) {
+        cursor.insertFragment(QTextDocumentFragment::fromHtml(mime->html()));
+        position = cursor.position();
+        normalizeEmoji(document); //粘贴过来的相邻同款表情同样要拆开
+        return position;
+    }
     if (mime->hasImage())
         return insertImageData(document, position, qvariant_cast<QImage>(mime->imageData()));
     cursor.insertText(mime->text());
@@ -259,9 +272,16 @@ QVariantList ComposerBridge::parts(QQuickTextDocument *document) const
             if (!fragment.isValid())
                 continue;
             if (fragment.charFormat().isImageFormat()) {
-                flush();
                 const auto format = fragment.charFormat().toImageFormat();
                 const QString source = format.name();
+                //内置表情：把图片还原成 token 并留在同一段文本里，不要拆成图片附件
+                const QString emoji = format.property(QTextFormat::ImageAltText).toString();
+                if (source.startsWith(QStringLiteral("qrc:/res/emoji/")) && !emoji.isEmpty()) {
+                    for (int i = 0; i < fragment.length(); ++i)
+                        text += emoji;
+                    continue;
+                }
+                flush();
                 const auto inserted = _images.constFind(imageKey(source));
                 const QSize pixel = inserted != _images.constEnd()
                     ? inserted->pixelSize : QSize(qRound(format.width()), qRound(format.height()));
@@ -350,12 +370,72 @@ void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 thr
     _threadId = threadId;
     _mentions.clear(); //草稿换人，上一条消息的 @ 名单不能带过来
     doc->setHtml(_drafts.value(threadId));
+    normalizeEmoji(document); //草稿里的连续同款表情要重新拆开
     clearAttachments(); //附件不跨会话保留，避免把上一个会话的文件发错人
     setError({});
 }
 
 //在光标处插入 "@名字 "：只改文档，光标位置由 QML 按插入长度前移。
 //名字里不能带换行，否则会把一条消息拆成多行
+// 内置表情插成图片：输入框所见即所得，发送时 parts() 再还原成 token 文本
+int ComposerBridge::insertEmoji(QQuickTextDocument *document, int position,
+                                const QString &token, const QUrl &url,
+                                int width, int height)
+{
+    if (!document || !document->textDocument() || token.isEmpty() || width <= 0 || height <= 0)
+        return position;
+
+    QTextDocument *doc = document->textDocument();
+    QTextCursor cursor(doc);
+    cursor.setPosition(qBound(0, position, qMax(0, doc->characterCount() - 1)));
+
+    QTextImageFormat format;
+    format.setName(url.toString());
+    //按素材比例给宽高：富文本图片会拉伸到给定矩形，正方形会把 122×100 压扁
+    format.setWidth(width);
+    format.setHeight(height);
+    // alt 既给无障碍用，也是取文本时识别"这是表情而不是图片消息"的依据
+    format.setProperty(QTextFormat::ImageAltText, token);
+    //每个表情一个唯一格式号，强制相邻同款表情留在各自的 fragment 里
+    format.setProperty(EmojiSerialProperty, ++_emojiSerial);
+    //图片顶部贴行顶；高度不超过字体行高，整行的行高与纯文字行完全一致
+    format.setVerticalAlignment(QTextCharFormat::AlignTop);
+    cursor.insertImage(format);
+    return cursor.position();
+}
+
+//草稿是带格式的 HTML，唯一格式号不在 HTML 里；恢复后重新编号，
+//否则连打两个同款表情又会并成一个 fragment，只显示第一个
+void ComposerBridge::normalizeEmoji(QQuickTextDocument *document)
+{
+    if (!document || !document->textDocument())
+        return;
+    QTextDocument *doc = document->textDocument();
+    QTextCursor edit(doc);
+    edit.beginEditBlock();
+    const int count = doc->characterCount();
+    for (int pos = 0; pos < count; ++pos) {
+        QTextCursor probe(doc);
+        probe.setPosition(pos);
+        const QTextCharFormat format = probe.charFormat();
+        if (!format.isImageFormat())
+            continue;
+        QTextImageFormat image = format.toImageFormat();
+        if (!image.name().startsWith(QStringLiteral("qrc:/res/emoji/"))
+            || image.property(QTextFormat::ImageAltText).toString().isEmpty()) {
+            continue;
+        }
+        QTextCursor target(doc);
+        target.setPosition(pos);
+        //文档末尾的表情后面没有字符，选区终点要夹在有效范围内
+        target.setPosition(qMin(pos + 1, doc->characterCount() - 1),
+                           QTextCursor::KeepAnchor);
+        image.setProperty(EmojiSerialProperty, ++_emojiSerial);
+        target.setCharFormat(image);
+    }
+    edit.endEditBlock();
+}
+
 bool ComposerBridge::insertMention(QQuickTextDocument *document, int position,
                                    const QString &name, int uid)
 {

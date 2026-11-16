@@ -462,6 +462,45 @@ data URL 避免同路径图片缓存导致显示旧图。再次登录会恢复�
 - `ID_ADD_FRIEND_REQ` 的 `tags` 会随申请保存到 `friend_apply`，同意后成为自己的好友分组；
   之后可在好友资料页修改。
 
+### 内置表情
+
+只有一套本地资源，跟着客户端走，断网可用。形象沿用应用图标里的小信封：
+
+- 目录在 `qml/Emoji.qml`（单例）：`items` 里的每一行是 `{token, name, file}`，
+  另有 `size = 22`、`height = 18`（素材 122×100 的等比尺寸）。图片放在
+  `resources/emoji/<file>.png`，由 `rc.qrc` 打进 `qrc:/res/emoji/`。
+- 消息里存的是 **token 文本**（如 `[微笑]`），不是图片消息。对方版本没有这个资源时
+  看到的是原文，不会乱码；服务端与协议都不需要改。
+- 输入框里插入的是图片（所见即所得），`ComposerBridge::insertEmoji` 按 22×18 等比插入，
+  token 写进 `QTextFormat::ImageAltText`；`parts()` 遇到 `qrc:/res/emoji/` 的图片时还原成 token。
+  - 每个表情带一个唯一格式号 `EmojiSerialProperty`：Qt 会把相邻且格式完全相同的图片
+    并成一个 fragment，TextEdit 只画第一张；不加这个属性，连打两个同款表情会少一个。
+  - 草稿按 `toHtml()/setHtml()` 保存，alt 与 vertical-align 跟着往返；唯一属性不在
+    HTML 里，`switchConversation` 之后由 `normalizeEmoji()` 逐字符重新编号。
+  - 从气泡或输入框复制带表情的富文本再粘贴时，`paste()` 用 `QTextDocumentFragment`
+    还原成表情图片，不会只剩一个空白替换符。
+- 气泡正文由 `MessageText`（C++）排版，走"占位 + 覆盖层"：
+  - 文档里每个表情只留一个**等宽占位对象**（宽 22、高 1px），不参与行高；
+  - 每个块固定行高 = `QTextLayout` 实测的自然行高（14px 字体 → 20px），纯文字、混排、
+    纯表情的行高完全一致，单行气泡统一 42px；
+  - 覆盖层按 `MessageText.lineMetrics()` 返回的行盒 `{top, height}` 垂直居中绘制 22×18。
+    **不要用 `positionToRectangle` 的 y/height 做居中**：纯表情行没有文字，行高会退化成
+    占位对象的 1px、y 贴在行底；横向 x 仍取自该接口，是准的。
+  - 行高必须用 QTextLayout 实测，不能用 `QFontMetrics::height()`（14px 字体只有 16.5，
+    与真实行盒差 3~4px，会把文字压扁、表情挤偏）。
+- 气泡宽度直接取文档布局宽度 `label.implicitWidth + 30`，高度 `label.contentHeight + 22`；
+  不再按 token 宽度手算差值，多行与自动换行都准。
+- 气泡与输入框的 `TextEdit` 都要 `textMargin: 0`：默认 4px 文档边距会让 15/11 的内边距失真。
+- 表情素材已裁掉透明边距（原 128×128 → 122×100）。
+- 右键「复制文字」用消息原文（token）；鼠标框选复制到外部时表情是占位符（U+FFFC），已知限制。
+- 输入框里纯文字行 20px、纯表情行 18px；不要用固定行高强行统一——内容比固定行高矮时
+  Qt 会把行内容下沉，图片会压到下一行。
+- 面板在输入框上方，`Grid` 按可用宽度自动换行；选完不收起，方便连发，
+  Esc、发送、切会话收起。
+
+新增一个表情只需要三步：放图到 `resources/emoji/`、在 `rc.qrc` 加一行、
+在 `Emoji.qml` 的 `items` 里加一行 token 与文件名。
+
 ### 区域、列表与右栏的绑定
 
 界面分三层，关系必须一一对应，不允许出现"左栏是联系人、右栏还是聊天"的错位：

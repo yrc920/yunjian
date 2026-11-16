@@ -1,5 +1,15 @@
 <RCC>
     <qresource prefix="/">
         <file alias="res/xiguchat.png">xiguchat.png</file>
+        <file alias="res/emoji/smile.png">emoji/smile.png</file>
+        <file alias="res/emoji/laugh.png">emoji/laugh.png</file>
+        <file alias="res/emoji/wink.png">emoji/wink.png</file>
+        <file alias="res/emoji/love.png">emoji/love.png</file>
+        <file alias="res/emoji/surprise.png">emoji/surprise.png</file>
+        <file alias="res/emoji/sad.png">emoji/sad.png</file>
+        <file alias="res/emoji/angry.png">emoji/angry.png</file>
+        <file alias="res/emoji/sleepy.png">emoji/sleepy.png</file>
+        <file alias="res/emoji/question.png">emoji/question.png</file>
+        <file alias="res/emoji/gotit.png">emoji/gotit.png</file>
     </qresource>
 </RCC>
