@@ -21,7 +21,9 @@ Item {
     property var groupInfo: null
     property var mentionCandidates: []
     readonly property bool isGroup: currentKind === 2
-    readonly property bool hasNotice: isGroup && groupInfo
+    //已离开的群只剩历史：不再提供资料入口，也不展示公告
+    readonly property int groupLeftState: isGroup && groupInfo ? (groupInfo.leftState || 0) : 0
+    readonly property bool hasNotice: isGroup && groupLeftState === 0 && groupInfo
         && String(groupInfo.notice || "").length > 0
     signal sendRequested(var parts)
     signal profileRequested()
@@ -35,6 +37,10 @@ Item {
     property bool reAddOpen: false
     property string reAddDraft: ""
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
+    // 上滑加载更早消息：插入头部会让内容高度突然变大，这段时间按差值补偿 contentY，
+    // 把用户正在看的那一条按在原地，而不是被新插入的内容顶下去
+    property bool prepending: false
+    property real prependHeight: 0
     // 刚切进会话的一小段时间：模型在重建、图片在加载，contentY 会被反复改写。
     // 这段时间内不改写 stickBottom，并持续贴底，避免"打开会话停在第一条"。
     property bool settling: false
@@ -74,11 +80,25 @@ Item {
         root.emojiOpen = false //换会话时收起面板，避免停在新会话上
         root.stickBottom = true
         root.settling = true
+        root.prepping = false
+        root.prependHeight = 0
         settleTimer.restart()
         Qt.callLater(messageList.positionViewAtEnd)
     }
     Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentThreadId)
     onVisibleChanged: if (visible) input.forceActiveFocus()
+
+    // 上滑到顶时向桥接要一页更早的消息：库里没有更早的会立即返回，代价是一次空查询
+    function loadOlder() {
+        if (!root.bridge)
+            return
+        if (root.prepping || root.settling || root.currentThreadId <= 0)
+            return
+        root.prepping = true
+        root.prependHeight = messageList.contentHeight
+        root.bridge.loadOlderMessages()
+        prependTimer.restart()
+    }
 
     // 输入区、消息气泡与媒体卡片共用一套右键菜单，父项是整页，坐标直接是页面坐标
     ContextMenu { id: contextMenu; anchors.fill: parent }
@@ -150,7 +170,7 @@ Item {
             }
             MouseArea {
                 anchors.fill: parent
-                enabled: root.isGroup
+                enabled: root.isGroup && root.groupLeftState === 0
                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: root.groupInfoRequested()
             }
@@ -164,6 +184,7 @@ Item {
             width: 72
             height: 34
             radius: 7
+            visible: !(root.isGroup && root.groupLeftState > 0)
             color: profileArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
@@ -531,10 +552,18 @@ Item {
         // 只有停在底部时才跟随新消息；向上翻历史时不再被拉回底部，
         // 图片异步加载导致的高度变化也用短定时器合并，避免连续跳动
         onCountChanged: {
+            //正在向前补历史时不贴底：那会把刚翻上去的内容又甩回末尾
+            if (root.prepping)
+                return
             if (root.stickBottom || root.settling)
                 Qt.callLater(messageList.positionViewAtEnd)
         }
         onContentHeightChanged: {
+            //插入期间按差值把 contentY 往下推，视觉上内容停在原位
+            if (root.prepping) {
+                messageList.contentY += messageList.contentHeight - root.prependHeight
+                root.prependHeight = messageList.contentHeight
+            }
             if ((root.stickBottom || root.settling) && !messageList.moving)
                 scrollTimer.restart()
         }
@@ -556,6 +585,9 @@ Item {
                 return
             if (!moving && !flicking)
                 root.stickBottom = contentY + height >= contentHeight - 64
+            //离顶部 120px 内就开始预取，别等真的拉到 0 才发请求
+            if (contentY < 120 && count > 0 && !root.prepping)
+                root.loadOlder()
         }
     }
 
@@ -567,6 +599,17 @@ Item {
             root.settling = false
             if (root.stickBottom)
                 messageList.positionViewAtEnd()
+        }
+    }
+
+    // 前插补偿的观察窗口：委托是懒创建的，内容高度会在几帧内分几次变大，
+    // 因此留一小段时间持续按差值补偿，而不是只算一次
+    Timer {
+        id: prependTimer
+        interval: 160
+        onTriggered: {
+            root.prepping = false
+            root.prependHeight = 0
         }
     }
 

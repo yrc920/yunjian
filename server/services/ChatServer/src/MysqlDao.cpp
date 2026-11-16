@@ -748,6 +748,23 @@ bool MysqlDao::DeleteFriend(int uid, int touid)
 		//只清自己发出的申请：对方发起的记录属于他那侧的「新的朋友」，不该被我删掉
 		con->_session->sql("DELETE FROM friend_apply WHERE from_uid = ? AND to_uid = ?")
 			.bind(uid).bind(touid).execute();
+
+		//双向关系都断了，云端不必再留这份私聊记录：两边客户端各自有本地缓存。
+		//只删消息、保留 private_chat 与 chat_thread —— thread_id 不变，
+		//以后重新加好友时新消息沿用同一游标，客户端本地那份历史也还能对上会话。
+		auto reverse = con->_session->sql(
+			"SELECT COUNT(*) FROM friend WHERE self_id = ? AND friend_id = ?")
+			.bind(touid).bind(uid).execute().fetchOne();
+		if (!reverse.isNull() && reverse[0].get<int64_t>() == 0) {
+			auto thread = con->_session->sql(
+				"SELECT thread_id FROM private_chat "
+				"WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)")
+				.bind(uid).bind(touid).bind(touid).bind(uid).execute().fetchOne();
+			if (!thread.isNull()) {
+				con->_session->sql("DELETE FROM chat_message WHERE thread_id = ?")
+					.bind(thread[0].get<int64_t>()).execute();
+			}
+		}
 		con->_session->commit();
 		return true;
 	}

@@ -257,14 +257,18 @@ Item {
                     width: 120
                     height: 46
                     text: "编辑资料"
+                    // 关系已经断了：备注与标签编辑没有意义，只保留发消息（进去补验证）
+                    visible: root.profile.friend !== false
                     onClicked: root.editRelationRequested()
                 }
             }
 
-            // 删除好友：做成次要按钮而不是一行小字，误点风险由确认弹层兜住
+            // 删除好友：做成次要按钮而不是一行小字，误点风险由确认弹层兜住。
+            // 不是好友时这里换成"清除聊天记录"由会话菜单处理，页面不再提供删除入口
             Rectangle {
                 width: parent.width
                 height: 42
+                visible: root.profile.friend !== false
                 radius: 8
                 color: deleteArea.containsMouse ? Theme.panelAlt : "transparent"
                 border.width: 1

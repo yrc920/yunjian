@@ -5,6 +5,7 @@
 #include <QString>
 #include <QTimer>
 #include <QJsonObject>
+#include <QSet>
 #include "global.h"
 #include "singleton.h"
 
@@ -51,6 +52,8 @@ private:
     void requestMessages(qint64 threadId, qint64 lastMessageId = 0);
     // thread_id 游标翻页：上一页最后一条作为下一页起点
     void loadMoreThreads(qint64 lastThreadId);
+    //会话列表全部页到齐：用差集找出服务端已经没有的群（解散/被移出）
+    void finishThreadList();
 
     ServerInfo _current{};
     ServerInfo _pending{};   // 等待连接的会话信息
@@ -58,6 +61,11 @@ private:
     bool _connecting = false;
     QTimer _timeout;       // 连接 + 登录的整体超时，避免界面无限等待
     QTimer _heartbeat;     // 会话建立后的保活
+    //本次登录已经拉取的历史页数。正常登录游标已经在头部，一页就结束；
+    //上限只用来拦住异常数据导致的无限翻页
+    int _history_pages = 0;
+    QSet<qint64> _seen_threads; //本次登录服务端会话列表里出现过的 thread_id
+    bool _threads_complete = false;
 };
 
 #endif // SESSIONSERVICE_H

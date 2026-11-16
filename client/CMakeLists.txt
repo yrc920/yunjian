@@ -75,10 +75,10 @@ endif()
 # Qt 安装路径两种来源（任选其一，互不覆盖）：
 #  1) Qt Creator：选择本机 Qt 6.5 Kit（三平台通用），Kit 自动注入 CMAKE_PREFIX_PATH
 #  2) 命令行/VSCode：QT_ROOT 环境变量
-find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2 Multimedia)
+find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
 if(NOT Qt6_FOUND AND DEFINED ENV{QT_ROOT})
     list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT}")
-    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Quick QuickControls2 QuickDialogs2 Multimedia)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
 endif()
 if(NOT Qt6_FOUND)
     message(FATAL_ERROR
@@ -99,6 +99,7 @@ set(CORE_SOURCES
     core/global.cpp
     core/userdata.cpp
     core/usermgr.cpp
+    core/store/localstore.cpp
     core/service/authservice.cpp
     core/service/sessionservice.cpp
     core/service/chatservice.cpp
@@ -115,6 +116,7 @@ set(CORE_HEADERS
     core/singleton.h
     core/userdata.h
     core/usermgr.h
+    core/store/localstore.h
     core/service/authservice.h
     core/service/sessionservice.h
     core/service/chatservice.h
@@ -155,6 +157,7 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}"
 # 源码里 #include "usermgr.h" / "httpmgr.h" 保持原样
 target_include_directories(xiguchat_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/store
     ${CMAKE_CURRENT_SOURCE_DIR}/core/service
     ${CMAKE_CURRENT_SOURCE_DIR}/network
 )
@@ -165,6 +168,7 @@ target_link_libraries(xiguchat_core PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Network
+    Qt6::Sql
     Qt6::Multimedia
 )
 
@@ -259,6 +263,7 @@ set(QML_FILES
     qml/CreateGroupDialog.qml
     qml/ApplyFriendPage.qml
     qml/SettingsPanel.qml
+    qml/GeneralSettingsPage.qml
     qml/UserInfoPage.qml
     qml/AvatarEditor.qml
     qml/ChatBubble.qml

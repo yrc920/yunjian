@@ -12,6 +12,21 @@ AddFriendApply::AddFriendApply(int from_uid, QString name, QString desc, QString
 
 }
 
+//消息身份：客户端消息号优先，缺省时用服务端消息号。
+//发出去还没回执的消息只有客户端号，回执/同步回来的那一份带服务端号，
+//两边必须能对上，否则重登后同一条消息会出现两次（一条失败、一条已发送）。
+//服务端的群系统消息没有客户端号，这里给它一个稳定的合成键参与去重
+QString MessageKey(const std::shared_ptr<TextChatData> &message)
+{
+    if (!message)
+        return {};
+    if (!message->_msg_id.isEmpty() && !message->_msg_id.startsWith(QLatin1String("srv:")))
+        return QStringLiteral("c:") + message->_msg_id;
+    if (message->_message_id > 0)
+        return QStringLiteral("s:") + QString::number(message->_message_id);
+    return message->_msg_id;
+}
+
 //按 msgid 去重后追加：同一条消息可能先以「发送中」进入列表，
 //回执或历史同步再带服务端 message_id 回来，这里只做原地更新
 void ChatThreadData::AppendMsgs(const std::vector<std::shared_ptr<TextChatData>>& msgs)
@@ -19,8 +34,9 @@ void ChatThreadData::AppendMsgs(const std::vector<std::shared_ptr<TextChatData>>
     for (const auto &text : msgs) {
         if (!text)
             continue;
+        const QString key = MessageKey(text);
         auto existing = std::find_if(_chat_msgs.begin(), _chat_msgs.end(), [&](const auto &item) {
-            return item && item->_msg_id == text->_msg_id;
+            return MessageKey(item) == key;
         });
         if (existing == _chat_msgs.end()) {
             _chat_msgs.push_back(text);

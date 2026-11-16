@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QQuickTextDocument>
 #include <QSize>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -65,10 +66,14 @@ private:
     static QString imageKey(const QString &source); //缩略图 data URL 的短哈希
     //草稿从 HTML 恢复后，给每个表情重新发一个唯一格式号，避免相邻同款表情被合并
     void normalizeEmoji(QQuickTextDocument *document);
+    //把输入框当前内容写进本地库：停止输入后由定时器触发，切会话时立即触发
+    void saveDraft();
     QString _errorText;
     qint64 _threadId = 0;
     int _emojiSerial = 0; //表情格式序号：每个表情一个，仅用于拆开相邻 fragment
     QHash<qint64, QString> _drafts;
+    QTextDocument *_document = nullptr; //当前绑定的输入文档，切会话复用同一个对象
+    QTimer _draftTimer;                 //停止输入 600ms 后落库，避免每敲一个字写一次盘
     QHash<QString, int> _mentions; //@显示名 -> uid，发送时按正文里是否还有该名字过滤
     QHash<QString, InsertedImage> _images; //缩略图哈希 -> 上传文件与尺寸
     QVariantList _attachments; //待发送的视频/文件，每项含 kind/path/name/size

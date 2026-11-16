@@ -619,19 +619,32 @@ Item {
                         onClicked: (mouse) => {
                             const point = mapToItem(root, mouse.x, mouse.y)
                             if (group) {
-                                friendMenu.open(point.x, point.y, [
-                                    { text: "进入群聊", action: () => bridge.openGroup(model.threadId) },
-                                    { text: "群资料", action: () => {
+                                const items = [
+                                    { text: "进入群聊", action: () => bridge.openGroup(model.threadId) }
+                                ]
+                                //已离开的群没有可管理的资料，只剩历史与清理入口
+                                if (model.leftState > 0) {
+                                    items.push({ text: "清除聊天记录", action: () =>
+                                        bridge.askClearHistory(model.threadId, 2, model.displayName) })
+                                } else {
+                                    items.push({ text: "群资料", action: () => {
                                         bridge.openGroup(model.threadId)
                                         bridge.openGroupInfo()
-                                    } }
-                                ])
+                                    } })
+                                }
+                                friendMenu.open(point.x, point.y, items)
                             } else {
-                                friendMenu.open(point.x, point.y, [
+                                const items = [
                                     { text: "发消息", action: () => bridge.openChat(model.uid) },
-                                    { text: "查看资料", action: () => bridge.openProfile(model.uid) },
-                                    { text: "删除好友", action: () => bridge.askDeleteFriend(model.uid) }
-                                ])
+                                    { text: "查看资料", action: () => bridge.openProfile(model.uid) }
+                                ]
+                                //还是好友才显示"删除好友"；关系已经断了就只有清理入口
+                                if (model.isFriend)
+                                    items.push({ text: "删除好友", action: () => bridge.askDeleteFriend(model.uid) })
+                                else
+                                    items.push({ text: "清除聊天记录", action: () =>
+                                        bridge.askClearHistory(model.threadId, 1, model.displayName) })
+                                friendMenu.open(point.x, point.y, items)
                             }
                         }
                     }
@@ -1177,6 +1190,11 @@ Item {
                 onEditAvatarRequested: avatarEditor.chooseImage()
                 onEditProfileRequested: (field) => profileDialogs.openSelf(field)
             }
+            GeneralSettingsPage {
+                anchors.fill: parent
+                visible: bridge.pane === ChatBridge.GeneralPage
+                controller: bridge
+            }
         }
     }
 
@@ -1305,6 +1323,69 @@ Item {
     ContextMenu {
         id: friendMenu
         anchors.fill: parent
+    }
+
+    // 清除聊天记录确认：只清本机，文案里要说清楚，避免以为对方也看不到了
+    Rectangle {
+        anchors.fill: parent
+        visible: bridge.clearConfirmVisible
+        color: Theme.overlay
+        z: 30
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: bridge.cancelClearHistory()
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(420, parent.width - 64)
+            implicitHeight: clearContent.implicitHeight + 48
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+
+            Column {
+                id: clearContent
+                x: 24
+                y: 24
+                width: parent.width - 48
+                spacing: 14
+
+                Text {
+                    text: "清除聊天记录"
+                    color: Theme.textPrimary
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                Text {
+                    width: parent.width
+                    text: "清除与「" + bridge.clearConfirmTitle + "」的本地聊天记录？"
+                        + "只删除这台设备上的内容，服务器与对方的记录不受影响。"
+                    color: Theme.textSecondary
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                Row {
+                    width: parent.width
+                    spacing: 12
+
+                    CodeButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "取消"
+                        onClicked: bridge.cancelClearHistory()
+                    }
+                    AppButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "确认清除"
+                        onClicked: bridge.confirmClearHistory()
+                    }
+                }
+            }
+        }
     }
 
     // 删除好友确认：资料页与联系人菜单共用同一层，避免各页面各写一份

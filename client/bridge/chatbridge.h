@@ -60,6 +60,9 @@ class ChatBridge : public QObject
     Q_PROPERTY(QString chatNotice READ chatNotice NOTIFY chatNoticeChanged)
     //单聊被关系问题挡住时的常驻提示；为空表示可以正常发送
     Q_PROPERTY(QString chatBlockedText READ chatBlockedText NOTIFY chatBlockedChanged)
+    //清除聊天记录的二次确认：标题里带上会话名，避免误清别的会话
+    Q_PROPERTY(bool clearConfirmVisible READ clearConfirmVisible NOTIFY clearConfirmChanged)
+    Q_PROPERTY(QString clearConfirmTitle READ clearConfirmTitle NOTIFY clearConfirmChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -97,7 +100,7 @@ public:
     enum Mode { ChatMode = 0, ContactMode = 1, SettingsMode = 2 };
     //右侧页面取值与 QML 的 pane 判断一致
     enum Pane { EmptyPane = 0, ChatPage = 1, FriendInfoPage = 2, ApplyFriendPage = 3,
-                UserInfoPage = 4, GroupInfoPage = 5 };
+                UserInfoPage = 4, GroupInfoPage = 5, GeneralPage = 6 };
     //联系人页加好友浮层的展示状态，QML 按这些名字切换结果区域
     enum SearchState { SearchIdle = 0, SearchSearching, SearchStranger, SearchNotFound,
                        SearchSelf, SearchAlreadyFriend, SearchAlreadyApplied };
@@ -126,6 +129,9 @@ public:
     QString currentName() const { return _currentName; }
     QString currentSubtitle() const { return _currentSubtitle; }
     bool isGroup() const;
+    // 上滑到顶时由界面调用：从本地库再取一页更早的消息。
+    //库里已经没有时会立即返回，代价只是一次带索引的空查询
+    Q_INVOKABLE void loadOlderMessages();
     QVariantMap groupInfo() const;
     QVariantList groupMembers() const;
     QVariantList mentionCandidates() const;
@@ -145,8 +151,17 @@ public:
     // 一次性提示（如"对方已不是你的好友"），界面弹完即清
     QString chatNotice() const { return _chatNotice; }
     Q_INVOKABLE void clearChatNotice();
+    //清除聊天记录：先弹确认，确认后只清本地，不动服务端与其他设备
+    Q_INVOKABLE void askClearHistory(qint64 threadId, int kind, const QString &title);
+    Q_INVOKABLE void confirmClearHistory();
+    Q_INVOKABLE void cancelClearHistory();
+    //设置-通用：清空全部本地聊天记录 / 清空已下载的媒体文件
+    Q_INVOKABLE void clearAllHistory();
+    Q_INVOKABLE void clearMediaCache();
     // 单聊关系断开时的常驻提示：已删除对方、被删除后发送失败、验证已发出
     QString chatBlockedText() const;
+    bool clearConfirmVisible() const { return _clearConfirmVisible; }
+    QString clearConfirmTitle() const { return _clearConfirmTitle; }
     // 在当前会话里直接发一条朋友验证（不切换区域），验证内容由弹层传入
     Q_INVOKABLE void sendReAdd(const QString &text);
 
@@ -201,6 +216,7 @@ public:
     Q_INVOKABLE void showChatMode();
     Q_INVOKABLE void showContactMode();
     Q_INVOKABLE void showSettings();
+    Q_INVOKABLE void openGeneralSettings();
 
     //好友页面入口
     Q_INVOKABLE void openChat(int uid);
@@ -303,6 +319,7 @@ signals:
     void chatNoticeChanged();
     //单聊关系提示变化：聊天页顶部横条显示/隐藏
     void chatBlockedChanged();
+    void clearConfirmChanged();
     //删除确认弹层开关
     void deleteConfirmChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
@@ -348,6 +365,11 @@ private:
     int _reAddSentUid = 0;    //已经从这里发过验证的会话对象，提示改成"等待通过"
     int _lastContactPane = ApplyFriendPage; //联系人区域的停留页，切回来时恢复
     bool _deleteConfirmVisible = false;
+    bool _clearConfirmVisible = false;
+    qint64 _clearThreadId = 0;
+    int _clearKind = 1;
+    QString _clearConfirmTitle;
+    int _lastSettingsPane = UserInfoPage; //设置区上次停留的页，切回来时恢复
     int _deleteTargetUid = 0;
     QString _deleteTargetName;
     QString _searchText;

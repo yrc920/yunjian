@@ -9,6 +9,7 @@
 #include <QString>
 #include "singleton.h"
 #include "userdata.h"
+#include "localstore.h"
 
 // 文本、图片、视频与文件消息的组帧、本地记录和资源上传入口；
 // 不依赖聊天页面的生命周期，QML 只通过 ChatBridge 查询与操作。
@@ -67,6 +68,17 @@ public:
         qint64 threadId, int msgType, const QString &content, const QString &resourceName,
         ChatMessageStatus status);
     void ensurePrivateChat(int uid);
+
+    //打开会话：从本地库取最近一页装进内存窗口，返回是否还有更早的消息。
+    //窗口只在"正在看"的会话上存在，切走不保留，长期使用内存不随历史增长
+    bool OpenWindow(qint64 threadId);
+    //上滑翻页：再取更早一页插到窗口头部，返回是否还有更早
+    bool LoadOlder(qint64 threadId);
+    //把库里的一行还原成内存消息：补全本地资源路径，缺文件时按需排入下载队列。
+    //历史同步与本地翻页共用这一条路径，避免两套解析逻辑慢慢跑偏
+    std::shared_ptr<TextChatData> MessageFromStored(const StoredMessage &row, int selfUid);
+    //清除本账号已下载的图片、视频与文件；消息记录本身不动
+    void ClearMediaCache();
 
 private:
     ChatService();
@@ -135,6 +147,8 @@ private:
     void sendResourceRequest(const PendingResource &resource);
     void ensureVideoThumb(const QString &thumbName, int sender, qint64 messageId, qint64 threadId);
     void applyImageDownloaded(const ChatDownload &task, const QString &localPath);
+    //按本地文件是否齐全补全图片/视频/文件的显示状态，不改变消息本身的事实字段
+    void hydrateLocal(const std::shared_ptr<TextChatData> &message);
 };
 
 #endif // CHATSERVICE_H

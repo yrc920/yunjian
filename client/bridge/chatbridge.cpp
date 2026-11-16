@@ -263,17 +263,18 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 if (!ok)
                     return;
                 if (action == "dismiss" || action == "leave") {
-                    if (action == "leave")
-                        UserMgr::GetInstance()->RemoveGroup(threadId);
-                    _currentThreadId = 0;
-                    _currentUid = 0;
-                    _currentKind = static_cast<int>(ChatThreadKind::Private);
-                    _currentName.clear();
-                    _currentSubtitle.clear();
-                    _messages->setConversation(0, 0, 0);
-                    setPane(EmptyPane);
-                    emit currentChanged();
-                    emit groupChanged();
+                    //退群与解散都保留本地历史：只把群标记为已离开，不再发消息。
+                    //以前这里会把会话整个清掉，用户翻不回之前的聊天记录
+                    UserMgr::GetInstance()->MarkGroupLeft(
+                        threadId, action == "dismiss" ? 2 : 1);
+                    if (threadId == _currentThreadId) {
+                        _currentSubtitle = action == "dismiss" ? tr("群聊已解散")
+                                                               : tr("已被移出群聊");
+                        setPane(ChatPage);
+                        emit currentChanged();
+                        emit chatBlockedChanged();
+                        emit groupChanged();
+                    }
                 }
             });
     connect(groupService, &GroupService::groupActivated, this,
@@ -286,16 +287,15 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
             [this](qint64 threadId, bool dismissed) {
                 _chatNotice = dismissed ? tr("群聊已解散") : tr("你已被移出群聊");
                 emit chatNoticeChanged();
+                //保留会话与历史，只标记状态；停在这个群里时直接留在聊天页看提示
+                UserMgr::GetInstance()->MarkGroupLeft(threadId, dismissed ? 2 : 1);
                 if (threadId != _currentThreadId)
                     return;
-                _currentThreadId = 0;
-                _currentUid = 0;
-                _currentKind = static_cast<int>(ChatThreadKind::Private);
-                _currentName.clear();
-                _currentSubtitle.clear();
-                _messages->setConversation(0, 0, 0);
-                setPane(EmptyPane);
+                _currentSubtitle = dismissed ? tr("群聊已解散") : tr("你已被移出群聊");
+                if (_pane == GroupInfoPage)
+                    setPane(ChatPage);
                 emit currentChanged();
+                emit chatBlockedChanged();
                 emit groupChanged();
             });
 
@@ -587,7 +587,18 @@ int ChatBridge::unreadTotal() const
 //三种情况都要给同一位置的一致文案，用户不需要猜"为什么发不出去"
 QString ChatBridge::chatBlockedText() const
 {
-    if (isGroup() || _currentUid <= 0)
+    if (isGroup()) {
+        //群聊被移出或解散后历史仍然可读，只是发不出去；横条负责说明原因
+        auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+        if (group && group->_left_state == 1)
+            return tr("你已被移出群聊，只能查看历史消息");
+        if (group && group->_left_state == 2)
+            return tr("群聊已解散，只能查看历史消息");
+        if (group && group->_left_state == 3)
+            return tr("你已不在这个群里，只能查看历史消息");
+        return {};
+    }
+    if (_currentUid <= 0)
         return {};
     auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
     const bool sent = _reAddSentUid == _currentUid;
@@ -721,6 +732,64 @@ void ChatBridge::showSettings()
     setPane(UserInfoPage);
 }
 
+void ChatBridge::openGeneralSettings()
+{
+    closeAddFriend();
+    clearFriendSearch();
+    setMode(SettingsMode);
+    setPane(GeneralPage);
+}
+
+//清除会话历史：只清本机。服务端与其他设备的数据不受影响，
+//所以既要二次确认，也要在文案里说清楚
+void ChatBridge::askClearHistory(qint64 threadId, int kind, const QString &title)
+{
+    if (threadId <= 0)
+        return;
+    _clearThreadId = threadId;
+    _clearKind = kind;
+    _clearConfirmTitle = title.isEmpty() ? tr("清除聊天记录") : title;
+    _clearConfirmVisible = true;
+    emit clearConfirmChanged();
+}
+
+void ChatBridge::confirmClearHistory()
+{
+    if (!_clearConfirmVisible)
+        return;
+    const qint64 threadId = _clearThreadId;
+    _clearConfirmVisible = false;
+    _clearThreadId = 0;
+    _clearConfirmTitle.clear();
+    emit clearConfirmChanged();
+    if (threadId > 0)
+        UserMgr::GetInstance()->ClearThreadHistory(threadId);
+}
+
+void ChatBridge::cancelClearHistory()
+{
+    if (!_clearConfirmVisible)
+        return;
+    _clearConfirmVisible = false;
+    _clearThreadId = 0;
+    _clearConfirmTitle.clear();
+    emit clearConfirmChanged();
+}
+
+void ChatBridge::clearAllHistory()
+{
+    UserMgr::GetInstance()->ClearAllHistory();
+    _chatNotice = tr("本地聊天记录已清除");
+    emit chatNoticeChanged();
+}
+
+void ChatBridge::clearMediaCache()
+{
+    ChatService::GetInstance()->ClearMediaCache();
+    _chatNotice = tr("本地图片、视频与文件已清除");
+    emit chatNoticeChanged();
+}
+
 // 撤回：只发消息号，服务端按库里的记录判断归属与时间窗
 void ChatBridge::recallMessage(qint64 messageId)
 {
@@ -819,6 +888,10 @@ void ChatBridge::openChat(int uid)
     //好友可能刚改过签名，打开会话时拉一次最新资料；失败继续用本地缓存
     ProfileService::GetInstance()->requestProfile(uid);
 
+    // 先从本地库装最近一页：切进去立刻有内容，网络只负责补增量。
+    // 这条会话本地没有消息时窗口为空，等 1029 回来再填
+    ChatService::GetInstance()->OpenWindow(_currentThreadId);
+
     // 消息模型切到这条会话，随后触发的 countChanged 会让界面滚到底
     _messages->setConversation(_currentThreadId, _currentKind, uid);
     emit currentChanged();
@@ -860,9 +933,18 @@ void ChatBridge::openGroup(qint64 threadId)
     _currentUid = 0;
     _currentThreadId = threadId;
     _currentName = group->_name;
-    _currentSubtitle = group->_member_count > 0
-        ? tr("%1 人").arg(group->_member_count) : QString();
+    //离开的群用状态说明替代人数，标题下面一眼能看出这个群不能再发言
+    if (group->_left_state == 1)
+        _currentSubtitle = tr("已被移出群聊");
+    else if (group->_left_state == 2)
+        _currentSubtitle = tr("群聊已解散");
+    else if (group->_left_state == 3)
+        _currentSubtitle = tr("已不在该群");
+    else
+        _currentSubtitle = group->_member_count > 0
+            ? tr("%1 人").arg(group->_member_count) : QString();
 
+    ChatService::GetInstance()->OpenWindow(threadId);
     _messages->setConversation(threadId, _currentKind, 0);
     emit currentChanged();
     emit groupChanged();
@@ -876,6 +958,15 @@ void ChatBridge::openGroup(qint64 threadId)
     //成员列表用于气泡名字与 @ 候选；没拉过就补一次
     if (group->_member_map.isEmpty())
         GroupService::GetInstance()->RequestGroupInfo(threadId);
+}
+
+//上滑加载更早的消息：只读本地库，不走网络。
+//服务端 1029 只能按消息号往后翻，更早的历史在首次登录回填时已经落库
+void ChatBridge::loadOlderMessages()
+{
+    if (_currentThreadId <= 0)
+        return;
+    ChatService::GetInstance()->LoadOlder(_currentThreadId);
 }
 
 ConversationRef ChatBridge::currentConversation() const
@@ -906,6 +997,7 @@ QVariantMap ChatBridge::groupInfo() const
         {QStringLiteral("myRole"), group->_my_role},
         {QStringLiteral("muted"), group->_muted},
         {QStringLiteral("myNick"), group->_my_nick},
+        {QStringLiteral("leftState"), group->_left_state},
         {QStringLiteral("createdAt"), QVariant::fromValue(group->_created_at)},
     };
 }
@@ -1023,6 +1115,7 @@ void ChatBridge::rebuildProfile(const std::shared_ptr<FriendInfo> &info)
         {QStringLiteral("desc"), info->_desc},
         {QStringLiteral("sex"), info->_sex},
         {QStringLiteral("tags"), QVariant::fromValue(info->_tags)},
+        {QStringLiteral("friend"), info->_is_friend},
         {QStringLiteral("displayName"), display},
         {QStringLiteral("initial"), display.isEmpty() ? QStringLiteral("?") : display.left(1)},
     };
@@ -1063,12 +1156,13 @@ void ChatBridge::setMode(int mode)
 
     const bool chatPane = _pane == ChatPage || _pane == GroupInfoPage || _pane == EmptyPane;
     const bool contactPane = _pane == ApplyFriendPage || _pane == FriendInfoPage;
+    const bool settingsPane = _pane == UserInfoPage || _pane == GeneralPage;
     if (mode == ContactMode && !contactPane) {
         setPane(_lastContactPane); //回到联系人区域：恢复上次看的资料/申请页
     } else if (mode == ChatMode && !chatPane) {
         setPane(_currentThreadId > 0 ? ChatPage : EmptyPane);
-    } else if (mode == SettingsMode && _pane != UserInfoPage) {
-        setPane(UserInfoPage);
+    } else if (mode == SettingsMode && !settingsPane) {
+        setPane(_lastSettingsPane);
     }
 
     //回到会话模式且仍停在会话页时，恢复"正在看"，否则新消息会被算成未读
@@ -1088,6 +1182,9 @@ void ChatBridge::setPane(int pane)
 {
     if (_pane == pane)
         return;
+    //记住设置区停留的页，从会话/联系人切回来时不用重新点
+    if (pane == UserInfoPage || pane == GeneralPage)
+        _lastSettingsPane = pane;
     _pane = pane;
     //只有真正停在会话页才算"正在看"；切到资料页/申请页后新消息重新计入未读
     refreshActiveThread();
@@ -1111,6 +1208,13 @@ bool ChatBridge::sendParts(const QVariantList &parts)
         auto info = UserMgr::GetInstance()->GetFriendById(conv._peer_uid);
         if (info && !info->_is_friend) {
             _chatNotice = tr("你已删除对方，发送朋友验证后才能继续聊天");
+            emit chatNoticeChanged();
+            return false;
+        }
+    } else {
+        auto group = UserMgr::GetInstance()->GetGroup(conv._thread_id);
+        if (group && group->_left_state != 0) {
+            _chatNotice = tr("你已经不在这个群里，只能查看历史消息");
             emit chatNoticeChanged();
             return false;
         }
@@ -1482,6 +1586,10 @@ void ChatBridge::createGroup(const QString &name, const QVariantList &uids)
 void ChatBridge::openGroupInfo()
 {
     if (!isGroup() || _currentThreadId <= 0)
+        return;
+    //已离开的群只剩历史，没有可管理的资料
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (group && group->_left_state != 0)
         return;
     setMode(ChatMode);
     setPane(GroupInfoPage);

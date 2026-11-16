@@ -40,6 +40,8 @@ public:
         AtMeRole, //群未读里有人 @我
         MemberCountRole,
         SubtitleRole, //群聊显示"3 人"，单聊为空
+        FriendRole,   //单聊：是否仍是好友；群聊恒为 false
+        LeftStateRole, //群聊：0 正常 / 1 被移出 / 2 已解散；单聊恒为 0
     };
 
     explicit ConversationModel(QObject *parent = nullptr);

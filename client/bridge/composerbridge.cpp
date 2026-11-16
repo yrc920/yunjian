@@ -9,6 +9,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QImageReader>
+#include <QSignalBlocker>
 #include <QMimeData>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -76,6 +77,35 @@ ComposerBridge::ComposerBridge(QObject *parent) : QObject(parent)
 {
     //待上传图按登录账号存放，登录时由 UserMgr::CleanPendingImages 清理上次退出留下的文件；
     //这里构造时还没有账号信息，不能直接拼路径
+    //草稿防抖：连续输入时只在停下后写一次库
+    _draftTimer.setSingleShot(true);
+    _draftTimer.setInterval(600);
+    connect(&_draftTimer, &QTimer::timeout, this, &ComposerBridge::saveDraft);
+
+    //设置里清空历史时草稿也一起没了：内存缓存与当前文档都要清，否则切回去又冒出来
+    connect(UserMgr::GetInstance().get(), &UserMgr::DraftsCleared, this,
+            [this](qint64 threadId) {
+                if (threadId == 0) {
+                    _drafts.clear();
+                    if (_document) {
+                        const QSignalBlocker blocker(_document);
+                        _document->clear();
+                    }
+                    return;
+                }
+                _drafts.remove(threadId);
+                if (threadId == _threadId && _document) {
+                    const QSignalBlocker blocker(_document);
+                    _document->clear();
+                }
+            });
+}
+
+void ComposerBridge::saveDraft()
+{
+    if (_threadId <= 0 || !_document)
+        return;
+    UserMgr::GetInstance()->SetThreadDraft(_threadId, _document->toHtml());
 }
 
 void ComposerBridge::setError(const QString &message)
@@ -365,11 +395,24 @@ void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 thr
     if (!document || !document->textDocument() || threadId == _threadId)
         return;
     auto *doc = document->textDocument();
-    if (_threadId != 0)
+    if (_threadId != 0) {
         _drafts.insert(_threadId, doc->toHtml());
+        saveDraft(); //防抖定时器可能还在等，切走前先立即落库
+    }
     _threadId = threadId;
     _mentions.clear(); //草稿换人，上一条消息的 @ 名单不能带过来
-    doc->setHtml(_drafts.value(threadId));
+    {
+        //setHtml 也会触发 contentsChanged，别把刚读出来的内容又写回去
+        const QSignalBlocker blocker(doc);
+        doc->setHtml(_drafts.contains(threadId) ? _drafts.value(threadId)
+                                                : UserMgr::GetInstance()->ThreadDraft(threadId));
+    }
+    if (_document != doc) {
+        if (_document)
+            disconnect(_document, &QTextDocument::contentsChanged, this, nullptr);
+        _document = doc;
+        connect(doc, &QTextDocument::contentsChanged, this, [this] { _draftTimer.start(); });
+    }
     normalizeEmoji(document); //草稿里的连续同款表情要重新拆开
     clearAttachments(); //附件不跨会话保留，避免把上一个会话的文件发错人
     setError({});

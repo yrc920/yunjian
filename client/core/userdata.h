@@ -224,6 +224,8 @@ struct GroupInfo {
     int _owner_id = 0;
     int _my_role = static_cast<int>(GroupRole::Member);
     bool _muted = false;
+    //离开状态：0 正常 / 1 被移出 / 2 群已解散 / 3 已不在该群（离线期间变化，原因未知）
+    int _left_state = 0;
     int _member_count = 0;
     qint64 _created_at = 0;
     qint64 _last_time = 0; //服务端下发的最后活动时间，历史拉回前用于首屏排序
@@ -425,6 +427,10 @@ inline QString DisplayName(const QString &remark, const QString &nick, const QSt
         return remark;
     return nick.isEmpty() ? name : nick;
 }
+
+//消息身份：服务端号优先，未回执时退回客户端 msgid。
+//群系统消息两者都可能为空，不能靠"空串相等"判断是不是同一条
+QString MessageKey(const std::shared_ptr<TextChatData> &message);
 
 Q_DECLARE_METATYPE(std::shared_ptr<SearchInfo>)
 Q_DECLARE_METATYPE(std::shared_ptr<AddFriendApply>)

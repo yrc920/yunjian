@@ -13,6 +13,7 @@
 #include "usermgr.h"
 #include "fileservice.h"
 #include "groupservice.h"
+#include "localstore.h"
 
 namespace {
 constexpr int kSessionTimeoutMs = 12000; // 连接 + 登录帧回包的整体上限
@@ -182,6 +183,11 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_chat_threads, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const auto threads = data.value("thread_list").toArray();
+        for (const auto &value : threads) {
+            const qint64 id = value.toObject().value("thread_id").toVariant().toLongLong();
+            if (id > 0)
+                _seen_threads.insert(id);
+        }
         mgr->AppendChatThreads(threads);
         mgr->RefreshFriendList();
         //每个会话先拿第一页，剩下的由 load_more 继续；群聊再补一次成员，
@@ -189,14 +195,15 @@ SessionService::SessionService() : _ready(false)
         for (const auto &value : threads) {
             const auto item = value.toObject();
             const qint64 threadId = item.value("thread_id").toVariant().toLongLong();
-            requestMessages(threadId);
+            requestMessages(threadId, LocalStore::GetInstance()->SyncCursor(threadId));
             if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
                 GroupService::GetInstance()->RequestGroupInfo(threadId);
         }
         if (data.value("load_more").toBool() && !threads.isEmpty())
             loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
-    });
-    connect(tcp, &TcpMgr::sig_chat_messages, this, [this](const QJsonObject &data) {
+        else
+            finishThreadList();
+    });    connect(tcp, &TcpMgr::sig_chat_messages, this, [this](const QJsonObject &data) {
         auto *mgr = UserMgr::GetInstance().get();
         const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         if (threadId <= 0)
@@ -217,101 +224,45 @@ SessionService::SessionService() : _ready(false)
         }
 
         std::vector<std::shared_ptr<TextChatData>> messages;
-        for (const auto &value : data.value("text_array").toArray()) {
+        const auto items = data.value("text_array").toArray();
+        for (const auto &value : items) {
             const auto item = value.toObject();
-            const int defaultStatus = item.value("fromuid").toInt() == mgr->GetUid()
+            //历史回包当成一行库记录来解析：本地翻页与历史同步共用同一条还原路径，
+            //图片/视频的本地文件、缩略图与传输状态都在那一处补齐
+            StoredMessage row;
+            row.client_msg_id = item.value("msgid").toString();
+            row.server_id = item.value("message_id").toVariant().toLongLong();
+            row.thread_id = threadId;
+            row.sender_id = item.value("fromuid").toInt();
+            row.recv_id = item.value("touid").toInt();
+            row.msg_type = item.value("msg_type").toInt(0);
+            row.content = item.value("content").toString();
+            row.mentions = item.value("mentions").toString();
+            row.created_at = item.value("time").toVariant().toLongLong();
+            row.status = item.value("status").toInt(row.sender_id == mgr->GetUid()
                 ? static_cast<int>(ChatMessageStatus::Sent)
-                : static_cast<int>(ChatMessageStatus::Unread);
-            const auto status = static_cast<ChatMessageStatus>(
-                item.value("status").toInt(defaultStatus));
-            auto message = std::make_shared<TextChatData>(item.value("msgid").toString(),
-                item.value("content").toString(), item.value("fromuid").toInt(),
-                item.value("touid").toInt(), item.value("message_id").toVariant().toLongLong(),
-                threadId, status);
-            //落库时间：历史补拉与实时消息用同一套字段，界面据此画时间条与排序
-            message->_time = item.value("time").toVariant().toLongLong();
-            message->_recalled = item.value("recalled").toBool();
-            const QString mentions = item.value("mentions").toString();
-            for (const QString &uid : mentions.split(QLatin1Char(','), Qt::SkipEmptyParts))
-                message->_mentions.append(uid.trimmed());
-            //自己发的消息如果库里已标已读，直接按已读显示，不必等下一次通知
-            if (message->_status == ChatMessageStatus::Sent && item.value("read").toBool())
-                message->_status = ChatMessageStatus::Read;
-            //图片消息的 content 是资源文件名；视频/文件的 content 是元数据 JSON。
-            //图片自动补全，视频只补首帧，视频/文件本体等用户点击下载
-            const int msgType = item.value("msg_type").toInt(0);
-            if (msgType == static_cast<int>(ChatMsgType::System)) {
-                message->_msg_type = ChatMsgType::System;
-            }
-            else if (msgType == static_cast<int>(ChatMsgType::Image)) {
-                message->_msg_type = ChatMsgType::Image;
-                message->_resource_name = item.value("content").toString();
-                QSize pixel_size;
-                const QString thumb = ChatService::EnsureImageThumbnail(message->_resource_name,
-                    &pixel_size);
-                if (!thumb.isEmpty()) {
-                    message->_imageSource = QUrl::fromLocalFile(thumb).toString();
-                    message->_imageWidth = pixel_size.width();
-                    message->_imageHeight = pixel_size.height();
-                    message->_local_path = ChatService::ImageCachePath(message->_resource_name);
-                    message->_transferProgress = 100;
-                    message->_transfer_state = ResourceTransferState::Done;
-                }
-                else if (!message->_resource_name.isEmpty()) {
-                    message->_transferProgress = 0; //先显示进度条，由资源下载推进
-                    message->_transfer_state = ResourceTransferState::Downloading;
-                    ChatService::GetInstance()->DownloadChatImage(message->_resource_name,
-                        message->_from_uid, message->_message_id, threadId);
-                }
-            }
-            else if (msgType == static_cast<int>(ChatMsgType::Video)
-                || msgType == static_cast<int>(ChatMsgType::File)) {
-                auto resource = ChatService::BuildResourceMessage(message->_from_uid,
-                    message->_to_uid, message->_message_id, threadId, msgType,
-                    item.value("content").toString(), QString(), status);
-                if (resource && !resource->_resource_name.isEmpty()) {
-                    resource->_msg_id = message->_msg_id;
-                    const QString local = ChatService::ResourcePath(resource->_msg_type,
-                        resource->_resource_name);
-                    if (QFileInfo::exists(local)) {
-                        resource->_local_path = local;
-                        resource->_transferProgress = 100;
-                        resource->_transfer_state = ResourceTransferState::Done;
-                    }
-                    if (resource->_msg_type == ChatMsgType::Video
-                        && !resource->_thumb_name.isEmpty()) {
-                        const QString thumbPath = ChatService::VideoThumbPath(
-                            resource->_thumb_name);
-                        if (QFileInfo::exists(thumbPath)) {
-                            resource->_imageSource = QUrl::fromLocalFile(thumbPath).toString();
-                            resource->_imageWidth = QImageReader(thumbPath).size().width();
-                            resource->_imageHeight = QImageReader(thumbPath).size().height();
-                        }
-                        else {
-                            ChatService::GetInstance()->DownloadVideoThumb(
-                                resource->_thumb_name, resource->_from_uid,
-                                resource->_message_id, threadId);
-                        }
-                    }
-                    message = std::move(resource);
-                }
-            }
-            messages.push_back(std::move(message));
+                : static_cast<int>(ChatMessageStatus::Unread));
+            row.is_read = item.value("read").toBool();
+            row.recalled = item.value("recalled").toBool();
+            messages.push_back(ChatService::GetInstance()->MessageFromStored(row, mgr->GetUid()));
         }
         mgr->AppendChatMsgs(conv, std::move(messages));
         //打开会话后历史一落地就上报已读；不在前台时不报，等用户真正进入会话再报
         if (threadId == mgr->ActiveThread())
             ChatService::GetInstance()->MarkSessionRead(conv);
-        if (data.value("load_more").toBool()) {
-            const auto items = data.value("text_array").toArray();
-            if (!items.isEmpty())
-                requestMessages(threadId,
-                    items.last().toObject().value("message_id").toVariant().toLongLong());
+        //历史按消息号升序分页，还有更新的就继续追；页数设上限，
+        //避免异常数据让登录阶段无限翻页（正常登录游标已经在头部，一页就结束）
+        if (data.value("load_more").toBool() && !items.isEmpty() && _history_pages < 2000) {
+            ++_history_pages;
+            requestMessages(threadId,
+                items.last().toObject().value("message_id").toVariant().toLongLong());
         }
     });
     //中途被拉进新群：群资料到位后拉第一页历史，邀请前的消息也能看到
     connect(GroupService::GetInstance().get(), &GroupService::groupActivated, this,
-            [this](qint64 threadId) { requestMessages(threadId); });
+            [this](qint64 threadId) {
+                requestMessages(threadId, LocalStore::GetInstance()->SyncCursor(threadId));
+            });
     connect(tcp, &TcpMgr::sig_private_chat_created, this, [](const QJsonObject &data) {
         if (data.value("error").toInt() != 0) {
             UserMgr::GetInstance()->MarkPrivateChatPending(data.value("uid").toInt(), false);
@@ -410,7 +361,16 @@ void SessionService::connectToChat(const ServerInfo &info)
     _heartbeat.stop();
     _ready = false;
     _current = {};
-    UserMgr::GetInstance()->ClearSession();
+    _history_pages = 0;
+    _seen_threads.clear();
+    _threads_complete = false;
+    UserMgr::GetInstance()->ClearSession(); //内部会关闭上一个账号的本地库
+
+    //先开库并恢复缓存：网络回来之前会话列表与历史就已经可读，
+    //1006 到达后只做一次合并，不必等每个会话的第一页消息
+    auto store = LocalStore::GetInstance();
+    if (store->Open(info.Uid))
+        UserMgr::GetInstance()->RestoreFromCache();
 
     _pending = info;
     _connecting = true;
@@ -475,6 +435,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
         return;
     }
     auto *mgr = UserMgr::GetInstance().get();
+    _history_pages = 0;
     mgr->SetToken(_pending.Token); //资源服务器校验同一个utoken
     auto self_info = std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
         data["nick"].toString(), data["icon"].toString(), data["sex"].toInt());
@@ -488,12 +449,16 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     for (const auto &value : threads) {
         const auto item = value.toObject();
         const qint64 threadId = item.value("thread_id").toVariant().toLongLong();
-        requestMessages(threadId);
+        if (threadId > 0)
+            _seen_threads.insert(threadId);
+        requestMessages(threadId, LocalStore::GetInstance()->SyncCursor(threadId));
         if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
             GroupService::GetInstance()->RequestGroupInfo(threadId);
     }
     if (data.value("thread_more").toBool() && !threads.isEmpty())
         loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
+    else
+        finishThreadList();
     _connecting = false;
     _timeout.stop();
     _ready = true;
@@ -523,6 +488,16 @@ void SessionService::loadMoreThreads(qint64 lastThreadId)
                         {"thread_id", lastThreadId}};
     emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_THREAD_REQ,
         QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+//会话列表到齐：本地有、这次没下发的群说明已经被移出或解散。
+//只标状态不删历史，用户还能翻记录，清不清由他自己决定
+void SessionService::finishThreadList()
+{
+    if (_threads_complete)
+        return;
+    _threads_complete = true;
+    UserMgr::GetInstance()->MarkMissingGroupsLeft(_seen_threads);
 }
 
 // 统一失败出口：停表、复位状态，把原因抛给界面

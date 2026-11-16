@@ -272,7 +272,16 @@ QVariant ConversationModel::data(const QModelIndex &index, int role) const
         case MutedRole: return group->_muted;
         case AtMeRole: return mgr->ThreadAtMe(row.thread);
         case MemberCountRole: return group->_member_count;
+        case FriendRole: return false;
+        case LeftStateRole: return group->_left_state;
         case SubtitleRole:
+            //离开的群用状态文字替换人数：列表上一眼能看出这个群已经不能发言
+            if (group->_left_state == 1)
+                return QStringLiteral("已被移出群聊");
+            if (group->_left_state == 2)
+                return QStringLiteral("群聊已解散");
+            if (group->_left_state == 3)
+                return QStringLiteral("已不在该群");
             return group->_member_count > 0
                 ? QStringLiteral("%1 人").arg(group->_member_count) : QString();
         default: return {};
@@ -296,6 +305,8 @@ QVariant ConversationModel::data(const QModelIndex &index, int role) const
     case MutedRole: return false;
     case AtMeRole: return false;
     case MemberCountRole: return 0;
+    case FriendRole: return info->_is_friend;
+    case LeftStateRole: return 0;
     case SubtitleRole: return QString();
     default: return {};
     }
@@ -316,6 +327,8 @@ QHash<int, QByteArray> ConversationModel::roleNames() const
         {MutedRole, "muted"},
         {AtMeRole, "atMe"},
         {MemberCountRole, "memberCount"},
+        {FriendRole, "isFriend"},
+        {LeftStateRole, "leftState"},
         {SubtitleRole, "subtitle"},
     };
 }

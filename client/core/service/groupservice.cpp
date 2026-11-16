@@ -119,8 +119,6 @@ GroupService::GroupService()
         if (action == "invite" || action == "remove" || action == "set_admin"
             || action == "unset_admin")
             RequestGroupInfo(threadId);
-        if (action == "dismiss")
-            mgr->RemoveGroup(threadId);
         emit memberOpFinished(true, threadId, action, data.value("message").toString());
     });
 
@@ -281,14 +279,13 @@ void GroupService::applyGroupChanged(const QJsonObject &data)
         return;
     }
 
+    //离开与解散都不删本地对象：历史要留着，由 ChatBridge 统一标记状态
     if (event == "removed") {
-        mgr->RemoveGroup(threadId);
         emit groupRemoved(threadId, false);
         return;
     }
 
     if (event == "dismissed") {
-        mgr->RemoveGroup(threadId);
         emit groupRemoved(threadId, true);
         return;
     }

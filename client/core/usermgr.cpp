@@ -1,7 +1,9 @@
 #include "usermgr.h"
 
 #include "global.h"
+#include "localstore.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -26,6 +28,83 @@ bool isAvatarPng(const QByteArray &png)
 QString avatarSource(const QByteArray &png)
 {
     return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
+}
+
+//内存消息转成库行：只存事实。本地路径、缩略图地址、传输进度都能从资源名推导，
+//存进库反而会在换机器或移动目录后变成脏数据
+StoredMessage storedFromMessage(const std::shared_ptr<TextChatData> &message, qint64 thread_id)
+{
+    StoredMessage stored;
+    if (!message)
+        return stored;
+    stored.server_id = message->_message_id;
+    //合成键只用于内存去重，不写进库：库里空的客户端消息号就是空的
+    stored.client_msg_id = message->_msg_id.startsWith(QLatin1String("srv:"))
+        ? QString() : message->_msg_id;
+    stored.thread_id = thread_id;
+    stored.sender_id = message->_from_uid;
+    stored.recv_id = message->_to_uid;
+    stored.msg_type = static_cast<int>(message->_msg_type);
+    stored.content = message->_msg_content;
+    stored.mentions = message->_mentions.join(QLatin1Char(','));
+    stored.created_at = message->_time;
+    stored.status = static_cast<int>(message->_status);
+    stored.is_read = message->_status == ChatMessageStatus::Read;
+    stored.recalled = message->_recalled;
+    stored.recalled_text = message->_recalled_text;
+    stored.resource_name = message->_resource_name;
+    stored.resource_md5 = message->_resource_md5;
+    stored.file_name = message->_file_name;
+    stored.file_size = message->_file_size;
+    stored.thumb_name = message->_thumb_name;
+    return stored;
+}
+
+StoredFriend storedFromFriend(const FriendInfo &info, qint64 added_at)
+{
+    StoredFriend stored;
+    stored.uid = info._uid;
+    stored.name = info._name;
+    stored.nick = info._nick;
+    stored.remark = info._back;
+    stored.icon = info._icon;
+    stored.sex = info._sex;
+    stored.signature = info._desc;
+    stored.is_friend = info._is_friend;
+    stored.added_at = added_at;
+    stored.tags = info._tags;
+    return stored;
+}
+
+StoredGroup storedFromGroup(const GroupInfo &group)
+{
+    StoredGroup stored;
+    stored.thread_id = group._thread_id;
+    stored.name = group._name;
+    stored.notice = group._notice;
+    stored.owner_id = group._owner_id;
+    stored.my_role = group._my_role;
+    stored.my_nick = group._my_nick;
+    stored.muted = group._muted;
+    stored.left_state = group._left_state;
+    stored.member_count = group._member_count;
+    stored.created_at = group._created_at;
+    return stored;
+}
+
+StoredMember storedFromMember(qint64 thread_id, const GroupMember &member)
+{
+    StoredMember stored;
+    stored.thread_id = thread_id;
+    stored.uid = member._uid;
+    stored.role = member._role;
+    stored.group_nick = member._group_nick;
+    stored.joined_at = member._joined_at;
+    stored.name = member._name;
+    stored.nick = member._nick;
+    stored.icon = member._icon;
+    stored.sex = member._sex;
+    return stored;
 }
 }
 
@@ -84,6 +163,8 @@ bool UserMgr::UpdateFriendRelation(int uid, const QString &remark, const QString
         return false;
     (*find_it)->_back = remark;
     (*find_it)->_tags = tags;
+    LocalStore::GetInstance()->SaveFriend(storedFromFriend(**find_it, 0));
+    LocalStore::GetInstance()->SaveFriendTags(uid, tags);
     emit FriendRelationChanged(uid);
     emit FriendTagsChanged(); //标签集合可能新增或消失，筛选条要重算
     return true;
@@ -113,8 +194,10 @@ bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &d
         changed = true;
     }
 
-    if (changed)
+    if (changed) {
+        LocalStore::GetInstance()->SaveFriend(storedFromFriend(**find_it, 0));
         emit FriendProfileChanged(uid);
+    }
     return changed;
 }
 
@@ -123,11 +206,20 @@ bool UserMgr::UpdateFriendProfile(int uid, const QString &nick, const QString &d
 bool UserMgr::MarkMessagesReadTo(int peer_uid, qint64 last_read_id)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (last_read_id <= 0)
+        return false;
+    const int self_uid = _user_info ? _user_info->_uid : 0;
+
     auto find_it = _friend_map.find(peer_uid);
-    if (find_it == _friend_map.end() || !(*find_it) || last_read_id <= 0)
+    const qint64 thread_id = find_it != _friend_map.end() && (*find_it)
+        ? (*find_it)->_chat_thread->_thread_id : 0;
+    //库里先改：窗口只保留最近一页，早于窗口的自己的消息不在内存里，也要变成已读
+    if (thread_id > 0)
+        LocalStore::GetInstance()->MarkReadTo(thread_id, self_uid, last_read_id);
+
+    if (find_it == _friend_map.end() || !(*find_it))
         return false;
 
-    const int self_uid = _user_info ? _user_info->_uid : 0;
     bool changed = false;
     for (const auto &msg : (*find_it)->_chat_thread->_chat_msgs) {
         if (!msg || msg->_from_uid != self_uid)
@@ -153,6 +245,7 @@ bool UserMgr::MarkMessageRecalled(qint64 message_id)
         return false;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     const int self_uid = _user_info ? _user_info->_uid : 0;
+    QString recalled_text;
     auto recall = [&](const std::shared_ptr<ChatThreadData> &thread, int peer) {
         if (!thread)
             return false;
@@ -161,8 +254,10 @@ bool UserMgr::MarkMessageRecalled(qint64 message_id)
                 continue;
             msg->_recalled = true;
             //自己撤回时留一份原文，供「重新编辑」；别人撤回时本地本来就没有原文
-            if (msg->_from_uid == self_uid)
+            if (msg->_from_uid == self_uid) {
                 msg->_recalled_text = msg->_msg_content;
+                recalled_text = msg->_recalled_text;
+            }
             msg->_msg_content.clear();
             msg->_msg_type = ChatMsgType::Text;
             msg->_imageSource.clear();
@@ -178,15 +273,24 @@ bool UserMgr::MarkMessageRecalled(qint64 message_id)
         }
         return false;
     };
-    for (const auto &info : _friend_list) {
-        if (info && recall(info->_chat_thread, info->_uid))
-            return true;
+
+    bool found = false;
+    //遍历 _friend_map 而不是 _friend_list：已删好友但保留历史的会话也在这个索引里
+    for (auto it = _friend_map.cbegin(); it != _friend_map.cend() && !found; ++it) {
+        if (it.value() && recall(it.value()->_chat_thread, it.key()))
+            found = true;
     }
     for (const auto &group : _group_list) {
+        if (found)
+            break;
         if (group && recall(group->_chat_thread, 0))
-            return true;
+            found = true;
     }
-    return false;
+
+    //内存窗口只保留最近一页，更早的消息不在里面，但库里必须一起改：
+    //否则切回会话重新读库时，撤回的正文又会出现
+    LocalStore::GetInstance()->MarkRecalled(message_id, recalled_text);
+    return found;
 }
 
 //发送超时或回执报错：只改状态，内容保留，用户可以直接重发
@@ -224,6 +328,8 @@ bool UserMgr::RemoveChatMessage(const ConversationRef &conv, const QString &msg_
     if (iter == msgs.end())
         return false;
     msgs.erase(iter);
+    if (thread->_thread_id > 0)
+        LocalStore::GetInstance()->DeleteMessage(thread->_thread_id, msg_id);
     emit ConversationChanged(thread->_thread_id, conv._peer_uid);
     return true;
 }
@@ -244,6 +350,7 @@ void UserMgr::RestoreFriend(int uid)
     emit FriendListAboutToChange();
     (*find_it)->_is_friend = true;
     _friend_list.push_back(*find_it);
+    LocalStore::GetInstance()->SetFriendActive(uid, true);
     emit FriendListChanged();
     emit FriendTagsChanged();
 }
@@ -255,6 +362,8 @@ void UserMgr::IncThreadUnread(qint64 thread_id)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     ++_unread[thread_id];
+    LocalStore::GetInstance()->SaveThreadUnread(thread_id, _unread.value(thread_id, 0),
+                                                _at_me_threads.contains(thread_id));
     emit UnreadChanged();
 }
 
@@ -266,6 +375,7 @@ void UserMgr::ClearThreadUnread(qint64 thread_id)
     bool changed = _unread.remove(thread_id) > 0;
     //@提醒跟着未读一起清：会话行不该在读完消息后还挂着"[有人@我]"
     changed = _at_me_threads.remove(thread_id) || changed;
+    LocalStore::GetInstance()->SaveThreadUnread(thread_id, 0, false);
     if (changed)
         emit UnreadChanged();
 }
@@ -290,6 +400,7 @@ void UserMgr::MarkThreadAtMe(qint64 thread_id)
     if (_at_me_threads.contains(thread_id))
         return;
     _at_me_threads.insert(thread_id);
+    LocalStore::GetInstance()->SaveThreadUnread(thread_id, _unread.value(thread_id, 0), true);
     emit UnreadChanged();
 }
 
@@ -304,6 +415,7 @@ void UserMgr::EnsureGroup(qint64 thread_id)
     group->_name = QStringLiteral("群聊");
     _group_map[thread_id] = group;
     _group_list.push_back(group);
+    LocalStore::GetInstance()->SaveGroup(storedFromGroup(*group));
     emit GroupListChanged();
 }
 
@@ -666,6 +778,9 @@ void UserMgr::AppendApplyList(QJsonArray array)
 void UserMgr::AppendFriendList(QJsonArray array) {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit FriendListAboutToChange();
+    QSet<int> incoming;
+    QVector<StoredFriend> stored;
+    qint64 order = 0;
     for (const QJsonValue& value : array) {
         auto name = value["name"].toString();
         auto desc = value["desc"].toString();
@@ -674,6 +789,8 @@ void UserMgr::AppendFriendList(QJsonArray array) {
         auto sex = value["sex"].toInt();
         auto uid = value["uid"].toInt();
         auto back = value["back"].toString();
+        if (uid <= 0)
+            continue;
         //标签随好友列表下发；缺字段时是空数组，不影响旧数据
         QStringList tags;
         for (const auto& tag : value["tags"].toArray()) {
@@ -682,12 +799,42 @@ void UserMgr::AppendFriendList(QJsonArray array) {
                 tags.append(text);
         }
 
-        auto info = std::make_shared<FriendInfo>(uid, name, nick, icon, sex, desc, back);
+        incoming.insert(uid);
+        //本地缓存里已经有这个人时原地更新：登录前恢复过一份，直接 push 会出现两行
+        auto info = _friend_map.value(uid);
+        if (!info) {
+            info = std::make_shared<FriendInfo>(uid, name, nick, icon, sex, desc, back);
+            _friend_list.push_back(info);
+            _friend_map.insert(uid, info);
+        } else {
+            info->_name = name;
+            info->_nick = nick;
+            info->_icon = icon;
+            info->_sex = sex;
+            info->_desc = desc;
+            info->_back = back;
+            info->_is_friend = true;
+        }
         info->_tags = tags;
-        _friend_list.push_back(info);
-        _friend_map.insert(uid, info);
+        stored.push_back(storedFromFriend(*info, ++order));
     }
 
+    //服务端的好友表是完整快照：本地有、这次没下发的说明关系已经不在（对方删了我，
+    //或我在别处删了）。只把联系人项摘掉，对象与历史会话继续保留。
+    //回包为空时不做任何推断：那更可能是服务端异常，不是"好友全没了"
+    if (!array.isEmpty()) {
+        for (const auto &info : _friend_list) {
+            if (!info || !info->_is_friend || incoming.contains(info->_uid))
+                continue;
+            info->_is_friend = false;
+            stored.push_back(storedFromFriend(*info, ++order));
+        }
+        _friend_list.erase(std::remove_if(_friend_list.begin(), _friend_list.end(),
+            [](const auto &info) { return info && !info->_is_friend; }),
+            _friend_list.end());
+    }
+
+    LocalStore::GetInstance()->SaveFriends(stored);
     emit FriendListChanged();
     emit FriendTagsChanged(); //整表重建后筛选条按新的标签并集刷新
 }
@@ -798,6 +945,9 @@ void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
         if (!auth_rsp->_tags.isEmpty())
             existing->_tags = auth_rsp->_tags;
         restoreFriendEntry(_friend_list, existing);
+        LocalStore::GetInstance()->SaveFriend(storedFromFriend(*existing, 0));
+        if (!auth_rsp->_tags.isEmpty())
+            LocalStore::GetInstance()->SaveFriendTags(existing->_uid, existing->_tags);
         emit FriendListChanged();
         emit FriendTagsChanged();
         return;
@@ -806,6 +956,8 @@ void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
     emit FriendListAboutToChange();
     _friend_map[friend_info->_uid] = friend_info;
     _friend_list.push_back(friend_info); //列表与索引必须同时维护，否则新好友不会出现在列表里
+    LocalStore::GetInstance()->SaveFriend(storedFromFriend(
+        *friend_info, QDateTime::currentSecsSinceEpoch()));
     emit FriendListChanged();
 }
 
@@ -823,6 +975,9 @@ void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
         if (!auth_info->_tags.isEmpty())
             existing->_tags = auth_info->_tags;
         restoreFriendEntry(_friend_list, existing);
+        LocalStore::GetInstance()->SaveFriend(storedFromFriend(*existing, 0));
+        if (!auth_info->_tags.isEmpty())
+            LocalStore::GetInstance()->SaveFriendTags(existing->_uid, existing->_tags);
         emit FriendListChanged();
         emit FriendTagsChanged();
         return;
@@ -831,6 +986,8 @@ void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
     emit FriendListAboutToChange();
     _friend_map[friend_info->_uid] = friend_info;
     _friend_list.push_back(friend_info);
+    LocalStore::GetInstance()->SaveFriend(storedFromFriend(
+        *friend_info, QDateTime::currentSecsSinceEpoch()));
     emit FriendListChanged();
 }
 
@@ -846,20 +1003,87 @@ void UserMgr::AppendChatMsgs(const ConversationRef &conv,
         qDebug() << "append chat msg, thread" << conv._thread_id << "not found";
         return;
     }
-    thread->AppendMsgs(msgs);
     if (conv._thread_id > 0)
         thread->_thread_id = conv._thread_id;
-    emit ConversationChanged(thread->_thread_id, conv._peer_uid);
+
+    const qint64 thread_id = thread->_thread_id;
+    auto store = LocalStore::GetInstance();
+
+    //先把整页落库：内存只是当前窗口，库才是这个会话的全量历史。
+    //游标与消息同事务提交，崩溃后不会出现"游标前进了、消息缺一页"
+    if (thread_id > 0) {
+        QVector<StoredMessage> stored;
+        stored.reserve(static_cast<int>(msgs.size()));
+        qint64 cursor = 0;
+        for (const auto &message : msgs) {
+            if (!message)
+                continue;
+            stored.push_back(storedFromMessage(message, thread_id));
+            cursor = qMax(cursor, message->_message_id);
+        }
+        store->SaveMessages(thread_id, static_cast<int>(kind), conv._peer_uid, stored, cursor);
+    }
+
+    //只有正在看的会话保留整段窗口；其余会话只留最新一条做列表预览，
+    //否则登录回填会把每个会话的全部历史重新塞回内存，等于没做本地化
+    const bool active = thread_id > 0 && thread_id == _active_thread;
+    if (active) {
+        //回填的历史页整体比窗口更早，只落库、不进内存：硬插进头部会让正在看的人跳位。
+        //窗口为空时（首次打开、库里还没有消息）照常追加，让首屏能显示出来
+        const qint64 window_max = thread->_chat_msgs.empty() || !thread->_chat_msgs.back()
+            ? 0 : thread->_chat_msgs.back()->_message_id;
+        std::vector<std::shared_ptr<TextChatData>> newer;
+        newer.reserve(msgs.size());
+        for (const auto &message : msgs) {
+            if (!message)
+                continue;
+            if (window_max <= 0 || message->_message_id <= 0
+                || message->_message_id > window_max)
+                newer.push_back(message);
+        }
+        if (!newer.empty())
+            thread->AppendMsgs(newer);
+    } else {
+        std::shared_ptr<TextChatData> newest;
+        for (const auto &message : msgs) {
+            if (!message)
+                continue;
+            if (!newest || message->_time > newest->_time
+                || (message->_time == newest->_time
+                    && message->_message_id > newest->_message_id))
+                newest = message;
+        }
+        if (!newest)
+            return;
+        const auto &head = thread->_chat_msgs.empty() ? nullptr : thread->_chat_msgs.back();
+        const bool replace = !head || newest->_time > head->_time
+            || (newest->_time == head->_time && newest->_message_id > head->_message_id);
+        if (replace) {
+            thread->_chat_msgs.clear();
+            thread->_chat_msgs.push_back(newest);
+        }
+    }
+
+    //预览字段跟最后一条一起更新：重启后不必为每个会话再查一次消息
+    if (thread_id > 0 && !thread->_chat_msgs.empty()) {
+        const auto &last = thread->_chat_msgs.back();
+        if (last) {
+            store->SaveThreadPreview(thread_id, last->_time, last->_msg_content,
+                                     static_cast<int>(last->_msg_type),
+                                     last->_from_uid, last->_file_name,
+                                     last->_recalled);
+        }
+    }
+
+    emit ConversationChanged(thread_id, conv._peer_uid);
 }
 
-//登录返回的会话列表是当前账号的完整结果，先清空旧映射再逐条写入。
-//单聊只重置 thread_id，群聊由 AppendChatThreads 新建或更新对象
+//登录返回的会话列表是分页的，这里只负责把本页的会话合并进来。
+//不能像旧实现那样先把所有好友的 thread_id 清零：第二页之后的会话会短暂失去映射，
+//本地缓存恢复出来的映射也会被一起抹掉，表现为"重启后有些会话点不开"
 void UserMgr::SetChatThreads(const QJsonArray &threads)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    emit FriendListAboutToChange();
-    for (auto &friend_info : _friend_list)
-        friend_info->_chat_thread->_thread_id = 0;
     AppendChatThreads(threads);
     emit FriendListChanged();
 }
@@ -889,6 +1113,8 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
                 item.value("sex").toInt(), QString(), QString());
             info->_is_friend = false;
             _friend_map[uid] = info;
+            //落一条最小资料：否则重启后这个会话没有对象可挂，历史也读不回来
+            LocalStore::GetInstance()->SaveFriend(storedFromFriend(*info, 0));
         }
         info->_chat_thread->_thread_id = thread_id;
         //会话最后活动时间只用于首屏排序，拉回历史后会被真实消息时间覆盖
@@ -899,8 +1125,255 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
             _unread[thread_id] = unread;
         else
             _unread.remove(thread_id);
+
+        auto store = LocalStore::GetInstance();
+        store->EnsureThread(thread_id, static_cast<int>(ChatThreadKind::Private), uid);
+        store->SaveThreadTime(thread_id, info->_last_time);
+        store->SaveThreadUnread(thread_id, unread, _at_me_threads.contains(thread_id));
     }
     emit UnreadChanged();
+}
+
+//把本地库装回内存：好友、群、成员、会话映射与每条会话的预览。
+//这一步在 1006 之前执行，网络回来之前列表就已经有内容，不必等服务端逐个下发
+void UserMgr::RestoreFromCache()
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto store = LocalStore::GetInstance();
+    if (!store->IsOpen())
+        return;
+
+    const auto friends = store->LoadFriends();
+    for (const auto &item : friends) {
+        auto info = std::make_shared<FriendInfo>(item.uid, item.name, item.nick, item.icon,
+                                                 item.sex, item.signature, item.remark);
+        info->_tags = item.tags;
+        info->_is_friend = item.is_friend;
+        info->_chat_thread->_thread_id = 0;
+        _friend_map.insert(item.uid, info);
+        if (item.is_friend)
+            _friend_list.push_back(info);
+    }
+
+    const auto groups = store->LoadGroups();
+    for (const auto &item : groups) {
+        auto group = std::make_shared<GroupInfo>(item.thread_id);
+        group->_name = item.name;
+        group->_notice = item.notice;
+        group->_owner_id = item.owner_id;
+        group->_my_role = item.my_role;
+        group->_my_nick = item.my_nick;
+        group->_muted = item.muted;
+        group->_left_state = item.left_state;
+        group->_member_count = item.member_count;
+        group->_created_at = item.created_at;
+        _group_map.insert(item.thread_id, group);
+        _group_list.push_back(group);
+    }
+
+    //成员整表读回：气泡上的发送者名字、@ 候选与群昵称都靠它，不必等 1063
+    for (const auto &item : store->LoadMembers()) {
+        auto group = _group_map.value(item.thread_id);
+        if (!group)
+            continue;
+        group->_member_map.insert(item.uid,
+            GroupMember(item.uid, item.name, item.nick, item.icon, item.sex,
+                        item.role, item.group_nick, item.joined_at));
+    }
+
+    const auto threads = store->LoadThreads();
+    for (const auto &item : threads) {
+        std::shared_ptr<ChatThreadData> data;
+        if (item.thread_type == static_cast<int>(ChatThreadKind::Group)) {
+            auto group = _group_map.value(item.thread_id);
+            if (!group)
+                continue;
+            group->_last_time = item.last_time;
+            group->_unread = item.unread;
+            group->_at_me = item.at_me;
+            data = group->_chat_thread;
+        } else {
+            auto info = _friend_map.value(item.peer_uid);
+            if (!info)
+                continue; //没有这个人的资料，会话行渲染不出来
+            info->_chat_thread->_thread_id = item.thread_id;
+            info->_last_time = item.last_time;
+            info->_last_msg = item.last_text; //模型在窗口为空时用它兜底
+            data = info->_chat_thread;
+        }
+        if (!data)
+            continue;
+        data->_thread_id = item.thread_id;
+        if (item.unread > 0)
+            _unread[item.thread_id] = item.unread;
+        if (item.at_me)
+            _at_me_threads.insert(item.thread_id);
+
+        //预览只放形状，不读资源、不触发下载；真正打开会话时再按窗口取消息
+        if (!item.last_text.isEmpty() || item.last_type != 0) {
+            auto message = std::make_shared<TextChatData>(QString(), item.last_text,
+                item.last_sender, item.peer_uid, 0, item.thread_id,
+                ChatMessageStatus::Sent);
+            message->_msg_type = static_cast<ChatMsgType>(item.last_type);
+            message->_time = item.last_time;
+            message->_file_name = item.last_name;
+            message->_recalled = item.last_recalled;
+            data->_chat_msgs.push_back(message);
+        }
+    }
+
+    emit FriendListChanged();
+    emit GroupListChanged();
+    emit UnreadChanged();
+    emit FriendTagsChanged();
+}
+
+//打开会话：用库里最近一页替换内存窗口。库里才是全量，内存只保留看得见的一段，
+//会话切走再切回时重新取，长期使用内存不会随历史线性增长
+void UserMgr::SetThreadWindow(qint64 thread_id,
+                              std::vector<std::shared_ptr<TextChatData>> msgs)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data)
+        return;
+    data->_thread_id = thread_id;
+    data->_chat_msgs = std::move(msgs);
+}
+
+//上滑翻页：先腾空再按"新页 + 旧窗口"重新合并，复用同一套去重与排序规则。
+//只发 MessagesPrepended，不发 ConversationChanged —— 后者会被模型当成整表重排
+void UserMgr::PrependChatMsgs(qint64 thread_id,
+                              const std::vector<std::shared_ptr<TextChatData>> &msgs)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data || msgs.empty())
+        return;
+
+    auto existing = data->_chat_msgs;
+    data->_chat_msgs.clear();
+    data->AppendMsgs(msgs);
+    data->AppendMsgs(existing);
+
+    const int added = static_cast<int>(data->_chat_msgs.size())
+        - static_cast<int>(existing.size());
+    if (added > 0)
+        emit MessagesPrepended(thread_id, added);
+}
+
+
+QString UserMgr::ThreadDraft(qint64 thread_id) const
+{
+    return LocalStore::GetInstance()->LoadDraft(thread_id);
+}
+
+void UserMgr::SetThreadDraft(qint64 thread_id, const QString &html)
+{
+    if (thread_id <= 0)
+        return;
+    LocalStore::GetInstance()->SaveThreadDraft(thread_id, html);
+}
+
+//被移出群或群解散：对象和历史都保留，只记一个状态。
+//以前是直接连消息一起删，用户再想翻记录就没有了
+void UserMgr::MarkGroupLeft(qint64 thread_id, int state)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto group = _group_map.value(thread_id);
+    if (!group || state <= 0 || group->_left_state == state)
+        return;
+    group->_left_state = state;
+    _unread.remove(thread_id);
+    _at_me_threads.remove(thread_id);
+    auto store = LocalStore::GetInstance();
+    store->SaveGroup(storedFromGroup(*group));
+    store->SaveThreadUnread(thread_id, 0, false);
+    emit GroupInfoChanged(thread_id);
+    emit GroupListChanged();
+    emit UnreadChanged();
+}
+
+//登录时做差集：本地有、服务端会话列表里没有的群，说明已被移出或解散。
+//只标状态不删数据——用户还能翻历史，什么时候清由他自己决定
+void UserMgr::MarkMissingGroupsLeft(const QSet<qint64> &alive_threads)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto store = LocalStore::GetInstance();
+    bool changed = false;
+    for (const auto &group : _group_list) {
+        if (!group || group->_left_state != 0 || alive_threads.contains(group->_thread_id))
+            continue;
+        group->_left_state = 3;
+        store->SaveGroup(storedFromGroup(*group));
+        emit GroupInfoChanged(group->_thread_id);
+        changed = true;
+    }
+    if (changed) {
+        emit GroupListChanged();
+        emit UnreadChanged();
+    }
+}
+
+//清除单个会话的历史：会话、游标与最后活动时间都保留，列表顺序不会突然变化
+void UserMgr::ClearThreadHistory(qint64 thread_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data)
+        return;
+    data->_chat_msgs.clear();
+    LocalStore::GetInstance()->ClearThreadMessages(thread_id);
+    const int peer = FriendIdByThread(thread_id);
+    if (auto info = _friend_map.value(peer))
+        info->_last_msg.clear();
+    emit ConversationChanged(thread_id, peer);
+    emit DraftsCleared(thread_id);
+}
+
+//清除全部聊天记录：好友、群、会话都在，只是打开后是空的
+void UserMgr::ClearAllHistory()
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    for (auto it = _friend_map.begin(); it != _friend_map.end(); ++it) {
+        if (!it.value())
+            continue;
+        it.value()->_chat_thread->_chat_msgs.clear();
+        it.value()->_last_msg.clear();
+    }
+    for (const auto &group : _group_list) {
+        if (group)
+            group->_chat_thread->_chat_msgs.clear();
+    }
+    LocalStore::GetInstance()->ClearAllMessages();
+    emit FriendListChanged();
+    emit GroupListChanged();
+    emit DraftsCleared(0);
+    if (_active_thread > 0)
+        emit ConversationChanged(_active_thread, FriendIdByThread(_active_thread));
+}
+
+//媒体缓存被清空后，当前窗口里的图片/视频不能再指向已经不存在的文件
+void UserMgr::ForgetActiveResources()
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (_active_thread <= 0)
+        return;
+    auto data = findThreadData(_active_thread);
+    if (!data)
+        return;
+    for (const auto &message : data->_chat_msgs) {
+        if (!message || message->_msg_type == ChatMsgType::Text
+            || message->_msg_type == ChatMsgType::System)
+            continue;
+        message->_imageSource.clear();
+        message->_local_path.clear();
+        message->_imageWidth = 0;
+        message->_imageHeight = 0;
+        message->_transferProgress = -1;
+        message->_transfer_state = ResourceTransferState::None;
+    }
+    emit ConversationChanged(_active_thread, FriendIdByThread(_active_thread));
 }
 
 void UserMgr::RefreshFriendList()
@@ -920,6 +1393,8 @@ void UserMgr::SetThreadId(int friend_id, qint64 thread_id)
         return;
     emit FriendListAboutToChange();
     info->_chat_thread->_thread_id = thread_id;
+    LocalStore::GetInstance()->EnsureThread(thread_id, static_cast<int>(ChatThreadKind::Private),
+                                            friend_id);
     emit FriendListChanged();
 }
 
@@ -1004,6 +1479,13 @@ void UserMgr::UpdateChatMessage(const ConversationRef &conv, const QString &msg_
             message->_thread_id = conv._thread_id;
         message->_status = status;
         thread->AppendMsgs({message});
+        //整条重新落库：发消息时会话可能还没有 thread_id，那时库里并没有这一行，
+        //只做 UPDATE 会永远补不上；这里按主键合并，存在就改、不存在就插
+        const qint64 tid = conv._thread_id > 0 ? conv._thread_id : thread->_thread_id;
+        if (tid > 0)
+            LocalStore::GetInstance()->SaveMessage(tid, static_cast<int>(kind),
+                                                   conv._peer_uid,
+                                                   storedFromMessage(message, tid));
         emit ConversationChanged(thread->_thread_id, conv._peer_uid);
         return;
     }
@@ -1560,6 +2042,9 @@ void UserMgr::UpsertGroupThread(const QJsonObject &item)
     group->_owner_id = item.value("owner").toInt();
     group->_member_count = item.value("member_count").toInt();
     group->_my_role = item.value("my_role").toInt();
+    //会话列表里出现且带我的角色，说明我又是成员了（被重新拉回群）：离开标记要清掉
+    if (item.contains("my_role"))
+        group->_left_state = 0;
     group->_muted = item.value("muted").toBool();
     group->_at_me = item.value("at_me").toBool();
     group->_last_time = item.value("time").toVariant().toLongLong();
@@ -1575,6 +2060,10 @@ void UserMgr::UpsertGroupThread(const QJsonObject &item)
     else
         _at_me_threads.remove(thread_id);
 
+    auto store = LocalStore::GetInstance();
+    store->SaveGroup(storedFromGroup(*group));
+    store->SaveThreadTime(thread_id, group->_last_time);
+    store->SaveThreadUnread(thread_id, unread, group->_at_me);
     if (created)
         emit GroupListChanged();
     emit UnreadChanged();
@@ -1601,8 +2090,10 @@ void UserMgr::ApplyGroupProfile(const QJsonObject &group_json)
         group->_owner_id = group_json.value("owner").toInt();
     if (group_json.contains("member_count"))
         group->_member_count = group_json.value("member_count").toInt();
-    if (group_json.contains("my_role"))
+    if (group_json.contains("my_role")) {
         group->_my_role = group_json.value("my_role").toInt();
+        group->_left_state = 0; //重新入群后资料能拉到，说明成员身份已恢复
+    }
     if (group_json.contains("muted"))
         group->_muted = group_json.value("muted").toBool();
     if (group_json.contains("my_nick"))
@@ -1610,6 +2101,7 @@ void UserMgr::ApplyGroupProfile(const QJsonObject &group_json)
     if (group_json.contains("created_at"))
         group->_created_at = group_json.value("created_at").toVariant().toLongLong();
     group->_chat_thread->_thread_id = thread_id;
+    LocalStore::GetInstance()->SaveGroup(storedFromGroup(*group));
     emit GroupInfoChanged(thread_id);
 }
 
@@ -1633,6 +2125,11 @@ void UserMgr::SetGroupMembers(qint64 thread_id, const QJsonArray &members)
     }
     if (group->_member_count <= 0)
         group->_member_count = group->_member_map.size();
+    QVector<StoredMember> stored;
+    stored.reserve(group->_member_map.size());
+    for (auto it = group->_member_map.cbegin(); it != group->_member_map.cend(); ++it)
+        stored.push_back(storedFromMember(thread_id, it.value()));
+    LocalStore::GetInstance()->SaveMembers(thread_id, stored);
     emit GroupInfoChanged(thread_id);
 }
 
@@ -1643,6 +2140,7 @@ void UserMgr::AddGroupMember(qint64 thread_id, const GroupMember &member)
     if (!group || member._uid <= 0)
         return;
     group->_member_map.insert(member._uid, member);
+    LocalStore::GetInstance()->SaveMember(storedFromMember(thread_id, member));
     emit GroupInfoChanged(thread_id);
 }
 
@@ -1653,26 +2151,10 @@ void UserMgr::SetGroupMemberCount(qint64 thread_id, int count)
     if (!group || count < 0)
         return;
     group->_member_count = count;
+    LocalStore::GetInstance()->SaveGroup(storedFromGroup(*group));
     emit GroupInfoChanged(thread_id);
 }
 
-//被移出或解散：消息随服务端级联删除，本地也一并丢弃
-void UserMgr::RemoveGroup(qint64 thread_id)
-{
-    std::lock_guard<std::recursive_mutex> lock(_mtx);
-    auto group = _group_map.take(thread_id);
-    if (!group)
-        return;
-    _group_list.erase(std::remove_if(_group_list.begin(), _group_list.end(),
-        [thread_id](const auto &item) { return !item || item->_thread_id == thread_id; }),
-        _group_list.end());
-    _unread.remove(thread_id);
-    _at_me_threads.remove(thread_id);
-    if (_active_thread == thread_id)
-        _active_thread = 0;
-    emit GroupListChanged();
-    emit UnreadChanged();
-}
 
 std::shared_ptr<GroupInfo> UserMgr::GetGroup(qint64 thread_id) const
 {
@@ -1738,6 +2220,10 @@ void UserMgr::SetGroupMuted(qint64 thread_id, bool muted)
     if (!group || group->_muted == muted)
         return;
     group->_muted = muted;
+    auto store = LocalStore::GetInstance();
+    store->SaveGroup(storedFromGroup(*group));
+    store->SaveThreadUnread(thread_id, _unread.value(thread_id, 0),
+                            _at_me_threads.contains(thread_id));
     emit GroupInfoChanged(thread_id);
     emit GroupListChanged();
     emit UnreadChanged(); //角标口径与免打扰有关，开关后立即重算
@@ -1786,6 +2272,8 @@ void UserMgr::RemoveFriend(int uid)
     (*find_it)->_is_friend = false;
     _friend_list.erase(std::remove_if(_friend_list.begin(), _friend_list.end(),
         [uid](const auto &info) { return !info || info->_uid == uid; }), _friend_list.end());
+    //只置标志、不删行：历史会话与库里已经同步下来的消息都还要用这个 uid 渲染
+    LocalStore::GetInstance()->SetFriendActive(uid, false);
     emit FriendListChanged();
     emit FriendTagsChanged(); //标签筛选条要按新的好友集合重算
 }
@@ -1820,6 +2308,8 @@ void UserMgr::ClearSession()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     emit SessionCleared(); //在 uid 被清掉之前通知，业务层还能按旧账号删除半截文件
+    //先关库再清内存：换账号时旧连接必须释放，否则下一次 Open 会沿用上一个账号的库
+    LocalStore::GetInstance()->Close();
     const bool hadIcon = !GetIcon().isEmpty();
     emit ApplyListAboutToChange();
     emit FriendListAboutToChange();

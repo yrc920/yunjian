@@ -18,7 +18,12 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 
 `main.cpp` 创建 `QGuiApplication`，设置应用标识、字体与图标，从 `config.ini` 拼出网关 URL，再加载根窗口。
 界面调用方向为 `qml → bridge → core/service → network`。`core/userdata` 是共享数据类型，
-`UserMgr` 是会话数据源；网络层解析消息后发信号，由服务层更新数据，不负责切换页面。
+`UserMgr` 是内存数据源；网络层解析消息后发信号，由服务层更新数据，不负责切换页面。
+
+数据落地分两层：**服务端 MySQL 是权威**，客户端的 `chat.db` 只是缓存。登录时先把上次的
+会话、好友与每会话最后一条消息装回内存，再按 `sync_cursor` 向服务端要增量；打开会话按页读库，
+上滑继续向前翻。内存里只保留当前会话的一段窗口，其余会话只有一条预览，因此长期使用不会随
+历史增长。
 
 **qml — 界面**
 
@@ -27,7 +32,7 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 | `Main.qml` | 根 `Window`：持有 `ShellBridge`，用 `Loader` 换页并按页设窗口尺寸；掉线提示浮层 |
 | `Login` / `Register` / `Reset` | 认证三页，共用 `AuthPage` 外壳、320 像素表单列与折纸信封角色；内容过长时滚动 |
 | `ChatWindow` | 聊天主界面：侧栏 + 左列（会话 / 联系人 / 设置）+ 右侧页面栈；联系人空态、加好友浮层与聊天页好友过滤 |
-| `SettingsPanel` / `UserInfoPage` | 设置索引与个人资料：账号信息、头像入口和外观切换 |
+| `SettingsPanel` / `UserInfoPage` / `GeneralSettingsPage` | 设置索引、个人资料与通用：账号信息、头像入口、外观切换、清除本地聊天记录与媒体缓存 |
 | `AvatarEditor` | 系统文件选择与模态裁剪框，提供预览、缩放、重置及保存 / 取消 |
 | `FriendDialogs` | 添加好友与通过申请的弹层及临时表单 |
 | `SearchField` | 联系人页与聊天页共用的搜索输入，只负责输入、焦点和清空 |
@@ -69,7 +74,8 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 | `global` | 枚举（`ReqId` / `Modules` / `ErrorCodes`）、`gate_url_prefix`、`ServerInfo` |
 | `singleton` | CRTP 单例模板（`std::once_flag` + `shared_ptr`） |
 | `userdata` | 数据结构（`SearchInfo` / `ApplyInfo` / `FriendInfo` / `TextChatMsg`） |
-| `usermgr` | 登录用户、好友与申请列表；变更时发信号，列表模型据此刷新 |
+| `usermgr` | 登录用户、好友与申请列表；变更时发信号，列表模型据此刷新。本地库的读写也由它的写入口触发 |
+| `store/localstore` | 本地缓存：`users/<uid>/chat.db`（SQLite）。会话、消息、好友、群、成员；按 `sync_cursor` 增量同步，按页读历史 |
 
 **network — 传输**
 

@@ -122,6 +122,8 @@ SQL 里统一用 `UNIX_TIMESTAMP(created_at)` 取值，避免把数据库时区�
 这样重发同一条（唯一键命中、没有真正插入）时拿到的是库里原来的时间，而不是这次重试的时刻。
 
 `chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件、4 群系统消息。
+
+**消息的生命周期与清理。** 单聊的 `chat_thread` / `private_chat` 一旦建立就不再销毁：A 删除 B 只删掉 A 那一行 `friend`；当 B 也删除 A（双向都不存在）时，服务端清空该会话的 `chat_message`，但保留 `chat_thread` 与 `private_chat`。这样 `thread_id` 不变，重新加好友后新消息沿用同一个自增序列，客户端本地历史也还能对上会话。群聊解散时删除 `chat_thread`，`group_chat` / `group_chat_member` / `chat_message` 按外键级联清理；成员退群或被移出只删成员行，群与消息留给其他成员。客户端在被移出、群解散后保留本地历史，只标记离开状态，由用户主动清除。
 群消息 `recv_id=0`，`mentions` 存逗号分隔的 @ uid。图片消息的 `content` 存资源文件名（md5）；
 视频与文件的 `content` 存元数据 JSON（`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`）。
 视频/文件的 `resource` 优先等于原文件名，重名时带 `(2)` 等后缀，落盘与下载都按它拼路径；

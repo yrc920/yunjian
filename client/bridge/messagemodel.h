@@ -73,6 +73,8 @@ signals:
 
 private:
     void onConversationChanged(qint64 thread_id, int peer_uid);
+    //上滑翻到更早的一页：只在头部插入行，不重建整表，滚动位置由页面补偿
+    void onMessagesPrepended(qint64 thread_id, int count);
     void syncCache(const std::vector<std::shared_ptr<TextChatData>>& msgs);
     std::shared_ptr<ChatThreadData> threadData() const;
 

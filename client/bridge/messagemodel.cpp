@@ -10,6 +10,7 @@ MessageModel::MessageModel(QObject *parent) : QAbstractListModel(parent)
 {
     auto *mgr = UserMgr::GetInstance().get();
     connect(mgr, &UserMgr::ConversationChanged, this, &MessageModel::onConversationChanged);
+    connect(mgr, &UserMgr::MessagesPrepended, this, &MessageModel::onMessagesPrepended);
     //头像/资料变化只刷新当前会话里相关的行，不重建列表
     connect(mgr, &UserMgr::UserIconChanged, this, [this] {
         for (int row = 0; row < _cachedCount; ++row)
@@ -88,7 +89,7 @@ void MessageModel::syncCache(const std::vector<std::shared_ptr<TextChatData>>& m
             _cachedStatus[i] = 0;
             continue;
         }
-        _cachedIds[i] = msgs[i]->_msg_id;
+        _cachedIds[i] = MessageKey(msgs[i]);
         _cachedStatus[i] = static_cast<int>(msgs[i]->_status);
     }
 }
@@ -301,7 +302,7 @@ void MessageModel::onConversationChanged(qint64 thread_id, int peer_uid)
     if (newCount == _cachedCount) {
         bool sameOrder = true;
         for (int i = 0; i < newCount; ++i) {
-            if (!msgs[i] || msgs[i]->_msg_id != _cachedIds[i]) {
+            if (!msgs[i] || MessageKey(msgs[i]) != _cachedIds[i]) {
                 sameOrder = false;
                 break;
             }
@@ -324,7 +325,7 @@ void MessageModel::onConversationChanged(qint64 thread_id, int peer_uid)
     if (newCount > _cachedCount) {
         bool prefix = true;
         for (int i = 0; i < _cachedCount; ++i) {
-            if (!msgs[i] || msgs[i]->_msg_id != _cachedIds[i]) {
+            if (!msgs[i] || MessageKey(msgs[i]) != _cachedIds[i]) {
                 prefix = false;
                 break;
             }
@@ -345,5 +346,21 @@ void MessageModel::onConversationChanged(qint64 thread_id, int peer_uid)
     beginResetModel();
     syncCache(msgs);
     endResetModel();
+    emit countChanged();
+}
+
+//上滑加载更早的一页：消息已经由 UserMgr 插到窗口头部，这里只在头部补行。
+//不能用整表 reset —— 那会把滚动位置打回顶部，用户刚翻到的内容立刻消失
+void MessageModel::onMessagesPrepended(qint64 thread_id, int count)
+{
+    if (count <= 0 || thread_id != _threadId)
+        return;
+    auto thread = threadData();
+    if (!thread || static_cast<int>(thread->_chat_msgs.size()) < count)
+        return;
+
+    beginInsertRows(QModelIndex(), 0, count - 1);
+    syncCache(thread->_chat_msgs);
+    endInsertRows();
     emit countChanged();
 }

@@ -14,6 +14,7 @@
 #include "httpmgr.h"
 #include "sessionservice.h"
 #include "usermgr.h"
+#include "localstore.h"
 #include "filetcpthread.h"
 #include "filetcpmgr.h"
 #include "tcpthread.h"
@@ -61,6 +62,10 @@ int main(int argc, char *argv[])
         else
             exitCode = app.exec();
     } //先销毁 QML 引擎与网络线程，两个网络管理器在这里被迁回主线程
+
+    //本地缓存库要先 checkpoint 再关连接：放在这里，QGuiApplication 还活着，
+    //QSqlDatabase 的清理才安全
+    LocalStore::GetInstance()->Close();
 
     //QObject 单例必须在 QGuiApplication 销毁前释放；否则静态 shared_ptr 会在
     //应用对象析构之后才清理，Qt 内部事件与线程数据已经失效

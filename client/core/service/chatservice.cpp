@@ -33,6 +33,8 @@ constexpr int VideoThumbMaxWidth = 480; //视频首帧按 16:9 准备，卡片�
 constexpr int VideoThumbMaxHeight = 270;
 constexpr int VideoThumbQuality = 82;
 constexpr int MaxSuffixLength = 12;
+//打开会话先取一页：够铺满一屏，又不会在切换会话时一次读太多
+constexpr int kWindowPageSize = 40;
 
 //资源名后缀只取安全字符，避免拼出带路径的文件名
 QString resourceSuffix(const QString &path)
@@ -249,8 +251,13 @@ bool ensureConversation(const ConversationRef &conv)
     auto *mgr = UserMgr::GetInstance().get();
     if (!SessionService::GetInstance()->isReady())
         return false;
-    if (conv._kind == ChatThreadKind::Group)
-        return conv._thread_id > 0 && mgr->GetGroup(conv._thread_id) != nullptr;
+    if (conv._kind == ChatThreadKind::Group) {
+        if (conv._thread_id <= 0)
+            return false;
+        //已离开的群只能看历史：服务端已经把我移出成员表，发出去也会被拒
+        auto group = mgr->GetGroup(conv._thread_id);
+        return group && group->_left_state == 0;
+    }
     if (!mgr->GetFriendById(conv._peer_uid))
         return false;
     ChatService::GetInstance()->ensurePrivateChat(conv._peer_uid);
@@ -1275,6 +1282,190 @@ std::shared_ptr<TextChatData> ChatService::BuildResourceMessage(int from, int to
     message->_transfer_state = ResourceTransferState::None;
     message->_transferProgress = -1;
     return message;
+}
+
+//按本地文件补齐显示状态：只改显示字段，不动服务端事实。
+//库里不存本地路径与传输进度，读回来时按资源名重新推导，换机器也不会读到失效路径
+void ChatService::hydrateLocal(const std::shared_ptr<TextChatData> &message)
+{
+    if (!message)
+        return;
+    switch (message->_msg_type) {
+    case ChatMsgType::Image: {
+        if (message->_resource_name.isEmpty())
+            break;
+        QSize pixel;
+        const QString thumb = EnsureImageThumbnail(message->_resource_name, &pixel);
+        if (!thumb.isEmpty()) {
+            message->_imageSource = QUrl::fromLocalFile(thumb).toString();
+            message->_imageWidth = pixel.width();
+            message->_imageHeight = pixel.height();
+            message->_local_path = ImageCachePath(message->_resource_name);
+            message->_transferProgress = 100;
+            message->_transfer_state = ResourceTransferState::Done;
+        } else if (message->_message_id > 0) {
+            //还没回执的本地图不下载：那条消息的资源可能仍在输入区待上传
+            message->_transferProgress = 0;
+            message->_transfer_state = ResourceTransferState::Downloading;
+            DownloadChatImage(message->_resource_name, message->_from_uid,
+                              message->_message_id, message->_thread_id);
+        }
+        break;
+    }
+    case ChatMsgType::Video: {
+        const QString local = ResourcePath(ChatMsgType::Video, message->_resource_name);
+        if (QFileInfo::exists(local)) {
+            message->_local_path = local;
+            message->_transferProgress = 100;
+            message->_transfer_state = ResourceTransferState::Done;
+        }
+        if (message->_thumb_name.isEmpty())
+            break;
+        const QString thumb = VideoThumbPath(message->_thumb_name);
+        if (QFileInfo::exists(thumb)) {
+            message->_imageSource = QUrl::fromLocalFile(thumb).toString();
+            const QSize pixel = QImageReader(thumb).size();
+            message->_imageWidth = pixel.width();
+            message->_imageHeight = pixel.height();
+        } else if (message->_message_id > 0) {
+            DownloadVideoThumb(message->_thumb_name, message->_from_uid,
+                               message->_message_id, message->_thread_id);
+        }
+        break;
+    }
+    case ChatMsgType::File: {
+        const QString local = ResourcePath(ChatMsgType::File, message->_resource_name);
+        if (QFileInfo::exists(local)) {
+            message->_local_path = local;
+            message->_transferProgress = 100;
+            message->_transfer_state = ResourceTransferState::Done;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+//把库里的一行还原成内存消息。历史同步与本地翻页共用这里，
+//两边的字段解释只有一份，不会出现"从服务器拉回来能显示、从库里读回来不能"的分叉
+std::shared_ptr<TextChatData> ChatService::MessageFromStored(const StoredMessage &row, int selfUid)
+{
+    auto message = std::make_shared<TextChatData>(row.client_msg_id, row.content,
+        row.sender_id, row.recv_id, row.server_id, row.thread_id,
+        static_cast<ChatMessageStatus>(row.status));
+    //"发送中"不能跨进程存在：崩溃或强退后统一显示为失败，等下一次同步把真实状态带回来
+    if (message->_status == ChatMessageStatus::Sending)
+        message->_status = ChatMessageStatus::Failed;
+    message->_msg_type = static_cast<ChatMsgType>(row.msg_type);
+    message->_time = row.created_at;
+    message->_recalled = row.recalled;
+    message->_recalled_text = row.recalled_text;
+    message->_resource_name = row.resource_name;
+    message->_resource_md5 = row.resource_md5;
+    message->_file_name = row.file_name;
+    message->_file_size = row.file_size;
+    message->_thumb_name = row.thumb_name;
+    message->_mentions = row.mentions.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (message->_status == ChatMessageStatus::Sent && row.is_read)
+        message->_status = ChatMessageStatus::Read;
+    //服务端的群系统消息没有客户端消息号，补一个稳定键，参与去重与模型缓存
+    if (message->_msg_id.isEmpty() && row.server_id > 0)
+        message->_msg_id = QStringLiteral("srv:%1").arg(row.server_id);
+
+    if (message->_msg_type == ChatMsgType::Video || message->_msg_type == ChatMsgType::File) {
+        //视频/文件的历史 content 是元数据 JSON；本地库把这些字段拆成了列，
+        //两条来源都在这里合并，缺哪边就用另一边的值
+        QString fileName = row.file_name;
+        QString thumb = row.thumb_name;
+        QString resource = row.resource_name;
+        qint64 size = row.file_size;
+        QString parsed_name, parsed_thumb, parsed_resource;
+        qint64 parsed_size = 0;
+        if (ParseResourceMeta(row.content, &parsed_name, &parsed_size, &parsed_thumb,
+                              &parsed_resource)) {
+            if (!parsed_resource.isEmpty())
+                resource = parsed_resource;
+            if (!parsed_name.isEmpty())
+                fileName = parsed_name;
+            if (parsed_size > 0)
+                size = parsed_size;
+            if (!parsed_thumb.isEmpty())
+                thumb = parsed_thumb;
+        }
+        message->_resource_name = resource;
+        message->_file_name = fileName.isEmpty() ? resource : fileName;
+        message->_file_size = size;
+        message->_thumb_name = thumb;
+        message->_msg_content.clear(); //元数据不是正文，不能画进气泡
+    }
+
+    hydrateLocal(message);
+    Q_UNUSED(selfUid)
+    return message;
+}
+
+//打开会话：用库里最近一页替换内存窗口。返回 true 表示库里还有更早的消息
+bool ChatService::OpenWindow(qint64 threadId)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    if (!mgr->ThreadData(threadId))
+        return false;
+
+    bool hasMore = false;
+    const auto rows = LocalStore::GetInstance()->LoadNewest(threadId, kWindowPageSize, &hasMore);
+    std::vector<std::shared_ptr<TextChatData>> messages;
+    messages.reserve(static_cast<size_t>(rows.size()));
+    for (const auto &row : rows)
+        messages.push_back(MessageFromStored(row, mgr->GetUid()));
+    mgr->SetThreadWindow(threadId, std::move(messages));
+    return hasMore;
+}
+
+//上滑翻页：以窗口里最小的服务端消息号为游标向前取一页
+bool ChatService::LoadOlder(qint64 threadId)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    auto data = mgr->ThreadData(threadId);
+    if (!data)
+        return false;
+
+    qint64 first = 0;
+    for (const auto &message : data->_chat_msgs) {
+        if (message && message->_message_id > 0) {
+            first = message->_message_id;
+            break;
+        }
+    }
+    if (first <= 0)
+        return false;
+
+    bool hasMore = false;
+    const auto rows = LocalStore::GetInstance()->LoadBefore(threadId, first,
+                                                           kWindowPageSize, &hasMore);
+    std::vector<std::shared_ptr<TextChatData>> messages;
+    messages.reserve(static_cast<size_t>(rows.size()));
+    for (const auto &row : rows)
+        messages.push_back(MessageFromStored(row, mgr->GetUid()));
+    if (!messages.empty())
+        mgr->PrependChatMsgs(threadId, messages);
+    return hasMore && !messages.empty();
+}
+
+//清掉本账号已下载的聊天资源。数据库里的消息不动，重新打开会话时按需重新下载
+void ChatService::ClearMediaCache()
+{
+    const QString root = UserMgr::AccountRootPath();
+    if (root.isEmpty())
+        return;
+    const QStringList folders = {QStringLiteral("images"), QStringLiteral("videos"),
+                                 QStringLiteral("files")};
+    for (const QString &name : folders) {
+        QDir dir(QDir(root).filePath(name));
+        if (dir.exists())
+            dir.removeRecursively();
+    }
+    UserMgr::GetInstance()->ForgetActiveResources();
 }
 
 QString ChatService::LocalPathForMessage(qint64 messageId)

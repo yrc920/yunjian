@@ -25,32 +25,38 @@ Rectangle {
         font.pixelSize: 11
     }
 
-    // 当前只有一组设置，选中态固定；以后增加分栏时这里换成可切换列表
+    // 设置分栏：资料与通用。选中态由 pane 决定，切换后在会话/联系人之间来回也不丢
+    readonly property int currentPane: root.controller ? root.controller.pane : -1
+    readonly property bool profileSelected: currentPane === ChatBridge.UserInfoPage
+    readonly property bool generalSelected: currentPane === ChatBridge.GeneralPage
+
     Rectangle {
+        id: profileRow
         x: 12
         y: 96
         width: parent.width - 24
-        height: 64
+        height: 58
         radius: 8
-        color: Theme.selected
+        color: profileSelected ? Theme.selected
+                               : (profileArea.containsMouse ? Theme.panelAlt : "transparent")
 
         AppIcon {
             x: 17
             anchors.verticalCenter: parent.verticalCenter
             name: "user"
             size: 22
-            color: Theme.primary
+            color: profileSelected ? Theme.primary : Theme.textSecondary
         }
         Column {
             x: 54
             width: parent.width - x - 28
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 5
+            spacing: 4
             Text {
                 text: "个人资料"
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontBody
-                font.weight: Font.DemiBold
+                font.weight: profileSelected ? Font.DemiBold : Font.Normal
             }
             Text {
                 text: "头像与账号信息"
@@ -58,11 +64,61 @@ Rectangle {
                 font.pixelSize: 11
             }
         }
+        MouseArea {
+            id: profileArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: if (root.controller) root.controller.showSettings()
+        }
+    }
+
+    Rectangle {
+        id: generalRow
+        x: 12
+        y: 160
+        width: parent.width - 24
+        height: 58
+        radius: 8
+        color: generalSelected ? Theme.selected
+                               : (generalArea.containsMouse ? Theme.panelAlt : "transparent")
+
+        AppIcon {
+            x: 17
+            anchors.verticalCenter: parent.verticalCenter
+            name: "settings"
+            size: 21
+            color: generalSelected ? Theme.primary : Theme.textSecondary
+        }
+        Column {
+            x: 54
+            width: parent.width - x - 28
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+            Text {
+                text: "通用"
+                color: Theme.textPrimary
+                font.pixelSize: Theme.fontBody
+                font.weight: generalSelected ? Font.DemiBold : Font.Normal
+            }
+            Text {
+                text: "本地存储与缓存"
+                color: Theme.textSecondary
+                font.pixelSize: 11
+            }
+        }
+        MouseArea {
+            id: generalArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: if (root.controller) root.controller.openGeneralSettings()
+        }
     }
 
     Rectangle {
         x: 22
-        y: 184
+        y: 230
         width: parent.width - 44
         height: 1
         color: Theme.line
@@ -72,7 +128,7 @@ Rectangle {
     Rectangle {
         id: appearance
         x: 12
-        y: 201
+        y: 247
         width: parent.width - 24
         height: 58
         radius: 8
@@ -122,7 +178,7 @@ Rectangle {
 
     Rectangle {
         x: 22
-        y: 275
+        y: 313
         width: parent.width - 44
         height: 1
         color: Theme.line
@@ -132,7 +188,7 @@ Rectangle {
     Rectangle {
         id: logoutRow
         x: 12
-        y: 292
+        y: 330
         width: parent.width - 24
         height: 54
         radius: 8

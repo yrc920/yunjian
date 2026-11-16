@@ -183,7 +183,6 @@ public:
     //成员数变化：服务端下发的人数优先，缺省时按成员表长度
     void SetGroupMemberCount(qint64 thread_id, int count);
     //被移出或解散：从会话列表移除，消息一并丢弃（服务端已经级联删除）
-    void RemoveGroup(qint64 thread_id);
     std::shared_ptr<GroupInfo> GetGroup(qint64 thread_id) const;
     int GroupCount() const;
     std::shared_ptr<GroupInfo> GroupAt(int index) const;
@@ -194,6 +193,30 @@ public:
 
     //新会话开始前清空上一个账号的数据，避免重新登录后好友与申请重复
     void ClearSession();
+
+    // ---- 本地缓存 ----
+    //把库里的好友、群、会话与预览装回内存：1006 到达前列表就是完整的
+    void RestoreFromCache();
+    //打开会话时用最近一页替换内存窗口；库里的数据才是全量，内存只保留看得见的一段
+    void SetThreadWindow(qint64 thread_id, std::vector<std::shared_ptr<TextChatData>> msgs);
+    //上滑翻页：把更早的一页插到窗口头部，行号整体后移，模型按增量插入
+    void PrependChatMsgs(qint64 thread_id,
+                         const std::vector<std::shared_ptr<TextChatData>> &msgs);
+    //当前会话的本地起草内容，切走再切回时恢复
+    QString ThreadDraft(qint64 thread_id) const;
+    void SetThreadDraft(qint64 thread_id, const QString &html);
+
+    // ---- 离开与清理 ----
+    //被移出群或群解散：保留对象与全部历史，只标记状态，之后不能再发消息
+    void MarkGroupLeft(qint64 thread_id, int state);
+    //登录时用服务端会话列表做差集：本地有、服务端没有的群标记为已离开
+    void MarkMissingGroupsLeft(const QSet<qint64> &alive_threads);
+    //清除单个会话的聊天记录：会话本身、游标与时间保留
+    void ClearThreadHistory(qint64 thread_id);
+    //清除全部聊天记录：好友、群、会话与游标保留
+    void ClearAllHistory();
+    //本地媒体文件被清掉后，把当前窗口里的资源状态退回未下载
+    void ForgetActiveResources();
 
 signals:
     void SessionCleared();            //换账号前清空会话，业务层据此丢弃在途资源任务
@@ -209,6 +232,10 @@ signals:
     //某个会话的消息变化：thread_id 是主键；单聊还没建会话时 thread_id 为 0，
     //第二个参数带上对方 uid，消息模型据此仍能匹配当前会话
     void ConversationChanged(qint64 thread_id, int peer_uid);
+    //窗口头部插入了一页更早的消息：模型只做 beginInsertRows(0, count-1)，不整表重建
+    void MessagesPrepended(qint64 thread_id, int count);
+    //草稿被清掉：0 表示全部，其余是具体会话；输入框据此清空缓存与文档
+    void DraftsCleared(qint64 thread_id);
     void UnreadChanged(); // 未读数变化：会话行与左侧栏徽标一起刷新
     void FriendIconChanged(int uid); // 好友头像下载完成，只刷新对应行
     void ApplyIconChanged(int uid);  // 好友申请里同一个人头像变化，只刷新申请行
