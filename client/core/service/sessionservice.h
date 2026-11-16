@@ -29,6 +29,8 @@ public:
     void connectToChat(const ServerInfo &info);
     // 主动断开（被踢或异常下线时调用）
     void closeSession();
+    // 主动登出：先通知服务端吊销令牌，收到回包或超时后再断开
+    void logout();
 
     bool isReady() const { return _ready; }
     ServerInfo session() const { return _current; }
@@ -46,6 +48,7 @@ private:
     void onTcpConnected(bool ok);
     void onChatLoginFailed(int code);
     void onChatLoggedIn(const QJsonObject &data);
+    void finishLogout();
     void failAndReset(const QString &msg);
 
     // 拉会话历史；lastMessageId 为 0 表示第一页，否则从这个游标往后取
@@ -61,6 +64,8 @@ private:
     bool _connecting = false;
     QTimer _timeout;       // 连接 + 登录的整体超时，避免界面无限等待
     QTimer _heartbeat;     // 会话建立后的保活
+    QTimer _logout_timer;  // 登出回包超时：控制面不回包也不能把连接一直挂着
+    bool _logging_out = false; // 正在等登出回包，避免重复发帧
     //本次登录已经拉取的历史页数。正常登录游标已经在头部，一页就结束；
     //上限只用来拦住异常数据导致的无限翻页
     int _history_pages = 0;

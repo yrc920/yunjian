@@ -3,12 +3,30 @@
 #include "IOContextPool.h"
 #include "UserMgr.h"
 #include "ConfigMgr.h"
-#include "RedisMgr.h"
+#include "StatusGrpcClient.h"
 
 CServer::CServer(boost::asio::io_context& io_context, short port) : _io_context(io_context),
     _port(port), _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
     _timer(_io_context, std::chrono::seconds(HEART_BEAT_INTERVAL))
 {
+	auto& cfg = ConfigMgr::Inst();
+	_self_name = cfg["SelfServer"]["Name"];
+	//对外地址必须是客户端与状态服务都能访问的地址，0.0.0.0 只适合监听不适合上报
+	_advertise_host = cfg["SelfServer"]["AdvertiseHost"];
+	if (_advertise_host.empty())
+		_advertise_host = cfg["SelfServer"]["Host"];
+	if (_advertise_host.empty() || _advertise_host == "0.0.0.0")
+		_advertise_host = "127.0.0.1";
+	//控制面地址单独配置：容器里客户端地址是公网 IP，实例之间仍走回环或服务名
+	_advertise_rpc_host = cfg["SelfServer"]["AdvertiseRpcHost"];
+	if (_advertise_rpc_host.empty())
+		_advertise_rpc_host = _advertise_host;
+	_client_port = _port;
+	_rpc_port = atoi(cfg["SelfServer"]["RPCPort"].c_str());
+	_capacity = atoi(cfg["SelfServer"]["Capacity"].c_str());
+	if (_capacity <= 0)
+		_capacity = 1000;
+
 	std::cout << "Server start success, listen on port : " << _port << std::endl;
 	StartAccept(); //开始接受连接
 }
@@ -84,6 +102,101 @@ std::shared_ptr<CSession> CServer::GetSession(std::string uuid)
     return nullptr;
 }
 
+bool CServer::RegisterSelf()
+{
+	if (_self_name.empty() || _rpc_port <= 0) {
+		std::cout << "[instance] register skipped: SelfServer.Name 或 RPCPort 未配置" << std::endl;
+		return false;
+	}
+
+	auto reply = StatusGrpcClient::GetInstance()->RegisterInstance(_self_name, _advertise_host,
+		_advertise_rpc_host, _client_port, _rpc_port, _capacity);
+	if (reply.error() != ErrorCodes::Success) {
+		std::cout << "[instance] register failed name=" << _self_name
+			<< " err=" << reply.error() << std::endl;
+		return false;
+	}
+
+	_registered = true;
+	_draining = reply.draining();
+	std::cout << "[instance] register ok name=" << _self_name << " "
+		<< _advertise_host << ":" << _client_port << " rpc=" << _rpc_port
+		<< " capacity=" << _capacity << std::endl;
+	return true;
+}
+
+void CServer::RenewLeases(const std::vector<std::shared_ptr<CSession>>& sessions,
+	int conn_count, int session_count)
+{
+	//注册失效时先补注册；失败就跳过本轮，不因状态服务不可用而断开任何连接
+	if (!_registered && !RegisterSelf())
+		return;
+
+	std::vector<message::SessionLeaseRef> leases;
+	//按 session_id 而不是 uid 建索引：同实例可能同时存在旧连接与新连接，
+	//按 uid 匹配会把"旧连接被顶替"的结果错误地应用在新连接上
+	std::map<std::string, std::shared_ptr<CSession>> owners;
+
+	auto flush = [&]() {
+		//即使没有已认证会话也要发一次：这个请求同时承担实例心跳，
+		//少了它实例注册会在 90 秒后过期，新登录直接没有可选实例
+		auto reply = StatusGrpcClient::GetInstance()->RenewSessions(_self_name, leases,
+			conn_count, session_count);
+		if (reply.error() == ErrorCodes::InstanceUnknown) {
+			//实例注册过期：下一轮重新注册，已有会话保持不动
+			_registered = false;
+			std::cout << "[instance] registration expired name=" << _self_name << std::endl;
+		}
+		else if (reply.error() != ErrorCodes::Success) {
+			//连续失败只记日志：租约 TTL 到期由服务端判定离线，客户端不因此掉线
+			if (++_renew_failures == 3)
+				std::cout << "[lease] renew failing inst=" << _self_name
+					<< " err=" << reply.error() << std::endl;
+		}
+		else {
+			_renew_failures = 0;
+			_draining = reply.draining();
+			for (const auto& result : reply.items()) {
+				auto iter = owners.find(result.session_id());
+				if (iter == owners.end())
+					continue;
+				auto session = iter->second;
+				if (result.status() == 2) {
+					//已被更高 epoch 顶替：先发下线原因，再延迟断开，保证通知写得出去
+					session->NotifyOffline(result.uid(), 1);
+					session->CloseSoon(300);
+					std::cout << "[lease] fenced uid=" << result.uid()
+						<< " local_epoch=" << session->GetEpoch() << std::endl;
+				}
+				else if (result.status() == 1 && result.epoch() > 0) {
+					//租约过期后重新授予，本地跟上新 epoch，后续释放才不会被当成旧连接
+					session->SetEpoch(result.epoch());
+				}
+			}
+		}
+
+		leases.clear();
+		owners.clear();
+	};
+
+	for (const auto& session : sessions) {
+		const int uid = session->GetUserId();
+		const long long epoch = session->GetEpoch();
+		if (uid <= 0 || epoch <= 0 || session->IsClosed())
+			continue;
+
+		auto& ref = leases.emplace_back();
+		ref.set_uid(uid);
+		ref.set_session_id(session->GetSessionId());
+		ref.set_epoch(epoch);
+		owners[session->GetSessionId()] = session;
+
+		if (leases.size() >= LEASE_RENEW_BATCH)
+			flush();
+	}
+	flush();
+}
+
 void CServer::on_timer(const boost::system::error_code& ec) {
 	if (_stopped.load())
 	    return;
@@ -91,9 +204,9 @@ void CServer::on_timer(const boost::system::error_code& ec) {
         std::cout << "timer error: " << ec.message() << std::endl;
         return;
     }
-    std::vector<std::shared_ptr<CSession>> _expired_sessions;
-    int session_count = 0;
-    //持锁复制会话表后再遍历快照，避免检测心跳和访问Redis时长时间占用会话表的锁
+    std::vector<std::shared_ptr<CSession>> expired_sessions;
+    std::vector<std::shared_ptr<CSession>> alive_sessions;
+    //持锁复制会话表后再遍历快照，避免检测心跳和续租时长时间占用会话表的锁
     std::map<std::string, std::shared_ptr<CSession>> sessions_copy;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -107,21 +220,22 @@ void CServer::on_timer(const boost::system::error_code& ec) {
             //标记关闭并投递socket关闭操作，未完成的读取也可能随后报错，清理入口需要能处理重复调用
             iter->second->Close();
             //收集过期信息
-            _expired_sessions.push_back(iter->second);
+            expired_sessions.push_back(iter->second);
             continue;
         }
-        session_count++;
+        alive_sessions.push_back(iter->second);
     }
 
-    //上报本次快照中未过期的TCP连接数，包含尚未登录的连接，并不是严格的在线用户数
-    //登录和断连不在这里即时增减计数，StatusServer看到的负载最多滞后一个扫描周期
-    auto& cfg = ConfigMgr::Inst();
-    auto self_name = cfg["SelfServer"]["Name"];
-    auto count_str = std::to_string(session_count);
-    RedisMgr::GetInstance()->HSet(LOGIN_COUNT, self_name, count_str);
+    //续租与实例心跳合并上报：连接数含未登录连接，会话数只统计已认证连接
+    int session_count = 0;
+    for (const auto& session : alive_sessions) {
+        if (session->GetUserId() > 0 && session->GetEpoch() > 0 && !session->IsClosed())
+            ++session_count;
+    }
+    RenewLeases(alive_sessions, static_cast<int>(alive_sessions.size()), session_count);
 
     //在会话表锁之外清理过期连接，DealExceptionSession内部还会调用ClearSession获取同一把锁
-    for (auto &session : _expired_sessions) {
+    for (auto &session : expired_sessions) {
         session->DealExceptionSession();
     }
 
@@ -136,7 +250,8 @@ void CServer::on_timer(const boost::system::error_code& ec) {
 
 void CServer::StartTimer()
 {
-    //启动定时器
+    //先登记本实例再开始接受登录：状态服务只把新连接分配给已注册的实例
+    RegisterSelf();
     auto self(shared_from_this());
     _timer.async_wait([self](boost::system::error_code ec) {
         self->on_timer(ec);
@@ -168,6 +283,12 @@ void CServer::Stop()
 
 	for (auto& session : sessions) {
 		session->Close(); //标记关闭并投递socket关闭操作，未完成的读取也可能随后报错，清理入口需要能处理重复调用
-		session->DealExceptionSession(); //清理会话表和Redis状态，内部会获取会话表锁
+		session->DealExceptionSession(); //清理会话表与租约，内部会获取会话表锁
+	}
+
+	//主动下线：立即从可选列表移除，避免停机期间还有新客户端被分配过来
+	if (_registered && !_self_name.empty()) {
+		StatusGrpcClient::GetInstance()->UnregisterInstance(_self_name);
+		_registered = false;
 	}
 }

@@ -11,6 +11,12 @@ Port = 50052
 [SelfServer]
 Name = chatserver1
 Host = 0.0.0.0
+# 客户端连接的地址：随登录路由下发，0.0.0.0 只用于监听
+AdvertiseHost = 127.0.0.1
+# 实例间 RPC 的地址；本机部署与 AdvertiseHost 相同
+AdvertiseRpcHost = 127.0.0.1
+# 期望承载的会话数，状态服务按 sessions/capacity 选路
+Capacity = 1000
 Port = 8090
 RPCPort = 50055
 

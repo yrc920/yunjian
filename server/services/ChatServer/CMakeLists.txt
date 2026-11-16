@@ -31,8 +31,8 @@ set(SERVER_SOURCES
     src/MysqlDao.cpp           # 数据访问层
     src/UserMgr.cpp            # 在线用户管理（uid -> session 映射）
     src/ChatGrpcClient.cpp     # 调用对端聊天实例的 gRPC 客户端
-    src/StatusGrpcClient.cpp   # 调用 StatusServer 的 gRPC 客户端
-    src/DistLock.cpp           # 分布式锁（Redis 实现）
+    src/StatusGrpcClient.cpp   # 调用 StatusServer：租约、位置、实例注册
+    src/SessionRouter.cpp      # 在线位置缓存，未命中回源 StatusServer
 )
 
 # ---------- 头文件清单 ----------
@@ -52,10 +52,10 @@ set(SERVER_HEADERS
     include/UserMgr.h
     include/ChatGrpcClient.h
     include/StatusGrpcClient.h
+    include/SessionRouter.h
     include/Singleton.h
     include/const.h
     include/data.h
-    include/DistLock.h
 )
 
 # ---------- 实例清单 ----------

@@ -22,6 +22,10 @@ public:
 	bool Set(const std::string& key, const std::string& value); //设置key和value
 	bool Del(const std::string& key); //删除key
 	bool ExistsKey(const std::string& key); //检查key是否存在
+	//SET key value NX EX seconds：1 抢占成功 / 0 键已存在 / -1 执行失败
+	int SetNxEx(const std::string& key, const std::string& value, int seconds);
+	//INCR 后刷新过期时间：返回自增后的值，-1 表示执行失败
+	long long IncrWithTtl(const std::string& key, int seconds);
 
 	bool LPush(const std::string& key, const std::string& value); //将value插入到key对应的列表的头部
 	bool LPop(const std::string& key, std::string& value); //移除并返回key对应的列表的头部元素

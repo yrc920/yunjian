@@ -16,15 +16,6 @@ Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
 
-# [chatserverN] 的地址会原样返回给客户端，客户端据此建立 TCP 长连接，
-# 所以必须填客户端能访问到的地址：__PUBLIC_HOST__ 启动时由环境变量 PUBLIC_HOST 替换
+# 允许注册的实例名白名单；容器内各实例通过 AdvertiseRpcHost 上报控制面地址
 [chatservers]
 Name = chatserver1,chatserver2
-[chatserver1]
-Name = chatserver1
-Host = __PUBLIC_HOST__
-Port = 8090
-[chatserver2]
-Name = chatserver2
-Host = __PUBLIC_HOST__
-Port = 8091

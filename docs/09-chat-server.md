@@ -20,7 +20,8 @@
 | `src/UserMgr.cpp` | `uid → CSession` 映射（供本实例直投） |
 | `src/ChatServiceImpl.cpp` | gRPC 服务端：接收其他实例的转发并投递给本地会话 |
 | `src/ChatGrpcClient.cpp` | gRPC 客户端：向对端实例发起转发（Stub 池 5） |
-| `src/StatusGrpcClient.cpp` | StatusServer 客户端（**当前未被调用**） |
+| `src/StatusGrpcClient.cpp` | StatusServer 客户端：租约、批量续租、释放、位置查询、实例注册 |
+| `src/SessionRouter.cpp` | 在线位置缓存：正缓存 30 秒、负缓存 5 秒，未命中回源 StatusServer |
 | `src/IOContextPool.cpp` / `ConfigMgr.cpp` / `RedisMgr.cpp` / `MysqlMgr.cpp` / `MysqlDao.cpp` | 基础设施 |
 
 ## 9.2 启动流程
@@ -28,15 +29,18 @@
 ```mermaid
 flowchart TB
     A["main()"] --> B["ConfigMgr::Inst() 读 cwd/config.ini"]
-    B --> C["HSET logincount #lt;self_name#gt; 0<br/>重置本实例计数"]
-    C --> D["ServerBuilder 监听 [SelfServer].Host:RPCPort<br/>注册 ChatServiceImpl"]
+    B --> D["ServerBuilder 监听 [SelfServer].Host:RPCPort<br/>注册 ChatServiceImpl"]
     D --> E["std::thread(grpc_server->Wait())<br/>gRPC 服务端独立线程"]
-    E --> F["io_context + signal_set(SIGINT/SIGTERM)"]
+    E --> R["CServer::StartTimer()<br/>RegisterInstance 上报 AdvertiseHost / 端口 / 容量"]
+    R --> F["io_context + signal_set(SIGINT/SIGTERM)"]
     F --> G["回调：io_context.stop()<br/>pool->Stop()；server->Shutdown()"]
     G --> H["CServer(io_context, [SelfServer].Port)<br/>TCP acceptor"]
-    H --> I["io_context.run()"]
-    I --> J["退出：HDEL logincount #lt;self_name#gt;<br/>RedisMgr::Close()；grpc 线程 join"]
+    H --> I["io_context.run()<br/>定时器每 30 秒：心跳检测 + 续租 + 负载上报"]
+    I --> J["退出：UnregisterInstance<br/>排空释放队列（最多 3 秒）；RedisMgr::Close()"]
 ```
+
+注册必须在 gRPC 服务开始监听之后：否则状态服务可能把登录分配过来，
+而踢人或消息转发会连到一个还没 listening 的端口。
 
 ## 9.3 会话与帧处理
 
@@ -131,41 +135,57 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    A["解析 {uid, token}"] --> B["GET utoken_#lt;uid#gt;"]
+    A["解析 {uid, token}"] --> B["GET utoken_#lt;uid#gt;（只读，快速失败）"]
     B -->|失败| E1["error=1011 return"]
     B -->|不等| E2["error=1010 return"]
     B -->|相等| C["GetBaseInfo(ubaseinfo_#lt;uid#gt;, uid)"]
     C -->|失败| E1
     C --> D["填 uid/name/email/nick/desc/sex/icon"]
-    D --> F["MySQL 取好友申请（前 10 条）+ 好友列表"]
-    F --> G["获取用户锁并处理已有登录"]
-    G --> H["session->SetUserId(uid)"]
-    H --> I["SET uip_#lt;uid#gt; #lt;self_name#gt;"]
-    I --> J["UserMgr::SetUserSession(uid, session)"]
+    D --> F["MySQL 取好友申请（前 10 条）+ 好友列表 + 会话列表"]
+    F --> G["StatusServer::AllocateSession<br/>校验 token、分配 epoch、写租约、异步顶掉旧会话"]
+    G -->|失败| E3["error=1101/1104/1105 return<br/>旧设备不受影响"]
+    G --> H["session->SetEpoch(epoch) / SetUserId(uid)"]
+    H --> J["UserMgr::SetUserSession(uid, session)"]
     J --> K["回包 [1006]"]
 ```
 
-> 无法取得用户锁时返回失败；同一连接不能重复登录或切换 uid。资料回包不含密码哈希。
+> 租约申请放在资料加载之后：新设备登录失败不能把旧设备踢掉。
+> 登录只申请租约，在线状态由 StatusServer 维护；同一连接不能重复登录或切换 uid。
+> 回包前若连接已关闭，会把刚拿到的租约异步释放，避免占用到 TTL 到期。
+
+### 登出（1069）
+
+主动退出时客户端发 1069（空对象）。`LogoutHandler` 按 `uid + session_id + epoch`
+调 `StatusServer::LogoutSession`，只有当前租约的持有者才能同时删除 `sess_<uid>` 与
+`utoken_<uid>`；被顶掉的旧连接调用它不会影响新会话。随后回 1070，摘除本地登记并延迟
+200ms 关闭连接。状态服务不可用时本地照常下线，令牌由 7 天 TTL 兜底。
+
+普通掉线、心跳超时、被踢下线都不走这条路径，只释放租约，不吊销令牌。
 
 ## 9.6 消息路由：本实例 vs 跨实例
 
 三个需要投递给他人的 handler（1009 / 1013 / 1017）共用同一套判定：
 
 ```cpp
-to_ip_key  = "uip_" + std::to_string(touid);
-b_ip       = RedisMgr::Get(to_ip_key, to_ip_value);
-if (!b_ip) return;                       // 目标不在线（或位置键已过期）→ 静默丢弃
-if (to_ip_value == self_name) {
+std::string instance;
+if (!SessionRouter::Inst().Lookup(touid, instance)) return;  // 离线或查询失败 → 不实时推送
+if (instance == self_name) {
     session = UserMgr::GetInstance()->GetSession(touid);
     if (session) session->Send(json, NOTIFY_ID);   // 本实例直投
     return;
 }
-ChatGrpcClient::GetInstance()->NotifyXxx(to_ip_value, req);  // 跨实例 gRPC 转发
+ChatGrpcClient::GetInstance()->NotifyXxx(instance, req);  // 跨实例 gRPC 转发
 ```
+
+- 位置来自 `SessionRouter`：本机缓存 30 秒，离线负缓存 5 秒，未命中才向 StatusServer 查询；
+  消息路径不再直接读 Redis。
+- 群广播与资料推送用 `LookupBatch`，一次查完全部成员，避免成员数 × 一次查询。
+- 单聊跨实例投递返回 `UidInvalid` 时说明缓存位置过期：失效后回源重试一次，
+  仍失败才置 `delivery_pending`（消息已落库，对方下次登录同步）。
 
 | 路径 | 开销 |
 | --- | --- |
-| 本实例直投 | 一次 `UserMgr` 查找 + 一次 `Send()`，无网络往返 |
+| 本实例直投 | 一次缓存命中 + `UserMgr` 查找 + `Send()`，无网络往返 |
 | 跨实例 | 一次 gRPC 调用（Stub 池复用连接）→ 对端 `ChatServiceImpl` → `UserMgr` → `Send()` |
 
 ### `ChatServiceImpl`（gRPC 服务端）
@@ -197,7 +217,7 @@ flowchart TB
 2. `MysqlMgr::AddFriendApply(uid, touid, welcome, bakname, tags)`：把申请留言写 `friend_apply.descs`、
    备注写 `back_name`、分组写 `tags`（JSON 数组）；重复申请用 `ON DUPLICATE KEY UPDATE` 整组覆盖；
 3. 回 1010，`error` 表示申请是否已经落库；
-4. 查 `uip_<touid>`；
+4. `SessionRouter::Lookup(touid)` 查对方所在实例；
 5. 本实例 → 构造 1011 通知（`name` 是申请人资料名，`desc` 是申请留言）；跨实例 → `NotifyAddFriend`。
 
 登录回包的 `apply_list` 同时包含两个方向：`GetApplyList` 取别人申请我的，`GetSentApplyList` 取我发出去的，后者带 `direction=1`，客户端在「新的朋友」里显示为等待验证。两条 SQL 都关联 `user` 表并取出 `user.icon`，申请人的头像变化后重新登录即可拿到新文件名，再由 ResourceServer 下载成本地缓存。
@@ -263,7 +283,7 @@ flowchart TB
 推送流程：
 
 1. 从 `user` 表读一次完整资料，保证推送内容与落库值一致（头像可能是资源服务器写的）；
-2. `GetFriendIds` 取好友 uid 列表，逐个查 `uip_<uid>`：没有位置键说明对方离线，直接跳过；
+2. `GetFriendIds` 取好友 uid 列表，`SessionRouter::LookupBatch` 一次查出在线位置，离线好友跳过；
 3. 在本实例的好友直接 `session->Send(1051)`；
 4. 跨实例的好友按**目标实例分组**，一个实例只发一次 `NotifyProfileChanged`，请求里带
    `fromuid`、这批 `touids` 与四个字段；对端只投递给本实例在线的那几个；
@@ -286,7 +306,7 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 1. 解析 `{fromuid, touid, thread_id, text_array:[{content, msgid}]}`；
 2. 先按 `thread_id` 找到/创建单聊线程，把消息写入 `chat_message`，拿到 `message_id`；
 3. 构造 1018 回执：`thread_id`、`message_id`、`time`，发送方状态 1；写库失败时状态 2；
-4. 查 `uip_<touid>` → 本实例直投 1019 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
+4. `SessionRouter::Lookup(touid)` → 本实例直投 1019 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
 5. 目标离线时消息已持久化，不推送；下次登录按 1027/1029 同步。
 
 `time` 是 `chat_message.created_at` 的 UNIX 秒值。写入不显式传时间，插入后按 `message_id`
@@ -341,7 +361,7 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 
 图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
 （`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
-资源全部落盘后，ResourceServer 按 Redis `uip_<receiver>` 选择接收方所在实例，通过 gRPC
+资源全部落盘后，ResourceServer 向 StatusServer 查询接收方所在实例，通过 gRPC
 `NotifyImageUploaded` 把 `message_id`、双方 uid、`thread_id`、资源名与 `client_msg_id` 交给 ChatServer：
 `ChatServiceImpl` 先更新 `chat_message.status=1`（带 `sender` 限定），如果接收方在本实例在线，
 再调用 `CSession::NotifyImageRecv` 推送 1033。接收方离线时只更新状态，下次登录按历史消息同步；
@@ -359,8 +379,8 @@ ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 详见 `02-build.md` §2.4。运行时要点：
 
 - 同一份可执行文件，靠各自目录下的 `config.ini` 区分身份；
-- `[SelfServer].Name` 必须与 `StatusServer` 登记的名字**完全一致**，否则 `uip_<uid>` 与
-  `logincount` 的 field 对不上，路由会全部走跨实例路径；
+- `[SelfServer].Name` 必须与 `StatusServer` 的 `[chatservers]` 白名单**完全一致**，
+  否则 `RegisterInstance` 会被拒绝，登录时没有可选实例；
 - `[PeerServer]` 只需列**对端**，不必列自己；
 - 新增实例后，**已存在实例的 ini 也要更新**（把新实例加进自己的 `PeerServer` 与对端段），
   否则跨实例转发会找不到连接池而静默失败。

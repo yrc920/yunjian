@@ -5,6 +5,7 @@
 #include "RedisMgr.h"
 #include "UserMgr.h"
 #include "ChatGrpcClient.h"
+#include "SessionRouter.h"
 #include "ConfigMgr.h"
 #include "CServer.h"
 #include "RequestValidation.h"
@@ -201,6 +202,8 @@ void LogicSystem::RegisterCallBacks()
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 	_fun_callbacks[ID_GROUP_MEMBER_OP_REQ] = std::bind(&LogicSystem::GroupMemberOp, this,
 		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+	_fun_callbacks[ID_LOGOUT_REQ] = std::bind(&LogicSystem::LogoutHandler, this,
+		std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
 }
 
 void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
@@ -331,67 +334,32 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 		rtvalue["friend_list"].append(obj); //将好友信息添加到Json值对象的friend_list数组中
 	}
 
-	//从配置文件中获取自身服务器的名称
+	//令牌已校验通过；这里申请租约，由状态服务决定谁是当前会话并返回单调递增的 epoch。
+	//申请放在资料与好友列表加载之后：新设备登录失败时不能把旧设备踢掉，用户不会两头落空
 	auto server_name = ConfigMgr::Inst().GetValue("SelfServer", "Name");
-    {
-	    //会话锁只保护当前连接，用户锁则用于协调同一uid在不同连接、不同实例上的登录与清理
-	    //获取用户锁后，才能检查已有登录位置、通知下线并登记当前会话
-	    auto lock_key = LOCK_PREFIX + uid_str;
-	    auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-        if (identifier.empty()) { //未获得锁时返回失败，不能继续覆盖共享登录状态
-            rtvalue["error"] = ErrorCodes::RPCFailed;
-            return;
-        }
+	auto lease = StatusGrpcClient::GetInstance()->AllocateSession(
+		uid, token, session->GetSessionId(), server_name);
+	if (lease.error() != ErrorCodes::Success) {
+		//状态服务不可用时按失败处理：客户端可以重试，已有会话不受影响
+		rtvalue["error"] = lease.error();
+		return;
+	}
 
+	//申请期间连接可能已经关闭，必须把刚拿到的租约还回去，否则要等 TTL 到期才释放
+	if (session->IsClosed() || !_p_server->CheckValid(session->GetSessionId())) {
+		StatusGrpcClient::GetInstance()->ReleaseAsync(uid, session->GetSessionId(), lease.epoch());
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
 
-	    //利用defer解锁
-	    Defer defer2([this, identifier, lock_key]() {
-            RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
-            });
-        //等待分布式锁期间Close仍可标记连接关闭，因此拿到锁后还要再次检查连接是否有效
-        if (session->IsClosed() || !_p_server->CheckValid(session->GetSessionId())) {
-            rtvalue["error"] = ErrorCodes::TokenInvalid;
-            return;
-        }
-	    //此处判断该用户是否在别处或者本服务器登录
+	session->SetEpoch(lease.epoch());
+	session->SetUserId(uid); //session绑定用户uid
+	UserMgr::GetInstance()->SetUserSession(uid, session); //本机映射由这里维护，不再写 Redis
 
-	    std::string uid_ip_value = "";
-	    auto uid_ip_key = USERIPPREFIX + uid_str;
-	    bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-	    //位置键表示最近登记的实例，不保证对应连接仍然在线；本实例继续查会话，跨实例发RPC通知
-	    if (b_ip) {
-	        //获取当前实例名称，与Redis中的位置值比较，判断能否直接从本地找到用户会话
-	        auto& cfg = ConfigMgr::Inst();
-	        auto self_name = cfg["SelfServer"]["Name"];
-	        //如果之前登录的服务器和当前相同，则直接在本服务器踢掉
-	        if (uid_ip_value == self_name) {
-	            //查找旧有的连接
-	            auto old_session = UserMgr::GetInstance()->GetSession(uid);
-
-	            //此处应该发送踢人消息
-	            if (old_session) {
-	                old_session->NotifyOffline(uid);
-	                //移除旧连接的本地登记，使它不能继续处理业务；这里并不直接关闭socket
-	                _p_server->ClearSession(old_session->GetSessionId());
-	            }
-	        }
-	        else {
-	            //如果不是本服务器，则通知grpc通知其他服务器踢掉
-	            //发送通知
-                KickUserReq kick_req;
-	            kick_req.set_uid(uid);
-	            ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
-	        }
-	    }
-
-	    session->SetUserId(uid); //session绑定用户uid
-	    std::string ipkey = USERIPPREFIX + uid_str; //用户所在实例的位置键
-	    RedisMgr::GetInstance()->Set(ipkey, server_name); //保存实例名称，供消息路由查找对应的RPC连接池
-	    UserMgr::GetInstance()->SetUserSession(uid, session); //将用户ID和会话对象绑定，方便踢人操作
-	    std::string uid_session_key = USER_SESSION_PREFIX + uid_str; //为用户设置session的名字
-	    //将用户session的名字写入Redis
-	    RedisMgr::GetInstance()->Set(uid_session_key, session->GetSessionId());
-    }
+	if (!lease.kicked_instance().empty()) {
+		std::cout << "[login] uid=" << uid << " epoch=" << lease.epoch()
+			<< " superseded inst=" << lease.kicked_instance() << std::endl;
+	}
 	return;
 }
 
@@ -465,13 +433,9 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
         return;
     }
 
-	auto to_str = std::to_string(touid);
-	auto to_ip_key = USERIPPREFIX + to_str; //构建目标用户登录ip server的名字在Redis中的键名
-	std::string to_ip_value = "";
-	//从Redis中获取目标用户的登录ip server的名字
-	bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
-	//如果Redis中没有目标用户的登录ip server的名字，说明目标用户未登录，直接返回成功状态码，不需要通知对方
-	if (!b_ip)
+	//目标用户未在线时不推送：申请已经写入数据库，对方登录后能在申请列表里看到
+	std::string to_ip_value;
+	if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
 		return;
 
 	//从配置文件中获取自身服务器的名称
@@ -638,14 +602,10 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	for (const auto &message : approver_msgs)
 		append_welcome(applicant_view, message, 3);
 
-	//查询redis 查找touid对应的server ip
-	auto to_str = std::to_string(touid);
-	auto to_ip_key = USERIPPREFIX + to_str;
-	std::string to_ip_value = "";
-	bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
-	if (!b_ip) {
+	//通过好友的关系已经落库，对方不在线时跳过推送，登录后拉取即可
+	std::string to_ip_value;
+	if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
 		return;
-	}
 
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
@@ -793,14 +753,10 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	//消息已经提交到数据库；Redis 中没有在线位置时保留离线消息，登录同步会补发
-	auto to_str = std::to_string(touid);
-	auto to_ip_key = USERIPPREFIX + to_str;
-	std::string to_ip_value = "";
-	bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
-	if (!b_ip) {
+	//消息已经提交到数据库；对方不在线时保留离线消息，登录同步会补发
+	std::string to_ip_value;
+	if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
 		return;
-	}
 
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
@@ -832,6 +788,13 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 	}
 
 	auto forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, text_msg_req, rtvalue);
+	if (forwarded.error() == ErrorCodes::UidInvalid) {
+		//缓存的位置过期：对方已经换实例，失效后回源一次再投，不能直接当离线
+		SessionRouter::Inst().Invalidate(touid);
+		std::string retry_ip;
+		if (SessionRouter::Inst().Lookup(touid, retry_ip) && retry_ip != to_ip_value)
+			forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(retry_ip, text_msg_req, rtvalue);
+	}
 	//跨实例实时投递失败只影响"立刻看到", 消息已在库里, 对方下次登录仍能同步
 	if (forwarded.error() != ErrorCodes::Success)
 		rtvalue["delivery_pending"] = true;
@@ -1057,6 +1020,32 @@ void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session,
     session->Send(rtvalue.toStyledString(), ID_HEARTBEAT_RSP);
 }
 
+//主动登出：先让状态服务按 sid + epoch 吊销租约与令牌，再摘除本地登记并关闭连接。
+//状态服务失败时本地照常下线，令牌由 7 天 TTL 兜底，不能因为控制面故障把用户卡在登录页
+void LogicSystem::LogoutHandler(std::shared_ptr<CSession> session,
+	const short&, const std::string&)
+{
+	Json::Value rsp;
+	rsp["error"] = ErrorCodes::Success;
+	rsp["revoked"] = false;
+
+	const int uid = session->GetUserId();
+	if (uid > 0) {
+		auto reply = StatusGrpcClient::GetInstance()->LogoutSession(
+			uid, session->GetSessionId(), session->GetEpoch());
+		if (reply.error() != ErrorCodes::Success) {
+			std::cout << "[logout] revoke failed uid=" << uid
+				<< " err=" << reply.error() << std::endl;
+		}
+		rsp["revoked"] = reply.revoked();
+	}
+
+	//先回包再摘除本地登记：ClearSession 之后这条连接不再接收业务消息
+	session->Send(rsp.toStyledString(), ID_LOGOUT_RSP);
+	_p_server->ClearSession(session->GetSessionId());
+	session->CloseSoon(200);
+}
+
 //修改本人资料: 昵称、性别、个性签名。三个字段都可以为空, 空昵称表示界面回落到用户名
 void LogicSystem::UpdateProfile(std::shared_ptr<CSession> session,
 	const short& msg_id, const std::string& msg_data)
@@ -1145,15 +1134,17 @@ void LogicSystem::NotifyFriendsProfileChanged(int uid)
 	const std::string notify_text = notify.toStyledString();
 
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
-	//跨实例的好友按目标实例分组, 一个实例只发一次 RPC
+	//一次批量查询好友位置，避免好友数 × 一次 Redis/RPC
+	const auto routes = SessionRouter::Inst().LookupBatch(friend_ids);
 	std::map<std::string, std::vector<int>> remote;
 	for (int friend_id : friend_ids) {
 		if (friend_id <= 0)
 			continue;
 
-		std::string ip;
-		if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(friend_id), ip))
-			continue;
+		auto route = routes.find(friend_id);
+		if (route == routes.end())
+			continue; //离线好友不推送，下次登录会从 1006/1050 拿到最新资料
+		const std::string& ip = route->second;
 
 		if (ip == self_name) {
 			auto session = UserMgr::GetInstance()->GetSession(friend_id);
@@ -1268,7 +1259,7 @@ void LogicSystem::PushChatEvent(int from_uid, int to_uid, long long thread_id,
 		return;
 
 	std::string ip;
-	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(to_uid), ip))
+	if (!SessionRouter::Inst().Lookup(to_uid, ip))
 		return;
 
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
@@ -1441,7 +1432,7 @@ void LogicSystem::DeleteFriend(std::shared_ptr<CSession> session,
 	}
 }
 
-//群事件广播：本实例成员直接投递，其他实例按 uip_ 聚合后一次转发。
+//群事件广播：本实例成员直接投递，其他实例按路由查询结果聚合后一次转发。
 //离线的成员不补偿，消息与成员变更都已经落库，下次登录同步时能看到
 void LogicSystem::BroadcastGroupEvent(long long thread_id, const std::vector<int>& members,
 	int except_uid, const Json::Value& payload, int notify_id)
@@ -1450,14 +1441,17 @@ void LogicSystem::BroadcastGroupEvent(long long thread_id, const std::vector<int
 		return;
 	const std::string text = payload.toStyledString();
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
+	//一次批量查询所有成员的在线位置：群上限 200，避免 200 次单点查询
+	const auto routes = SessionRouter::Inst().LookupBatch(members);
 	std::map<std::string, std::vector<int>> remote;
 
 	for (int uid : members) {
 		if (uid <= 0 || uid == except_uid)
 			continue;
-		std::string instance;
-		if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(uid), instance))
+		auto route = routes.find(uid);
+		if (route == routes.end())
 			continue;
+		const std::string& instance = route->second;
 		if (instance == self_name) {
 			auto peer = UserMgr::GetInstance()->GetSession(uid);
 			if (peer)

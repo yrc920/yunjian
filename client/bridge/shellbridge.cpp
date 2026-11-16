@@ -23,8 +23,15 @@ ShellBridge::ShellBridge(QObject *parent) : QObject(parent)
     auto *tcp = TcpMgr::GetInstance().get();
     connect(SessionService::GetInstance().get(), &SessionService::sessionReady,
             this, [this] { go(kChat); });
-    connect(tcp, &TcpMgr::sig_notify_offline, this, [this] {
-        showOfflineNotice(tr("同账号异地登录，该终端已下线。"));
+    connect(tcp, &TcpMgr::sig_notify_offline, this, [this](int reason) {
+        // 被顶号时只提示、不自动重连：旧凭证再登录会把新会话顶回去，形成互踢
+        QString text;
+        switch (reason) {
+        case 2: text = tr("登录状态已过期，请重新登录。"); break;
+        case 3: text = tr("服务端已断开该连接，请稍后重试。"); break;
+        default: text = tr("同账号异地登录，该终端已下线。"); break;
+        }
+        showOfflineNotice(text);
         SessionService::GetInstance()->closeSession();
     });
     connect(tcp, &TcpMgr::sig_connection_closed, this, [this] {
@@ -76,7 +83,8 @@ void ShellBridge::logout()
     _notice.clear();
     emit noticeChanged();
     go(kLogin);
-    SessionService::GetInstance()->closeSession();
+    // 明确退出要通知服务端吊销令牌；closeSession 只负责最终断开
+    SessionService::GetInstance()->logout();
     UserMgr::GetInstance()->ClearSession();
 }
 

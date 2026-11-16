@@ -12,24 +12,30 @@
 set(SERVER_NAME StatusServer)
 
 # ---------- 源文件清单 ----------
-# StatusServer 对外提供 gRPC 服务（StatusServiceImpl）
-# ChatGrpcClient 目前暂无调用点，若启用需确认其端口取自对端 ChatServer 的 RPCPort
+# StatusServer 是会话生命周期的唯一权威：
+#   SessionRegistry  租约与围栏令牌（Redis 原子脚本）
+#   InstanceRegistry 实例注册、心跳、负载与下线
+#   ChatControlClient 只负责把"旧连接该下线了"推给目标实例
 set(SERVER_SOURCES
-    src/StatusServer.cpp       # 主入口：启动 gRPC 服务
-    src/StatusServiceImpl.cpp  # gRPC 服务实现：在线状态查询/路由
-    src/ChatGrpcClient.cpp     # 调用 ChatServer 的 gRPC 客户端
-    src/ConfigMgr.cpp          # 配置文件 config.ini 的读取与单例
-    src/IOContextPool.cpp      # boost::asio io_context 线程池
-    src/RedisMgr.cpp           # Redis 客户端封装（hiredis）
-    src/MysqlMgr.cpp           # MySQL 连接池（X DevAPI）
-    src/MysqlDao.cpp           # 数据访问层
+    src/StatusServer.cpp        # 主入口：启动 gRPC 服务
+    src/StatusServiceImpl.cpp   # gRPC 服务实现
+    src/SessionRegistry.cpp     # 会话租约与 epoch
+    src/InstanceRegistry.cpp    # 实例注册与选路
+    src/ChatControlClient.cpp   # 到聊天实例的控制链路（踢人）
+    src/ConfigMgr.cpp           # 配置文件 config.ini 的读取与单例
+    src/IOContextPool.cpp       # boost::asio io_context 线程池
+    src/RedisMgr.cpp            # Redis 客户端封装（hiredis）
+    src/MysqlMgr.cpp            # MySQL 连接池（X DevAPI）
+    src/MysqlDao.cpp            # 数据访问层
 )
 
 # ---------- 头文件清单 ----------
 # 列出头文件便于 IDE 展示，实际的 #include 依赖由编译器在构建时追踪
 set(SERVER_HEADERS
     include/StatusServiceImpl.h
-    include/ChatGrpcClient.h
+    include/SessionRegistry.h
+    include/InstanceRegistry.h
+    include/ChatControlClient.h
     include/ConfigMgr.h
     include/IOContextPool.h
     include/RedisMgr.h

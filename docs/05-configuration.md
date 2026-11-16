@@ -95,12 +95,13 @@ Port = 8091
 
 | 段/字段 | 说明 |
 | --- | --- |
-| `[chatservers] Name` | 参与调度的实例名清单。新增实例必须在此登记，否则不会被分配 |
-| `[<实例名>] Name/Host/Port` | 返回给客户端的连接地址。`Port` 是**客户端 TCP 端口** |
+| `[chatservers] Name` | 允许注册的实例名白名单。新增实例必须在此登记，否则 `RegisterInstance` 会被拒绝 |
 | `[ResourceServer] Host/Port` | 资源服务器地址，写入 `GetChatServerRsp.res_host/res_port`；留空时客户端只保存本机头像 |
 
-调度算法（`StatusServiceImpl::getChatServer`）：遍历清单，逐个 `HGET logincount <name>`；
-取不到的实例按 `INT_MAX` 处理（即视为"无连接数记录"），最终返回连接数最小的实例。
+实例地址不在这里配置：ChatServer 启动时通过 `RegisterInstance` 上报 `AdvertiseHost`、
+客户端端口、`AdvertiseRpcHost` 与 RPC 端口。选路算法（`InstanceRegistry::Pick`）
+从 `instances` 集合读出存活实例，跳过 `draining` 与地址不完整的条目，
+按 `sessions/capacity` 取负载最小的一台，平票按实例名排序。
 
 ---
 
@@ -133,7 +134,10 @@ Port = 50056             # 对端的 RPCPort（gRPC），注意不是对端的 T
 
 | 段 | 字段 | 说明 |
 | --- | --- | --- |
-| `[SelfServer] Name` | 实例名，写入 `uip_<uid>` 与 `logincount` 的 field |
+| `[SelfServer] Name` | 实例名，注册到 StatusServer；必须与资源服务器的 `[ChatServers]` 清单一致 |
+| `[SelfServer] AdvertiseHost` | 客户端可访问的地址，随登录路由下发；不能填 `0.0.0.0` |
+| `[SelfServer] AdvertiseRpcHost` | 实例间 RPC 使用的主机名；容器部署时填 `127.0.0.1`，与客户端地址不同 |
+| `[SelfServer] Capacity` | 期望承载的会话数，选路按 `sessions/capacity` 计算负载 |
 | `[SelfServer] Host` | gRPC 监听地址（`0.0.0.0` 表示监听全部网卡） |
 | `[SelfServer] Port` | TCP 监听端口，客户端连这里 |
 | `[SelfServer] RPCPort` | gRPC 监听端口，其他实例连这里 |
@@ -221,7 +225,8 @@ Port = 50056
 | `[SelfServer] Port` | 分段上传/下载监听端口 |
 | `[Storage] Path` | 落盘根目录；Docker 部署挂到 `/var/lib/xiguchat/storage` |
 | `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存；聊天图片回写消息状态 |
-| `[Redis]` | token 校验、`file_upload_<md5>` 续传进度（TTL 3600s）与 `uip_<uid>` 实例路由 |
+| `[StatusServer]` | 在线位置查询；资源服务器不再直接读 Redis 的位置键 |
+| `[Redis]` | token 校验、`file_upload_<md5>` 续传进度（TTL 3600s）与用户资料缓存 |
 | `[ChatServers] Servers` | ChatServer 实例名列表，必须与各自 `[SelfServer] Name` 一致 |
 | `[chatserverN]` | 各实例的 gRPC `Host/Port`；找不到接收方位置或 RPC 失败时直接写库兜底 |
 

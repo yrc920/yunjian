@@ -85,6 +85,8 @@ enum ReqId{
     ID_GROUP_MEMBER_OP_REQ = 1066, //邀请、移除、设/撤管理员、退群、解散
     ID_GROUP_MEMBER_OP_RSP = 1067, //成员操作回包
     ID_NOTIFY_GROUP_CHANGED = 1068, //群资料/成员/被移出/解散的推送
+    ID_LOGOUT_REQ = 1069, //主动登出：释放租约并吊销令牌
+    ID_LOGOUT_RSP = 1070, //登出结果，收到后关闭连接
 };
 
 //模块

@@ -1,128 +1,318 @@
 #include "StatusServiceImpl.h"
+#include "ChatControlClient.h"
 #include "ConfigMgr.h"
-#include "const.h"
+#include "InstanceRegistry.h"
 #include "RedisMgr.h"
-#include <charconv>
+#include "SessionRegistry.h"
+#include "const.h"
+#include <boost/uuid/uuid_io.hpp>
+#include <algorithm>
+#include <iostream>
+#include <set>
+
+namespace {
+
+constexpr int KICK_REASON_SUPERSEDED = 1;
+
+std::string GenerateToken()
+{
+	boost::uuids::uuid uuid = boost::uuids::random_generator()();
+	return to_string(uuid);
+}
+
+} // namespace
 
 StatusServiceImpl::StatusServiceImpl()
 {
-	auto& cfg = ConfigMgr::Inst(); //获取配置管理器实例
+	auto& cfg = ConfigMgr::Inst();
 	//资源服务器地址与聊天实例一起下发，客户端登录后用它上传头像、拉取缺失资源
 	_res_host = cfg["ResourceServer"]["Host"];
 	_res_port = cfg["ResourceServer"]["Port"];
 
-	//从配置文件中读取聊天服务器的信息, 初始化服务器列表
-	auto server_list = cfg["chatservers"]["Name"];
-
-	std::vector<std::string> words; //用于存储分割后的服务器名称列表
-	std::stringstream ss(server_list); //使用字符串流将服务器列表字符串分割成单个服务器名称
-	std::string word; //临时变量用于存储分割出的服务器名称
-
-	//将服务器列表字符串按照逗号分割成单个服务器名称, 并将其存储到words向量中
-	while (std::getline(ss, word, ',')) {
-		words.push_back(word);
-	}
-
-	for (auto& word : words) {
-		//如果服务器名称为空, 则跳过该服务器
-		if (cfg[word]["Name"].empty()) {
-			continue;
-		}
-
-		ChatServer server; //为每个服务器名称创建一个ChatServer对象
-		server.port = cfg[word]["Port"];
-		server.host = cfg[word]["Host"];
-		server.name = cfg[word]["Name"];
-		_servers[server.name] = server; //将服务器信息存储到服务器列表中
-	}
+	//实例白名单在 InstanceRegistry 构造时读取，这里提前触发一次，配置错误在启动日志里就能看到
+	InstanceRegistry::Inst();
 }
 
-//生成一个唯一的字符串, 用于Token的生成
-std::string generate_unique_string()
+bool StatusServiceImpl::VerifyToken(int uid, const std::string& token)
 {
-	boost::uuids::uuid uuid = boost::uuids::random_generator()(); //创建UUID对象
-	std::string unique_string = to_string(uuid); //将UUID转换为字符串
-	return unique_string;
+	if (uid <= 0 || token.empty())
+		return false;
+	std::string stored;
+	if (!RedisMgr::GetInstance()->Get(USERTOKENPREFIX + std::to_string(uid), stored))
+		return false;
+	return stored == token;
 }
 
+bool StatusServiceImpl::IssueToken(int uid, std::string& token)
+{
+	token = GenerateToken();
+	//令牌带有效期，泄露后不会永久可用；每次登录刷新，长期不登录的会话自然失效
+	return RedisMgr::GetInstance()->SetEx(USERTOKENPREFIX + std::to_string(uid),
+		TOKEN_TTL_SECONDS, token);
+}
+
+//登录选路：实例必须存活、未下线、地址完整，负载按 sessions/capacity 计算
 Status StatusServiceImpl::GetChatServer(ServerContext* context,
 	const GetChatServerReq* request, GetChatServerRsp* reply)
 {
-    const auto server = getChatServer(); //根据Redis中的连接数选择候选实例
-    //没有候选实例时不能向客户端下发空地址；非法uid也不能用于生成用户token键
-    if (request->uid() <= 0 || server.name.empty()) {
-        reply->set_error(ErrorCodes::RPCFailed);
-        return Status::OK;
-    }
-    const auto token = generate_unique_string(); //本次登录签发的token
-    //ChatServer会从Redis读取token进行比对，必须先写入成功，才能向网关返回登录凭据
-    if (!insertToken(request->uid(), token)) {
-        reply->set_error(ErrorCodes::RPCFailed);
-        return Status::OK;
-    }
-    //Status::OK只表示RPC已正常处理，具体业务结果通过reply中的error字段表达
-    reply->set_host(server.host);
-    reply->set_port(server.port);
-    reply->set_token(token);
-    reply->set_res_host(_res_host);
-    reply->set_res_port(_res_port);
-    reply->set_error(ErrorCodes::Success);
-    return Status::OK;
-}
-
-ChatServer StatusServiceImpl::getChatServer()
-{
-    std::lock_guard<std::mutex> guard(_server_mtx);
-    ChatServer selected; //name为空表示尚未找到符合条件的实例，也能处理空配置列表
-    for (const auto& [name, server] : _servers) {
-        auto count = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, name);
-        int value = 0;
-        //from_chars不会抛异常；除了检查错误码，还要确认整个字符串都已消费，拒绝数字后夹杂其他内容
-        auto [end, error] = std::from_chars(count.data(), count.data() + count.size(), value);
-        //无计数、负计数、损坏计数或地址不完整的实例都不能参与本次选路
-        if (error != std::errc{} || end != count.data() + count.size() || value < 0 ||
-            server.host.empty() || server.port.empty()) continue;
-        //第一个有效实例作为初始候选，之后只在连接数更小时替换；全部跳过时仍保留空候选
-        if (selected.name.empty() || value < selected.con_count) {
-            selected = server;
-            selected.con_count = value;
-        }
-    }
-    //这里只比较已上报的计数，不做实时探活；实例异常退出留下的计数仍可能被选中
-    return selected;
-}
-
-Status StatusServiceImpl::Login(ServerContext* context, const LoginReq* request, LoginRsp* reply)
-{
-	auto uid = request->uid(); //获取请求的用户id
-	auto token = request->token(); //获取请求的Token
-
-	std::string uid_str = std::to_string(uid);
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	std::string token_value = "";
-	//从Redis中获取用户id对应的Token值
-	bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-
-	//如果获取失败, 则说明用户id无效, 返回uid无效的错误码
-	if (!success) {
+	if (request->uid() <= 0) {
 		reply->set_error(ErrorCodes::UidInvalid);
 		return Status::OK;
 	}
-	//如果Token值与请求的Token不匹配, 则说明Token无效, 返回Token无效的错误码
-	if (token_value != token) {
+
+	InstanceInfo instance;
+	if (!InstanceRegistry::Inst().Pick(instance)) {
+		std::cout << "[session] route failed uid=" << request->uid() << " no_instance" << std::endl;
+		reply->set_error(ErrorCodes::ServiceUnavailable);
+		return Status::OK;
+	}
+
+	std::string token;
+	if (!IssueToken(request->uid(), token)) {
+		reply->set_error(ErrorCodes::ServiceUnavailable);
+		return Status::OK;
+	}
+
+	reply->set_host(instance.host);
+	reply->set_port(std::to_string(instance.client_port));
+	reply->set_token(token);
+	reply->set_res_host(_res_host);
+	reply->set_res_port(_res_port);
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::AllocateSession(ServerContext* context,
+	const AllocateSessionReq* request, AllocateSessionRsp* reply)
+{
+	const int uid = request->uid();
+	if (uid <= 0) {
+		reply->set_error(ErrorCodes::UidInvalid);
+		return Status::OK;
+	}
+	if (request->token().empty() || request->session_id().empty() || request->instance().empty()) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+
+	//先校验令牌再动租约：失败的登录不能产生任何状态变更，也不能把旧设备踢掉
+	if (!VerifyToken(uid, request->token())) {
 		reply->set_error(ErrorCodes::TokenInvalid);
 		return Status::OK;
 	}
 
-	reply->set_error(ErrorCodes::Success); //设置返回的错误码, 表示成功
-	reply->set_uid(uid); //设置返回的用户id
-	reply->set_token(token); //设置返回的Token
+	InstanceInfo self;
+	if (!InstanceRegistry::Inst().Get(request->instance(), self)) {
+		reply->set_error(ErrorCodes::InstanceUnknown);
+		return Status::OK;
+	}
+
+	long long epoch = 0;
+	std::string kicked_instance;
+	std::string kicked_session_id;
+	bool rate_limited = false;
+	if (!SessionRegistry::Inst().Allocate(uid, request->session_id(), request->instance(),
+		epoch, kicked_instance, kicked_session_id, rate_limited)) {
+		reply->set_error(rate_limited ? ErrorCodes::TooManyRequests : ErrorCodes::ServiceUnavailable);
+		return Status::OK;
+	}
+
+	reply->set_epoch(epoch);
+	reply->set_lease_seconds(LEASE_TTL_SECONDS);
+	reply->set_error(ErrorCodes::Success);
+
+	//先把新租约写进去，再异步通知旧实例：即使通知丢失，旧连接也会在下一次续租被 Fenced
+	if (!kicked_instance.empty()) {
+		reply->set_kicked_instance(kicked_instance);
+		reply->set_kicked_uid(uid);
+		InstanceInfo old;
+		if (InstanceRegistry::Inst().Get(kicked_instance, old)) {
+			ChatControlClient::Inst().KickAsync(old.rpc_host, old.rpc_port, uid, epoch,
+				kicked_session_id, KICK_REASON_SUPERSEDED);
+		}
+	}
+
+	std::cout << "[session] alloc uid=" << uid << " epoch=" << epoch
+		<< " inst=" << request->instance() << " kicked=" << kicked_instance << std::endl;
 	return Status::OK;
 }
 
-bool StatusServiceImpl::insertToken(int uid, std::string token)
+Status StatusServiceImpl::RenewSessions(ServerContext* context,
+	const RenewSessionsReq* request, RenewSessionsRsp* reply)
 {
-	std::string uid_str = std::to_string(uid); //将用户id转换为字符串
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	return RedisMgr::GetInstance()->Set(token_key, token); //返回写入结果，由调用方决定是否下发token
+	if (request->instance().empty() || request->items_size() > 2000) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+	//心跳与续租合并：一次 RPC 既刷新实例存活，也刷新会话 TTL
+	bool draining = false;
+	if (!InstanceRegistry::Inst().Heartbeat(request->instance(), request->conn_count(),
+		request->session_count(), draining)) {
+		reply->set_error(ErrorCodes::InstanceUnknown);
+		return Status::OK;
+	}
+	reply->set_draining(draining);
+
+	for (const auto& item : request->items()) {
+		auto* result = reply->add_items();
+		result->set_uid(item.uid());
+		result->set_session_id(item.session_id());
+		long long epoch = 0;
+		const int status = SessionRegistry::Inst().Renew(item.uid(), item.session_id(),
+			request->instance(), epoch);
+		result->set_status(status);
+		result->set_epoch(epoch);
+	}
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::ReleaseSession(ServerContext* context,
+	const ReleaseSessionReq* request, ReleaseSessionRsp* reply)
+{
+	if (request->uid() <= 0 || request->session_id().empty()) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+
+	bool released = false;
+	if (!SessionRegistry::Inst().Release(request->uid(), request->session_id(),
+		request->epoch(), released)) {
+		reply->set_error(ErrorCodes::ServiceUnavailable);
+		return Status::OK;
+	}
+
+	//被顶替或已经过期都属于正常结果：连接已经关闭，租约本来就不归它了
+	reply->set_released(released);
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::LogoutSession(ServerContext* context,
+	const LogoutSessionReq* request, LogoutSessionRsp* reply)
+{
+	if (request->uid() <= 0 || request->session_id().empty() || request->epoch() <= 0) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+
+	bool revoked = false;
+	if (!SessionRegistry::Inst().Logout(request->uid(), request->session_id(),
+		request->epoch(), revoked)) {
+		reply->set_error(ErrorCodes::ServiceUnavailable);
+		return Status::OK;
+	}
+
+	std::cout << "[session] logout uid=" << request->uid()
+		<< " revoked=" << revoked << std::endl;
+	reply->set_revoked(revoked);
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::LookupRoute(ServerContext* context,
+	const LookupRouteReq* request, LookupRouteRsp* reply)
+{
+	if (request->uid() <= 0) {
+		reply->set_error(ErrorCodes::UidInvalid);
+		return Status::OK;
+	}
+
+	SessionLease lease;
+	if (SessionRegistry::Inst().Lookup(request->uid(), lease)) {
+		reply->set_online(true);
+		reply->set_instance(lease.instance);
+		reply->set_epoch(lease.epoch);
+	}
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::BatchLookupRoute(ServerContext* context,
+	const BatchLookupRouteReq* request, BatchLookupRouteRsp* reply)
+{
+	if (request->uids_size() == 0) {
+		reply->set_error(ErrorCodes::Success);
+		return Status::OK;
+	}
+
+	//按脚本上限分批，避免一次把过多 key 塞进 Lua
+	std::vector<int> uids(request->uids().begin(), request->uids().end());
+	std::map<int, SessionLease> found;
+	for (size_t offset = 0; offset < uids.size(); offset += MAX_BATCH_LOOKUP) {
+		const size_t end = std::min(uids.size(), offset + MAX_BATCH_LOOKUP);
+		std::vector<int> chunk(uids.begin() + offset, uids.begin() + end);
+		auto part = SessionRegistry::Inst().BatchLookup(chunk);
+		found.insert(part.begin(), part.end());
+	}
+
+	//每个请求的 uid 都要有回包，离线用 online=false 表示，调用方不用靠"缺失"推断
+	std::set<int> seen;
+	for (int uid : uids) {
+		if (uid <= 0 || !seen.insert(uid).second)
+			continue;
+		auto* entry = reply->add_entries();
+		entry->set_uid(uid);
+		auto iter = found.find(uid);
+		if (iter != found.end()) {
+			entry->set_online(true);
+			entry->set_instance(iter->second.instance);
+			entry->set_epoch(iter->second.epoch);
+		}
+	}
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::RegisterInstance(ServerContext* context,
+	const RegisterInstanceReq* request, RegisterInstanceRsp* reply)
+{
+	if (request->name().empty() || request->host().empty() ||
+		request->client_port() <= 0 || request->rpc_port() <= 0) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+
+	int heartbeat = INSTANCE_HEARTBEAT_SECONDS;
+	bool draining = false;
+	if (!InstanceRegistry::Inst().Register(request->name(), request->host(), request->rpc_host(),
+		request->client_port(), request->rpc_port(), request->capacity(), heartbeat, draining)) {
+		//白名单外的注册请求按未授权处理，不暴露"配置里有哪些实例"
+		reply->set_error(ErrorCodes::InstanceUnknown);
+		return Status::OK;
+	}
+
+	reply->set_heartbeat_seconds(heartbeat);
+	reply->set_draining(draining);
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::UnregisterInstance(ServerContext* context,
+	const UnregisterInstanceReq* request, UnregisterInstanceRsp* reply)
+{
+	if (request->name().empty()) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+	InstanceRegistry::Inst().Unregister(request->name());
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
+}
+
+Status StatusServiceImpl::DrainInstance(ServerContext* context,
+	const DrainInstanceReq* request, DrainInstanceRsp* reply)
+{
+	if (request->name().empty()) {
+		reply->set_error(ErrorCodes::Error_Json);
+		return Status::OK;
+	}
+	//宽限期限制在 0~3600 秒，防止一次误调用让实例永远不再接流量
+	const int grace = std::max(0, std::min(request->grace_seconds(), 3600));
+	if (!InstanceRegistry::Inst().Drain(request->name(), grace)) {
+		reply->set_error(ErrorCodes::InstanceUnknown);
+		return Status::OK;
+	}
+	reply->set_error(ErrorCodes::Success);
+	return Status::OK;
 }

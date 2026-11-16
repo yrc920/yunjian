@@ -271,34 +271,6 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip,
 	return rsp;
 }
 
-KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& req)
-{
-    KickUserRsp rsp;
-    rsp.set_error(ErrorCodes::RPCFailed);
-    rsp.set_uid(req.uid());
-
-    auto find_iter = _pools.find(server_ip);
-    if (find_iter == _pools.end()) {
-        return rsp;
-    }
-
-    auto& pool = find_iter->second;
-    ClientContext context;
-    //为同步RPC设置5秒截止时间，避免对端无响应时业务线程一直等待；连接池等待本身仍由池管理
-    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
-    auto stub = pool->getConnection();
-    Defer defercon([&stub, this, &pool]() {
-        pool->returnConnection(std::move(stub));
-        });
-    Status status = stub->NotifyKickUser(&context, req, &rsp);
-
-    if (!status.ok()) {
-        rsp.set_error(ErrorCodes::RPCFailed);
-        return rsp;
-    }
-
-    return rsp;
-}
 
 
 ChatConPool::ChatConPool(size_t poolSize, std::string host, std::string port)

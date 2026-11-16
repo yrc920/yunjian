@@ -173,8 +173,8 @@
 写盘顺序是「先写文件，再更新进度」，回包在写盘完成后才发出。因此
 `trans_size` 表示已经落盘的字节数，不是客户端声称的进度。
 
-最后一片写完后，如果请求携带 `message_id`（聊天图片/视频/文件），资源服务器先按 Redis
-`uip_<receiver>` 找到接收方所在的 ChatServer，再调用 `NotifyImageUploaded`（同一个 RPC 覆盖
+最后一片写完后，如果请求携带 `message_id`（聊天图片/视频/文件），资源服务器先向
+StatusServer 查询接收方所在的 ChatServer（`LookupRoute`），再调用 `NotifyImageUploaded`（同一个 RPC 覆盖
 三种资源，按库里的 `msg_type` 分流）：对端更新 `chat_message.status` 从 0（未上传）到 1
 （已上传），接收方在线时图片推送 1033、视频/文件推送 1036。接收方离线、实例未配置或 RPC
 失败时，资源服务器直接写库兜底，不影响下次登录同步。
@@ -244,7 +244,7 @@ Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
 
-# 图片上传完成后按 uip_<receiver> 选择实例：更新状态并推送下载通知
+# 在线位置只在状态服务里查，资源服务器不再直接读 Redis 的位置键
 [ChatServers]
 Servers = chatserver1,chatserver2
 

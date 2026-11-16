@@ -27,6 +27,9 @@ QString codeText(int code, Flow flow)
     case 1007: return QStringLiteral("用户名与邮箱不匹配");
     case 1008: return QStringLiteral("密码更新失败，请稍后再试");
     case 1009: return QStringLiteral("邮箱或密码不正确");
+    case 1022: return QStringLiteral("验证码发送过于频繁，请稍后再试");
+    case 1101: return QStringLiteral("登录服务暂时不可用，请稍后重试");
+    case 1105: return QStringLiteral("登录过于频繁，请稍后再试");
     default: break;
     }
     return QStringLiteral("操作失败（错误码 %1）").arg(code);

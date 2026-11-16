@@ -16,13 +16,7 @@ Schema = xigu
 Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
+# 允许注册的实例名白名单，逗号分隔；地址与端口由各实例启动时自行上报
+# 留空表示接受任意实例注册，仅用于本机调试
 [chatservers]
 Name = chatserver1,chatserver2
-[chatserver1]
-Name = chatserver1
-Host = 127.0.0.1
-Port = 8090
-[chatserver2]
-Name = chatserver2
-Host = 127.0.0.1
-Port = 8091

@@ -33,9 +33,10 @@ XiguChat 是一个分布式即时通讯系统。客户端用 Qt 6 实现登录�
 | --- | --- |
 | 全 C++ 技术栈 | 客户端 Qt 6 / C++17，服务端 gRPC / Boost.Asio / C++20，无 Node、无脚本层 |
 | 分布式聊天 | ChatServer 一套代码多实例部署，跨实例消息经 gRPC 转发，对客户端透明 |
-| 最小连接数调度 | StatusServer 依据 Redis 中各实例的在线连接数分配 ChatServer |
+| 加权负载调度 | StatusServer 依据实例上报的 `sessions/capacity` 选路，自动跳过过期与下线实例 |
 | 双通道通信 | HTTP 短连接处理注册/登录/验证码，TCP 长连接处理实时消息与通知 |
 | 连接级会话管理 | 每会话独立 UUID，uid↔session 双向绑定，支持按 uid 定位并推送 |
+| 登录与会话防护 | 单端登录按 epoch 顶号；主动登出立即吊销 token；验证码 60 秒冷却 + 邮箱/IP 小时配额 |
 | 资源池化 | io_context 线程池（= CPU 核心数）、Redis 连接池、gRPC Stub 连接池 |
 | 口令安全 | libsodium Argon2id 哈希存储，DAO 层统一加盐哈希 |
 | 跨平台构建 | CMakePresets 覆盖三平台 × Debug/Release；后端由 vcpkg manifest 锁定依赖版本 |
@@ -83,7 +84,7 @@ flowchart TB
     Verify -->|"SETEX code_"| Redis
     Verify --> Mail
 
-    Status -->|"读写 utoken_ / logincount"| Redis
+    Status -->|"租约 sess_ / epoch_ + 实例表"| Redis
 
     Chat1 <-->|"gRPC 跨实例转发"| Chat2
     Chat1 --> MySQL
@@ -100,7 +101,7 @@ flowchart TB
 | --- | --- |
 | **GateServer** | HTTP 网关。暴露 `/get_verifycode`、`/user_register`、`/reset_pwd`、`/user_login`，向 VerifyServer / StatusServer 发起 RPC，自身不持有长连接 |
 | **VerifyServer** | 生成 4 位验证码，写入 Redis（`code_<email>`，TTL 600s），经 SMTP SSL 投递到用户邮箱 |
-| **StatusServer** | 登录时签发 UUID token 写入 Redis；按最小连接数挑一个 ChatServer，连 host/port/token 一起返回 |
+| **StatusServer** | 会话租约的唯一权威：签发 token、分配 epoch、按负载挑 ChatServer、维护实例注册表与在线位置 |
 | **ChatServer** | 维护 TCP 会话、校验 token、处理好友申请与文本消息；本实例直投，跨实例走 gRPC 转发 |
 | **ResourceServer** | 独立 TCP 服务，按 2 字节 ID + 4 字节长度收发；分段上传/下载头像，进度写 Redis（`file_upload_<md5>`，TTL 1h），最后一片落盘后更新 `user.icon` |
 
@@ -240,7 +241,7 @@ cd build/macos-clang/bin
 | --- | --- | --- | --- |
 | GateServer | HTTP | 8080 | 客户端 HTTP 接口 |
 | VerifyServer | gRPC | 50051 | 验证码下发 |
-| StatusServer | gRPC | 50052 | 状态路由 / 令牌校验 |
+| StatusServer | gRPC | 50052 | 会话租约 / 实例注册 / 在线位置 |
 | ChatServer `chatserver1` | TCP + gRPC | 8090 / 50055 | TCP 面向客户端，gRPC 面向服务间 |
 | ChatServer `chatserver2` | TCP + gRPC | 8091 / 50056 | 同上 |
 | ResourceServer | TCP | 9090 | 头像/文件分段上传与下载 |
@@ -272,7 +273,7 @@ cd build/macos-clang/bin
 | [05-配置参考](docs/05-configuration.md) | 全部 `config.ini` 段落与字段说明 |
 | [06-客户端](docs/06-client.md) | Qt 客户端模块划分、通信层、UI 层、资源与样式 |
 | [07-GateServer](docs/07-gate-server.md) | HTTP 网关实现细节 |
-| [08-StatusServer](docs/08-status-server.md) | 状态路由与令牌服务 |
+| [08-StatusServer](docs/08-status-server.md) | 会话租约、实例注册与故障语义 |
 | [09-ChatServer](docs/09-chat-server.md) | 长连接服务、会话管理、跨实例转发 |
 | [10-VerifyServer](docs/10-verify-server.md) | 验证码服务与 SMTP 发信 |
 | [11-已知限制](docs/11-known-limitations.md) | 技术债与改进方向 |
@@ -300,7 +301,7 @@ cd build/macos-clang/bin
 - 密码在 HTTP 链路上为可逆 XOR 变形，非加密传输；网关未启用 TLS。
 - Token 无有效期、无刷新与吊销机制。
 - 已有客户端心跳与服务端超时扫描；尚无断线重连。服务端已持久化消息，离线消息在下次登录补拉；已读回执尚未实现。
-- `StatusServer::Login` RPC 已实现但尚未被 ChatServer 调用（后者直接读 Redis 校验 token）。
+- 单端登录：新登录用更高 epoch 顶掉旧会话，客户端收到 1021(reason=1) 后必须重新输入密码。
 
 ---
 

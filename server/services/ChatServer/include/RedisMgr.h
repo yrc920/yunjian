@@ -37,11 +37,6 @@ public:
 	std::string HGet(const std::string& key, const std::string& hkey);
 	bool HDel(const std::string& key, const std::string& field); //删除哈希表key中字段field
 
-    //获取分布式锁，返回锁的唯一标识符，如果获取失败返回空字符串
-    std::string acquireLock(const std::string& lockName, int lockTimeout, int acquireTimeout);
-    //释放锁，只有持有锁的客户端才能释放锁，防止误删其他客户端的锁
-    bool releaseLock(const std::string& lockName, const std::string& identifier);
-	
 	void Close(); //关闭连接池, 释放资源
 
 private:

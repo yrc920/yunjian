@@ -47,6 +47,11 @@ enum ErrorCodes {
 	PasswdInvalid = 1009, //密码更新失败
 	TokenInvalid = 1010,   //Token失效
 	UidInvalid = 1011,  //uid无效
+	ServiceUnavailable = 1101, //状态服务暂时不可用，客户端可以稍后重试
+	SessionFenced = 1102, //会话已被更高 epoch 的新登录顶替
+	SessionExpired = 1103, //租约过期且未续租
+	InstanceUnknown = 1104, //实例未注册或注册已过期
+	TooManyRequests = 1105, //同一账号短时间内的登录次数超过上限
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -64,8 +69,22 @@ private:
 	std::function<void()> func_;
 };
 
-#define USERIPPREFIX  "uip_" //用户IP地址前缀
 #define USERTOKENPREFIX  "utoken_" //用户Token前缀
-#define IPCOUNTPREFIX  "ipcount_" //IP计数前缀
-#define USER_BASE_INFO "ubaseinfo_" //用户基础信息前缀
-#define LOGIN_COUNT  "logincount" //登录计数前缀
+#define SESSIONPREFIX "sess_" //会话租约前缀，值为 hash: sid/inst/epoch
+#define EPOCHPREFIX "epoch_" //每个 uid 的围栏令牌计数器，只增不减
+#define INSTANCEPREFIX "inst_" //实例注册信息前缀，值为 hash
+#define INSTANCE_SET "instances" //实例名集合，避免扫描全库
+
+//租约 90 秒、每 30 秒续租：连续错过两次才判定离线，能容忍一次网络抖动
+constexpr int LEASE_TTL_SECONDS = 90;
+constexpr int RENEW_INTERVAL_SECONDS = 30;
+//实例心跳随续租一起提交（30 秒一次）、90 秒过期：容忍两次遗漏，崩溃后不再分配新连接
+constexpr int INSTANCE_TTL_SECONDS = 90;
+constexpr int INSTANCE_HEARTBEAT_SECONDS = 30;
+//令牌 7 天有效，登录时刷新；过期后必须重新走密码登录
+constexpr int TOKEN_TTL_SECONDS = 7 * 24 * 3600;
+//单次批量查询上限，超过由调用方分批
+constexpr int MAX_BATCH_LOOKUP = 200;
+//同一 uid 在 10 秒内允许的登录次数，防止客户端重连 bug 造成互踢死循环
+constexpr int ALLOCATE_RATE_WINDOW_SECONDS = 10;
+constexpr int ALLOCATE_RATE_LIMIT = 5;

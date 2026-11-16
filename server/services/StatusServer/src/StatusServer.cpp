@@ -1,4 +1,5 @@
 #include "const.h"
+#include "ChatControlClient.h"
 #include "ConfigMgr.h"
 #include "StatusServiceImpl.h"
 
@@ -38,6 +39,8 @@ int main(int argc, char** argv) {
 		std::thread signal_thread([&io_context]() { io_context.run(); }); //单独运行信号处理，主线程在Wait中等待服务结束
 
 		server->Wait(); //等待服务器关闭
+		//先把已排队的踢人通知处理完，再释放 io_context
+		ChatControlClient::Inst().Shutdown();
 		io_context.stop();
         //信号线程引用了局部io_context，必须等线程退出后才能离开作用域，不能让线程访问已析构的对象
         signal_thread.join(); //停止io_context

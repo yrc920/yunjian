@@ -41,6 +41,7 @@ enum ErrorCodes {
 	EmailNotMatch = 1007, //重置密码时用户名与邮箱不匹配
 	PasswdUpFailed = 1008, //重置密码时写库失败
 	PasswdInvalid = 1009, //登录时邮箱与密码不匹配
+	VerifyTooFrequent = 1022, //验证码发送过于频繁
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -59,3 +60,12 @@ private:
 };
 
 #define CODEPREFIX "code_"
+
+//验证码发送限流：同一邮箱 60 秒冷却，每小时 5 次；同一 IP 每小时 20 次
+#define CODE_COOLDOWN_SECONDS 60
+#define CODE_RATE_WINDOW_SECONDS 3600
+#define CODE_EMAIL_HOURLY_LIMIT 5
+#define CODE_IP_HOURLY_LIMIT 20
+#define COOLDOWNPREFIX "code_cd_"
+#define RATEEMAILPREFIX "code_hr_"
+#define RATEIPPREFIX "code_ip_"

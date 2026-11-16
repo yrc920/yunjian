@@ -25,6 +25,11 @@ enum ErrorCodes {
 	GroupDenied = 1016, //当前角色没有这个操作权限（改群名、踢人、设管理员等）
 	GroupFull = 1017, //群成员已达上限
 	GroupMemberExists = 1018, //被邀请的人已经在群里
+	ServiceUnavailable = 1101, //状态服务暂时不可用，登录可以重试
+	SessionFenced = 1102, //会话已被更高 epoch 的新登录顶替
+	SessionExpired = 1103, //租约过期
+	InstanceUnknown = 1104, //本实例未注册或注册已过期
+	TooManyRequests = 1105, //短时间内的登录次数超过上限
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -128,18 +133,23 @@ enum MSG_IDS {
 	ID_GROUP_MEMBER_OP_REQ = 1066, //群成员操作：邀请、移除、设/撤管理员、退群、解散
 	ID_GROUP_MEMBER_OP_RSP = 1067, //成员操作回包
 	ID_NOTIFY_GROUP_CHANGED = 1068, //群资料/成员/免打扰或被移出/解散的推送
+	ID_LOGOUT_REQ = 1069, //主动登出：释放租约并吊销令牌
+	ID_LOGOUT_RSP = 1070, //登出结果，客户端收到后关闭连接
 };
 
-#define USERIPPREFIX  "uip_" //用户登录ip server的名字前缀
-#define USERTOKENPREFIX  "utoken_" //用户token的名字前缀
-#define IPCOUNTPREFIX  "ipcount_" //用户登录ip server的名字前缀
+#define USERTOKENPREFIX  "utoken_" //用户token的名字前缀，仅用于登录前的快速校验
 #define USER_BASE_INFO "ubaseinfo_" //用户基本信息的名字前缀
-#define LOGIN_COUNT  "logincount" //登录数量的名字
 #define NAME_INFO "nameinfo_" //用户名基本信息的名字前缀
-#define LOCK_PREFIX "lock_"
-#define USER_SESSION_PREFIX "usession_"
 
-#define LOCK_TIME_OUT 10 //分布式锁的持有时间
-#define ACQUIRE_TIME_OUT 5 //分布式锁的重试时间
-#define HEART_BEAT_INTERVAL 60 //心跳检测间隔
+//租约 90 秒，每 30 秒续租一次：漏一次仍在线，漏两次才被判定过期
+constexpr int LEASE_TTL_SECONDS = 90;
+constexpr int LEASE_RENEW_SECONDS = 30;
+//单次续租携带的会话数，避免一个请求体过大
+constexpr int LEASE_RENEW_BATCH = 200;
+//路由缓存：在线位置 30 秒、离线 5 秒，离线缓存短一些，对方刚上线就能看见
+constexpr int ROUTE_CACHE_SECONDS = 30;
+constexpr int ROUTE_NEGATIVE_CACHE_SECONDS = 5;
+constexpr int ROUTE_CACHE_MAX = 20000;
+
+#define HEART_BEAT_INTERVAL 30 //定时器周期：心跳检测、租约续期与实例上报共用
 #define HEART_THRESHOLD 20 //心跳阈值

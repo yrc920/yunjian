@@ -22,8 +22,8 @@ using message::ChatService;
 using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
-using message::KickUserReq;
-using message::KickUserRsp;
+using message::KickSessionReq;
+using message::KickSessionRsp;
 using message::NotifyImageUploadedReq;
 using message::NotifyImageUploadedRsp;
 using message::BroadcastProfileReq;
@@ -45,8 +45,9 @@ public:
 		const AuthFriendReq* request, AuthFriendRsp* response) override; //处理好友验证请求
 	Status NotifyTextChatMsg(ServerContext* context,
 		const TextChatMsgReq* request, TextChatMsgRsp* response) override; //处理文本聊天消息请求
-    Status NotifyKickUser(::grpc::ServerContext* context,
-        const KickUserReq* request, KickUserRsp* response) override; //接受rpc踢人请求
+    //租约被更高 epoch 顶替时，状态服务通知本实例关闭旧连接
+    Status KickSession(::grpc::ServerContext* context,
+        const KickSessionReq* request, KickSessionRsp* response) override;
     //资源服务器在聊天图片完整落盘后通知这里回写消息状态
     Status NotifyImageUploaded(ServerContext* context,
         const NotifyImageUploadedReq* request, NotifyImageUploadedRsp* response) override;

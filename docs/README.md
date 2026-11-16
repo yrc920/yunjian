@@ -13,7 +13,7 @@
 | 05 | [配置参考](05-configuration.md) | 各服务 `config.ini` 段落字段说明与常见变更场景 |
 | 06 | [客户端](06-client.md) | Qt/QML 客户端分层、网络层、QML 层设计、bridge 契约、资源与已知缺口 |
 | 07 | [GateServer](07-gate-server.md) | HTTP 网关：Beast 连接管理、URL 路由、四个接口的完整逻辑 |
-| 08 | [StatusServer](08-status-server.md) | 状态路由：token 签发、最小连接数选路、Login 校验 |
+| 08 | [StatusServer](08-status-server.md) | 会话租约与实例注册：epoch、顶号、位置查询、故障语义 |
 | 09 | [ChatServer](09-chat-server.md) | 长连接服务：会话生命周期、逻辑队列、好友与消息处理、跨实例 gRPC 转发 |
 | 10 | [VerifyServer](10-verify-server.md) | 验证码服务：编码生成、Redis 复用策略、SMTP SSL 发信与 CA 解析 |
 | 11 | [已知限制](11-known-limitations.md) | 技术债清单、风险点、改进优先级建议 |

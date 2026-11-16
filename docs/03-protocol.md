@@ -114,6 +114,8 @@
 | 1066 | `ID_GROUP_MEMBER_OP_REQ` | C → S | 邀请、移除、设/撤管理员、退群、解散 |
 | 1067 | `ID_GROUP_MEMBER_OP_RSP` | S → C | 成员操作回包 |
 | 1068 | `ID_NOTIFY_GROUP_CHANGED` | S → C | 群资料/成员/被移出/解散/系统消息推送 |
+| 1069 | `ID_LOGOUT_REQ` | C → S | 主动登出，释放租约并吊销令牌 |
+| 1070 | `ID_LOGOUT_RSP` | S → C | 登出结果，`revoked` 表示令牌是否已删除 |
 
 > 1012 与 1016 为历史预留空位，当前未使用。1045–1048 与资源服务器的 1037–1044 不冲突：
 > 后四者走 ResourceServer 的另一条连接，这里只用于 ChatServer 长连接。
@@ -414,6 +416,17 @@
 群消息未读按 `group_chat_member.last_read_message_id` 推进，`at_me` 由未读消息的
 `mentions` 是否含当前 uid 判断；群聊不做逐条已读。
 
+### 登出（1069）
+
+**1069 登出**：请求体为空对象 `{}`，身份只认当前会话，不接受客户端传入的 uid。
+
+服务端按 `session_id + epoch` 调 `StatusServer::LogoutSession`，只有当前租约的持有者
+才能删除 `sess_<uid>` 与 `utoken_<uid>`；被顶掉的旧连接即使发出登出，也不会影响新会话。
+**1070 回包** `{error, revoked}`：`revoked=true` 表示租约与令牌都已删除。
+
+状态服务不可用时本地照常关闭连接，令牌由 7 天 TTL 兜底；普通掉线、被踢与登录超时
+都不会触发登出，只有用户明确退出才发送这条消息。
+
 ---
 
 ### 资源服务器私有协议（Client ↔ ResourceServer）
@@ -475,7 +488,8 @@ Base URL 由客户端 `config.ini` 的 `[GateServer] host/port` 拼成 `http://<
 
 响应：`{"error": int, "email": string}`
 
-流程：gRPC 调用 `VerifyService.GetVerifyCode`；错误码直接透传（0/1/2/3，见错误码表）。
+流程：先按邮箱 60 秒冷却与邮箱/IP 小时配额限流（超限 1022），再 gRPC 调用
+`VerifyService.GetVerifyCode`，验证服务的错误码直接透传（0/1/2/3，见错误码表）。
 
 ### `POST /user_register`
 
@@ -540,55 +554,70 @@ rpc GetVerifyCode (GetVerifyReq) returns (GetVerifyRsp);
 ### `StatusService`（StatusServer，50052）
 
 ```proto
-rpc GetChatServer (GetChatServerReq) returns (GetChatServerRsp);
-rpc Login (LoginReq) returns (LoginRsp);
+rpc GetChatServer      (GetChatServerReq)      returns (GetChatServerRsp);
+rpc AllocateSession    (AllocateSessionReq)    returns (AllocateSessionRsp);
+rpc RenewSessions      (RenewSessionsReq)      returns (RenewSessionsRsp);
+rpc ReleaseSession     (ReleaseSessionReq)     returns (ReleaseSessionRsp);
+rpc LogoutSession      (LogoutSessionReq)      returns (LogoutSessionRsp);
+rpc LookupRoute        (LookupRouteReq)        returns (LookupRouteRsp);
+rpc BatchLookupRoute   (BatchLookupRouteReq)   returns (BatchLookupRouteRsp);
+rpc RegisterInstance   (RegisterInstanceReq)   returns (RegisterInstanceRsp);
+rpc UnregisterInstance (UnregisterInstanceReq) returns (UnregisterInstanceRsp);
+rpc DrainInstance      (DrainInstanceReq)      returns (DrainInstanceRsp);
 ```
 
 | 消息 | 字段 |
 | --- | --- |
-| `GetChatServerReq` | `uid` |
-| `GetChatServerRsp` | `error`, `host`, `port`, `token` |
-| `LoginReq` | `uid`, `token` |
-| `LoginRsp` | `error`, `uid`, `token` |
+| `GetChatServerReq` / `Rsp` | `uid` / `error`, `host`, `port`, `token`, `res_host`, `res_port` |
+| `AllocateSessionReq` | `uid`, `token`, `session_id`, `instance`, `device_class` |
+| `AllocateSessionRsp` | `error`, `epoch`, `lease_seconds`, `kicked_instance`, `kicked_uid` |
+| `SessionLeaseRef` | `uid`, `session_id`, `epoch` |
+| `RenewSessionsReq` / `Rsp` | `instance`, `items`, `conn_count`, `session_count` / `error`, `items`, `draining` |
+| `SessionLeaseResult` | `status`（0 正常 / 1 重新授予 / 2 被顶替 / 3 错误）, `uid`, `epoch`, `session_id` |
+| `ReleaseSessionReq` / `Rsp` | `uid`, `session_id`, `epoch` / `error`, `released` |
+| `LogoutSessionReq` / `Rsp` | `uid`, `session_id`, `epoch` / `error`, `revoked` |
+| `LookupRouteReq` / `Rsp` | `uid` / `error`, `online`, `instance`, `epoch` |
+| `BatchLookupRouteReq` / `Rsp` | `uids` / `error`, `entries` |
+| `RegisterInstanceReq` / `Rsp` | `name`, `host`, `rpc_host`, `client_port`, `rpc_port`, `capacity` / `error`, `heartbeat_seconds`, `draining` |
+| `DrainInstanceReq` / `Rsp` | `name`, `grace_seconds` / `error` |
 
-`GetChatServer` 的调用方是 GateServer；**`Login` 当前无人调用**
-（ChatServer 直接读 Redis `utoken_<uid>` 校验），见 `11-known-limitations.md`。
+`GetChatServer` 的调用方是 GateServer；其余由 ChatServer 与 ResourceServer 调用。
+所有响应都是 gRPC 成功、业务结果看 `error`：1101 状态服务不可用、1102 会话被顶替、
+1103 租约过期、1104 实例未注册、1105 登录过于频繁。
 
 ### `ChatService`（ChatServer 实例，50055 / 50056 …）
 
 ```proto
-rpc NotifyAddFriend    (AddFriendReq)   returns (AddFriendRsp);
-rpc RplyAddFriend      (RplyFriendReq)  returns (RplyFriendRsp);
-rpc SendChatMsg        (SendChatMsgReq) returns (SendChatMsgRsp);
-rpc NotifyAuthFriend   (AuthFriendReq)  returns (AuthFriendRsp);
-rpc NotifyTextChatMsg  (TextChatMsgReq) returns (TextChatMsgRsp);
-rpc NotifyKickUser     (KickUserReq)    returns (KickUserRsp);
+rpc NotifyAddFriend    (AddFriendReq)    returns (AddFriendRsp);
+rpc NotifyAuthFriend   (AuthFriendReq)   returns (AuthFriendRsp);
+rpc NotifyTextChatMsg  (TextChatMsgReq)  returns (TextChatMsgRsp);
+rpc KickSession        (KickSessionReq)  returns (KickSessionRsp);
 rpc NotifyImageUploaded(NotifyImageUploadedReq) returns (NotifyImageUploadedRsp);
+rpc BroadcastProfile   (BroadcastProfileReq)    returns (BroadcastProfileRsp);
+rpc NotifyProfileChanged(ProfileChangedReq)     returns (ProfileChangedRsp);
+rpc NotifyChatEvent    (ChatEventReq)    returns (ChatEventRsp);
+rpc NotifyGroupEvent   (GroupEventReq)   returns (GroupEventRsp);
 ```
 
 | 消息 | 字段 |
 | --- | --- |
 | `AddFriendReq` | `applyuid`, `name`, `desc`, `icon`, `nick`, `sex`, `touid` |
 | `AddFriendRsp` | `error`, `applyuid`, `touid` |
-| `RplyFriendReq` | `rplyuid`, `agree`, `touid` |
-| `RplyFriendRsp` | `error`, `rplyuid`, `touid` |
-| `SendChatMsgReq` | `fromuid`, `touid`, `message` |
-| `SendChatMsgRsp` | `error`, `fromuid`, `touid` |
 | `AuthFriendReq` | `fromuid`, `touid` |
 | `AuthFriendRsp` | `error`, `fromuid`, `touid` |
 | `TextChatMsgReq` | `fromuid`, `touid`, `repeated TextChatData textmsgs` |
 | `TextChatData` | `msgid`, `msgcontent` |
 | `TextChatMsgRsp` | `error`, `fromuid`, `touid`, `repeated TextChatData textmsgs` |
-| `KickUserReq` / `KickUserRsp` | `uid` / `error`, `uid` |
+| `KickSessionReq` / `Rsp` | `uid`, `epoch`, `reason`, `session_id` / `error`, `closed` |
 | `NotifyImageUploadedReq` | `message_id`, `sender`, `receiver`, `thread_id`, `name`, `client_msg_id`, `total_size` |
 | `NotifyImageUploadedRsp` | `error`, `message_id` |
 
 实际使用：`NotifyAddFriend`、`NotifyAuthFriend`、`NotifyTextChatMsg` 用于跨实例转发，
-`NotifyKickUser` 用于异地登录踢人；`NotifyImageUploaded` 由 **ResourceServer** 在聊天图片
-全部落盘后调用。ResourceServer 先按 Redis `uip_<receiver>` 找到接收方所在实例，
+`KickSession` 由 StatusServer 在异地登录时调用（按旧连接的 `session_id` 精确定位）；
+`NotifyImageUploaded` 由 **ResourceServer** 在聊天图片全部落盘后调用。
+ResourceServer 先向 StatusServer 查询接收方所在实例，
 ChatServer 收到后把 `chat_message.status` 从 0（未上传）改成 1（已上传），
 如果接收方在本实例在线，再推送 1033 通知其下载。
-`RplyAddFriend` 与 `SendChatMsg` **已定义但未实现调用**（服务实现中直接返回默认响应）。
 
 所有 RPC 使用 `grpc::InsecureServerCredentials()` / `InsecureChannelCredentials()`，
 即**服务间通信未加密**，适用于受信任的内网部署。
@@ -611,6 +640,7 @@ ChatServer 收到后把 `chat_message.status` 从 0（未上传）改成 1（已
 | 1007 | `EmailNotMatch` | 用户名与邮箱不匹配 | 改密 |
 | 1008 | `PasswdUpFailed` | 更新密码失败 | 改密 |
 | 1009 | `PasswdInvalid` | 邮箱或密码错误 | 登录 |
+| 1022 | `VerifyTooFrequent` | 验证码发送过于频繁 | 获取验证码 |
 | 1010 | `TokenInvalid` | Token 不匹配 | 长连接登录、StatusServer::Login |
 | 1011 | `UidInvalid` | uid 无效（Redis 无 token / 用户不存在） | 长连接登录、通知类消息 |
 | 1012 | `FileNotExists` | 服务器没有这次传输的记录 | 资源续传同步 |
@@ -624,7 +654,8 @@ ChatServer 收到后把 `chat_message.status` 从 0（未上传）改成 1（已
 | 1020 | `FileOffsetInvalid` | 请求偏移已超出文件范围 | 资源下载 |
 
 > `ChatServer/include/const.h` 在 1001–1009 的基础上追加了 1010/1011；
-> `ResourceServer/include/const.h` 追加了 1012–1020；StatusServer 复用同一份 1010/1011 定义。
+> `ResourceServer/include/const.h` 追加了 1012–1020；`GateServer` 为验证码限流加了 1022；
+> StatusServer 复用同一份 1010/1011 定义。错误码与消息 ID 是两套独立编号。
 > 各处 `ErrorCodes` 目前是**各自独立复制**的枚举，修改时需同步。
 
 ### 验证码服务错误码（`VerifyServer/include/const.h`，`VerifyCodes`）

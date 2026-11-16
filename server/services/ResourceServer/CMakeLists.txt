@@ -36,6 +36,7 @@ set(SERVER_SOURCES
     src/MysqlMgr.cpp           # MySQL 管理入口
     src/MysqlDao.cpp           # 用户资料查询与头像更新
     src/ChatGrpcClient.cpp     # 图片上传完成后通知 ChatServer
+    src/StatusGrpcClient.cpp   # 在线位置查询：接收方在哪台 ChatServer
 )
 
 set(SERVER_HEADERS

@@ -12,6 +12,62 @@ RedisMgr::RedisMgr()
 	_con_pool.reset(new RedisConPool(5, host.c_str(), atoi(port.c_str()), pwd.c_str()));
 }
 
+int RedisMgr::SetNxEx(const std::string& key, const std::string& value, int seconds)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr)
+		return -1;
+
+	auto* reply = (redisReply*)redisCommand(connect, "SET %s %s NX EX %d",
+		key.c_str(), value.c_str(), seconds);
+	if (reply == nullptr) {
+		_con_pool->returnConnection(connect);
+		return -1;
+	}
+
+	//键已存在时 Redis 返回 nil，表示这次没有抢到；其他状态一律按失败处理
+	int result = -1;
+	if (reply->type == REDIS_REPLY_STATUS &&
+		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0)) {
+		result = 1;
+	}
+	else if (reply->type == REDIS_REPLY_NIL) {
+		result = 0;
+	}
+
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return result;
+}
+
+long long RedisMgr::IncrWithTtl(const std::string& key, int seconds)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr)
+		return -1;
+
+	auto* reply = (redisReply*)redisCommand(connect, "INCR %s", key.c_str());
+	if (reply == nullptr) {
+		_con_pool->returnConnection(connect);
+		return -1;
+	}
+	if (reply->type != REDIS_REPLY_INTEGER) {
+		freeReplyObject(reply);
+		_con_pool->returnConnection(connect);
+		return -1;
+	}
+	const long long value = reply->integer;
+	freeReplyObject(reply);
+
+	//窗口键本身带小时桶，重复刷新 TTL 不会延长业务窗口，只保证陈旧键能自动回收
+	auto* expire = (redisReply*)redisCommand(connect, "EXPIRE %s %d", key.c_str(), seconds);
+	if (expire != nullptr)
+		freeReplyObject(expire);
+
+	_con_pool->returnConnection(connect);
+	return value;
+}
+
 bool RedisMgr::Get(const std::string& key, std::string& value)
 {
 	auto connect = _con_pool->getConnection(); //从连接池中获取一个可用的redisContext对象

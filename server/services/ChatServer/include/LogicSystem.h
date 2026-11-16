@@ -29,7 +29,7 @@ public:
     void SetServer(std::shared_ptr<CServer> pserver);
 	//资料变更后推给在线好友: 改资料成功后由逻辑层调用, 换头像时经 gRPC 从资源服务器触发
 	void NotifyFriendsProfileChanged(int uid);
-	//群事件广播：本实例成员直接投递，其他实例按 uip_ 聚合后走一次 gRPC。
+	//群事件广播：本实例成员直接投递，其他实例按路由查询结果聚合后走一次 gRPC。
 	//except_uid 用于跳过发送者；notify_id 是客户端协议号(1019/1033/1036/1057/1068)
 	void BroadcastGroupEvent(long long thread_id, const std::vector<int>& members,
 		int except_uid, const Json::Value& payload, int notify_id);
@@ -82,6 +82,8 @@ private:
 	void UpdateGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//群成员操作：邀请、移除、设/撤管理员、退群、解散
 	void GroupMemberOp(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
+	//主动登出：释放租约并吊销令牌，随后关闭连接
+	void LogoutHandler(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//群资料或成员变化后推送 1068：event 为 info/members/removed/dismissed
 	void PushGroupChanged(long long thread_id, const std::vector<int>& members, int except_uid,
 		const std::string& event, const Json::Value& detail);

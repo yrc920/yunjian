@@ -635,10 +635,18 @@ void TcpMgr::initHandlers()
         }
 
         auto uid = jsonObj["uid"].toInt();
-        qDebug() << "Receive offline Notify Success, uid is " << uid ;
-        //断开连接
-        //并且发送通知到界面
-        emit sig_notify_offline();
+        const int reason = jsonObj.value("reason").toInt(1);
+        qDebug() << "Receive offline Notify Success, uid is " << uid << " reason is " << reason;
+        //断开连接并通知界面；异地登录必须由界面提示用户，不能静默重连把新会话顶掉
+        emit sig_notify_offline(reason);
+    });
+
+    _handlers.insert(ID_LOGOUT_RSP,[this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        Q_UNUSED(data);
+        // 收到回包只通知会话层收尾，界面已经回到登录页
+        emit sig_logout_rsp();
     });
 
     _handlers.insert(ID_HEARTBEAT_RSP,[this](ReqId id, int len, QByteArray data){

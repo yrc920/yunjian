@@ -347,6 +347,12 @@ SessionService::SessionService() : _ready(false)
         _heartbeat.stop();
         FileService::GetInstance()->CloseResource(); //被顶下线后token已失效，资源服务也不能用
     });
+
+    // 登出回包可能被网络丢掉，超时后照常断开；服务端已经处理或令牌由 TTL 兜底
+    _logout_timer.setSingleShot(true);
+    _logout_timer.setInterval(1000);
+    connect(&_logout_timer, &QTimer::timeout, this, &SessionService::finishLogout);
+    connect(tcp, &TcpMgr::sig_logout_rsp, this, &SessionService::finishLogout);
 }
 
 SessionService::~SessionService()
@@ -383,9 +389,38 @@ void SessionService::connectToChat(const ServerInfo &info)
     FileService::GetInstance()->ConnectToResource(info); //与聊天并行建连，不阻塞登录
 }
 
+// 主动登出：先把登出帧交给服务端，收到回包或 1 秒超时后关闭连接。
+// 只有用户明确退出才走这里；被踢、断网、登录超时都不吊销令牌
+void SessionService::logout()
+{
+    if (_logging_out)
+        return;
+    if (!_ready) {
+        closeSession();
+        return;
+    }
+
+    _logging_out = true;
+    const QByteArray payload =
+        QJsonDocument(QJsonObject{}).toJson(QJsonDocument::Indented);
+    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOGOUT_REQ, payload);
+    _logout_timer.start();
+}
+
+void SessionService::finishLogout()
+{
+    if (!_logging_out)
+        return;
+    _logging_out = false;
+    _logout_timer.stop();
+    closeSession();
+}
+
 // 主动结束会话：停心跳、停超时、断开连接
 void SessionService::closeSession()
 {
+    _logout_timer.stop();
+    _logging_out = false;
     _timeout.stop();
     _heartbeat.stop();
     _ready = false;
@@ -422,7 +457,18 @@ void SessionService::onChatLoginFailed(int code)
 {
     if (!_connecting)
         return;
-    failAndReset(QStringLiteral("登录失败，错误码 %1").arg(code));
+
+    // 把服务端错误码翻成可操作的提示：能重试的与需要重新登录的要区分开
+    QString text;
+    switch (code) {
+    case 1010: text = QStringLiteral("登录凭证已失效，请重新登录"); break;
+    case 1011: text = QStringLiteral("账号不存在或已被注销"); break;
+    case 1101: text = QStringLiteral("登录服务暂时不可用，请稍后重试"); break;
+    case 1104: text = QStringLiteral("聊天服务正在启动，请稍后重试"); break;
+    case 1105: text = QStringLiteral("登录过于频繁，请稍后再试"); break;
+    default: text = QStringLiteral("登录失败，错误码 %1").arg(code); break;
+    }
+    failAndReset(text);
 }
 
 // 聊天服务器登录成功：会话就绪，开始定时心跳

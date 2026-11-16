@@ -80,6 +80,108 @@ bool RedisMgr::Set(const std::string& key, const std::string& value)
 	return true;
 }
 
+bool RedisMgr::SetEx(const std::string& key, int seconds, const std::string& value)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return false;
+
+	auto reply = (redisReply*)redisCommand(connect, "SETEX %s %d %s",
+		key.c_str(), seconds, value.c_str());
+	const bool ok = reply && reply->type == REDIS_REPLY_STATUS && reply->str
+		&& std::strcmp(reply->str, "OK") == 0;
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return ok;
+}
+
+redisReply* RedisMgr::Eval(const std::string& script, const std::vector<std::string>& keys,
+	const std::vector<std::string>& args)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return nullptr;
+
+	//EVAL 参数按 脚本 / key 数量 / keys / args 的顺序拼接，全部走 Argv 以支持任意长度的值
+	std::vector<const char*> argv;
+	std::vector<size_t> argvlen;
+	argv.push_back("EVAL"); argvlen.push_back(4);
+	argv.push_back(script.c_str()); argvlen.push_back(script.size());
+	const std::string key_count = std::to_string(keys.size());
+	argv.push_back(key_count.c_str()); argvlen.push_back(key_count.size());
+	for (const auto& key : keys) {
+		argv.push_back(key.c_str());
+		argvlen.push_back(key.size());
+	}
+	for (const auto& arg : args) {
+		argv.push_back(arg.c_str());
+		argvlen.push_back(arg.size());
+	}
+
+	auto reply = (redisReply*)redisCommandArgv(connect,
+		static_cast<int>(argv.size()), argv.data(), argvlen.data());
+	//reply 与连接都要归还：连接损坏时 returnConnection 会销毁并登记补池
+	_con_pool->returnConnection(connect);
+	return reply;
+}
+
+bool RedisMgr::SAdd(const std::string& key, const std::string& member)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return false;
+
+	auto reply = (redisReply*)redisCommand(connect, "SADD %s %s", key.c_str(), member.c_str());
+	const bool ok = reply && reply->type == REDIS_REPLY_INTEGER;
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return ok;
+}
+
+bool RedisMgr::SRem(const std::string& key, const std::string& member)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return false;
+
+	auto reply = (redisReply*)redisCommand(connect, "SREM %s %s", key.c_str(), member.c_str());
+	const bool ok = reply && reply->type == REDIS_REPLY_INTEGER;
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return ok;
+}
+
+bool RedisMgr::SMembers(const std::string& key, std::vector<std::string>& members)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return false;
+
+	auto reply = (redisReply*)redisCommand(connect, "SMEMBERS %s", key.c_str());
+	bool ok = reply && reply->type == REDIS_REPLY_ARRAY;
+	if (ok) {
+		members.clear();
+		for (size_t i = 0; i < reply->elements; ++i)
+			members.emplace_back(reply->element[i]->str);
+	}
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return ok;
+}
+
+bool RedisMgr::HGetAll(const std::string& key, std::map<std::string, std::string>& fields)
+{
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) return false;
+
+	auto reply = (redisReply*)redisCommand(connect, "HGETALL %s", key.c_str());
+	//键不存在时返回空数组，对调用方等价于"没有这份数据"
+	bool ok = reply && reply->type == REDIS_REPLY_ARRAY;
+	if (ok) {
+		fields.clear();
+		for (size_t i = 0; i + 1 < reply->elements; i += 2)
+			fields[reply->element[i]->str] = reply->element[i + 1]->str;
+	}
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return ok;
+}
+
 bool RedisMgr::LPush(const std::string& key, const std::string& value)
 {
 	auto connect = _con_pool->getConnection(); //从连接池中获取一个可用的redisContext对象
@@ -363,7 +465,9 @@ RedisMgr::~RedisMgr()
 RedisConPool::RedisConPool(size_t poolSize, const char* host, int port, const char* pwd)
 	: b_stop_(false), poolSize_(poolSize), host_(host), pwd_(pwd), port_(port) {
 	for (size_t i = 0; i < poolSize_; ++i) {
-		auto* context = redisConnect(host, port);//连接Redis服务器, 获取一个redisContext对象
+		//连接与读写都设超时：状态服务是登录链路的必经点，Redis 卡住时必须快速失败
+		timeval connect_timeout{ 1, 500000 };
+		auto* context = redisConnectWithTimeout(host, port, connect_timeout);
 		//如果连接对象为nullptr或者连接错误, 则说明连接失败, 释放连接对象并继续尝试连接下一个
 		if (context == nullptr || context->err != 0) {
 			//如果连接对象不为nullptr, 则说明连接对象存在但连接错误, 释放连接对象
@@ -372,6 +476,8 @@ RedisConPool::RedisConPool(size_t poolSize, const char* host, int port, const ch
 			}
 			continue;
 		}
+		timeval io_timeout{ 1, 500000 };
+		redisSetTimeout(context, io_timeout);
 
 		//执行AUTH命令进行密码认证
 		auto reply = (redisReply*)redisCommand(context, "AUTH %s", pwd_.c_str());
@@ -409,21 +515,16 @@ RedisConPool::RedisConPool(size_t poolSize, const char* host, int port, const ch
 
 }
 
-redisContext* RedisConPool::getConnection()
+redisContext* RedisConPool::getConnection(int timeout_ms)
 {
 	std::unique_lock<std::mutex> lock(mutex_); //加锁保护连接池的状态
-	//使用条件变量等待连接池中有可用的连接或者连接池被标记为停止
-	cond_.wait(lock, [this] {
-		//如果连接池被标记为停止, 则直接返回true, 保持锁定状态并继续执行
-		if (b_stop_)
-			return true;
-		//如果没有可用的连接, 返回false, 解锁并进入等待状态;
-		//如果有可用的连接, 返回true, 保持锁定状态并继续执行
-		return !connections_.empty();
+	//有界等待：Redis 变慢时不能让 gRPC 工作线程无限挂起，超时由调用方按失败处理
+	const bool ready = cond_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this] {
+		return b_stop_.load() || !connections_.empty();
 		});
-	//如果停止则直接返回空指针
-	if (b_stop_)
-		return  nullptr;
+	//线程池停止或等待超时都返回空指针，调用方必须检查
+	if (b_stop_ || !ready)
+		return nullptr;
 
 	//从连接池中获取一个可用的redisContext对象
 	auto* context = connections_.front();
@@ -484,7 +585,8 @@ void RedisConPool::checkThread()
 
 bool RedisConPool::reconnect()
 {
-	auto* context = redisConnect(host_.c_str(), port_);
+	timeval connect_timeout{ 1, 500000 };
+	auto* context = redisConnectWithTimeout(host_.c_str(), port_, connect_timeout);
     //如果连接对象为nullptr或者连接错误, 则说明连接失败
 	if (!context || context->err)
 	{
@@ -492,6 +594,8 @@ bool RedisConPool::reconnect()
 	        redisFree(context); //释放连接对象
 	    return false;
 	}
+	timeval io_timeout{ 1, 500000 };
+	redisSetTimeout(context, io_timeout);
 
     //执行AUTH命令进行密码认证
 	auto* reply = static_cast<redisReply*>(redisCommand(context, "AUTH %s", pwd_.c_str()));

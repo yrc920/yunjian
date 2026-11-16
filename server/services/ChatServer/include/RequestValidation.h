@@ -160,6 +160,9 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         return positiveId("touid") && root["touid"].asInt() != session_uid
             ? Success : UidInvalid;
     }
+    //登出没有业务字段，身份只认会话；必须放在操作者字段校验之前
+    if (id == ID_LOGOUT_REQ) return Success;
+
     //好友申请用uid表示申请人，同意好友、文本消息、群操作和心跳用fromuid表示操作者
     //请求中声明的操作者必须与服务端绑定的用户一致，不能仅凭客户端传来的uid执行操作
     const char* actor = id == ID_ADD_FRIEND_REQ ? "uid" : "fromuid";

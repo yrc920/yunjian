@@ -11,6 +11,12 @@ Port = 50052
 [SelfServer]
 Name = chatserver2
 Host = 0.0.0.0
+# 客户端经端口映射访问，必须填公网可达地址
+AdvertiseHost = __PUBLIC_HOST__
+# 实例间 RPC 走容器内部回环，不能用公网地址
+AdvertiseRpcHost = 127.0.0.1
+# 期望承载的会话数，状态服务按 sessions/capacity 选路
+Capacity = 1000
 Port = 8091
 RPCPort = 50056
 

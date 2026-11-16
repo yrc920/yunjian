@@ -4,6 +4,21 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "StatusGrpcClient.h"
+#include <ctime>
+
+namespace {
+
+//取客户端地址做 IP 维度限流；取不到时返回空串，调用方跳过该维度
+std::string ClientIp(const std::shared_ptr<HttpConnection>& connection)
+{
+	boost::system::error_code ec;
+	auto endpoint = connection->GetSocket().remote_endpoint(ec);
+	if (ec)
+		return {};
+	return endpoint.address().to_string();
+}
+
+} // namespace
 
 LogicSystem::LogicSystem() {
 	//注册一个GET请求的URL和对应的处理函数
@@ -42,6 +57,45 @@ LogicSystem::LogicSystem() {
 
 		//如果解析成功, 则从src_root中提取email字段的值
 		auto email = src_root["email"].asString();
+
+		//发送频控：先卡 60 秒冷却，再卡邮箱与 IP 的小时配额。
+		//Redis 不可用时按 RPC 失败返回，不能把限流器变成放行器
+		const long long hour_bucket = std::time(nullptr) / CODE_RATE_WINDOW_SECONDS;
+		const int cooldown = RedisMgr::GetInstance()->SetNxEx(
+			COOLDOWNPREFIX + email, "1", CODE_COOLDOWN_SECONDS);
+		if (cooldown <= 0) {
+			root["error"] = cooldown < 0 ? ErrorCodes::RPCFailed : ErrorCodes::VerifyTooFrequent;
+			root["email"] = email;
+			beast::ostream(connection->_response.body()) << root.toStyledString();
+			return true;
+		}
+
+		int rate_error = 0;
+		const long long email_count = RedisMgr::GetInstance()->IncrWithTtl(
+			RATEEMAILPREFIX + email + "_" + std::to_string(hour_bucket),
+			CODE_RATE_WINDOW_SECONDS);
+		if (email_count < 0)
+			rate_error = ErrorCodes::RPCFailed;
+		else if (email_count > CODE_EMAIL_HOURLY_LIMIT)
+			rate_error = ErrorCodes::VerifyTooFrequent;
+
+		const std::string ip = ClientIp(connection);
+		if (rate_error == 0 && !ip.empty()) {
+			const long long ip_count = RedisMgr::GetInstance()->IncrWithTtl(
+				RATEIPPREFIX + ip + "_" + std::to_string(hour_bucket),
+				CODE_RATE_WINDOW_SECONDS);
+			if (ip_count < 0)
+				rate_error = ErrorCodes::RPCFailed;
+			else if (ip_count > CODE_IP_HOURLY_LIMIT)
+				rate_error = ErrorCodes::VerifyTooFrequent;
+		}
+		if (rate_error != 0) {
+			root["error"] = rate_error;
+			root["email"] = email;
+			beast::ostream(connection->_response.body()) << root.toStyledString();
+			return true;
+		}
+
 		//给验证服务发送RPC请求, 获取验证码, 将RPC调用的结果存储在rsp中
 		GetVerifyRsp rsp = VerifyGrpcClient::GetInstance()->GetVerifyCode(email);
 		std::cout << "email is " << email << std::endl;
@@ -128,6 +182,9 @@ LogicSystem::LogicSystem() {
 			return true;
 		}
 
+		//验证码一次性使用：注册成功后立即删除，避免同一码再用于改密
+		RedisMgr::GetInstance()->Del(CODEPREFIX + email);
+
 		//如果用户不存在, 则将用户信息写入数据库, 返回注册成功的响应
         root["error"] = 0;
 		root["uid"] = uid;
@@ -213,6 +270,9 @@ LogicSystem::LogicSystem() {
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
+
+		//验证码一次性使用：改密成功后立即删除，避免同一码再次改密
+		RedisMgr::GetInstance()->Del(CODEPREFIX + email);
 
 		//如果更新密码成功, 则返回更新密码成功的响应
         std::cout << "succeed to update password" << std::endl;

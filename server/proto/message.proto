@@ -25,12 +25,28 @@ message GetVerifyRsp {
   string code = 3;
 }
 
-// 状态服务，由 GateServer 调用，负责给用户分配 ChatServer 并签发会话令牌
+// 状态服务：登录选路、会话租约、在线位置查询与实例注册。
+// 租约是"某个 uid 当前由哪条连接占用"的唯一权威，ChatServer 不再直接读写在线状态键。
 service StatusService {
-  // 按各实例在线人数为用户挑选一台 ChatServer，同时签发本次会话的 token
+  // 网关登录时调用：按实例负载挑选一台 ChatServer，签发本次会话的 token
   rpc GetChatServer (GetChatServerReq) returns (GetChatServerRsp) {}
-  // 校验 uid 与 token 是否匹配；当前登录链路由 ChatServer 自己比对 Redis，本方法暂无调用方
-  rpc Login (LoginReq) returns (LoginRsp) {}
+  // 登录成功后申请租约：校验 token、分配单调递增的 epoch、顶掉同账号旧会话
+  rpc AllocateSession (AllocateSessionReq) returns (AllocateSessionRsp) {}
+  // 批量续租，同时上报本实例连接数与在线会话数
+  rpc RenewSessions (RenewSessionsReq) returns (RenewSessionsRsp) {}
+  // 断开连接时释放租约；epoch 不匹配表示已被新会话顶替，只记录不删除
+  rpc ReleaseSession (ReleaseSessionReq) returns (ReleaseSessionRsp) {}
+  rpc LogoutSession (LogoutSessionReq) returns (LogoutSessionRsp) {}
+  // 查询单个用户的在线位置
+  rpc LookupRoute (LookupRouteReq) returns (LookupRouteRsp) {}
+  // 批量查询在线位置，群广播与资料推送使用
+  rpc BatchLookupRoute (BatchLookupRouteReq) returns (BatchLookupRouteRsp) {}
+  // ChatServer 启动时注册自身地址与容量，之后用心跳续期
+  rpc RegisterInstance (RegisterInstanceReq) returns (RegisterInstanceRsp) {}
+  // 实例主动下线，立即从可选列表中移除
+  rpc UnregisterInstance (UnregisterInstanceReq) returns (UnregisterInstanceRsp) {}
+  // 运维下线：停止向该实例分配新登录，已有会话在宽限期后自然迁走
+  rpc DrainInstance (DrainInstanceReq) returns (DrainInstanceRsp) {}
 }
 
 // 申请分配 ChatServer 的请求
@@ -55,40 +71,185 @@ message GetChatServerRsp {
   string res_port = 6;
 }
 
-// 校验登录态的请求
-message LoginReq {
-  // 待校验的用户 ID
+// 申请会话租约的请求
+message AllocateSessionReq {
+  // 已通过密码校验的用户 ID
   int32 uid = 1;
-  // 待校验的会话令牌，应与 Redis 中 utoken_<uid> 的值一致
+  // 网关签发、客户端带回的会话令牌，StatusServer 负责校验
   string token = 2;
+  // 本次 TCP 连接的 UUID，用来区分同一 uid 的不同连接
+  string session_id = 3;
+  // 发起申请的 ChatServer 实例名
+  string instance = 4;
+  // 设备类别，单端登录时恒为 0；预留多端登录，主键仍按 uid 收敛
+  int32 device_class = 5;
 }
 
-// 校验登录态的响应
-message LoginRsp {
-  // 业务错误码，0 表示成功；uid 不存在或 token 不匹配时返回对应错误码
+// 申请会话租约的响应
+message AllocateSessionRsp {
+  // 0 成功；TokenInvalid / UidInvalid / ServiceUnavailable 见错误码定义
   int32 error = 1;
-  // 校验通过时回显用户 ID
+  // 本次会话的围栏令牌，按 uid 单调递增，永不重复
+  int64 epoch = 2;
+  // 租约有效期（秒），ChatServer 按它的三分之一续租
+  int32 lease_seconds = 3;
+  // 被顶替的实例名，空表示此前没有在线会话
+  string kicked_instance = 4;
+  // 被顶替的目标 uid，便于日志对齐
+  int32 kicked_uid = 5;
+}
+
+// 单个会话的租约引用
+message SessionLeaseRef {
+  int32 uid = 1;
+  string session_id = 2;
+  int64 epoch = 3;
+}
+
+// 批量续租请求
+message RenewSessionsReq {
+  // 发起续租的实例名，必须已注册
+  string instance = 1;
+  repeated SessionLeaseRef items = 2;
+  // 本实例当前未过期的 TCP 连接数，含未登录连接
+  int32 conn_count = 3;
+  // 本实例当前已认证会话数，调度按它计算负载
+  int32 session_count = 4;
+}
+
+// 单条续租结果
+message SessionLeaseResult {
+  // 0 正常续期 / 1 租约已过期并重新授予 / 2 已被更高 epoch 顶替 / 3 参数或内部错误
+  int32 status = 1;
   int32 uid = 2;
-  // 校验通过时回显会话令牌
-  string token = 3;
+  // 当前生效的 epoch；status=1 时是重新授予的新值
+  int64 epoch = 3;
+  // 对应的连接 ID：同一 uid 可能同时存在新旧两条连接，结果必须按连接而不是 uid 匹配
+  string session_id = 4;
+}
+
+// 批量续租响应
+message RenewSessionsRsp {
+  int32 error = 1;
+  repeated SessionLeaseResult items = 2;
+  // 实例正在被运维下线，ChatServer 据此拒绝新登录并准备迁移
+  bool draining = 3;
+}
+
+// 释放租约的请求
+message ReleaseSessionReq {
+  int32 uid = 1;
+  string session_id = 2;
+  int64 epoch = 3;
+}
+
+// 释放租约的响应
+message ReleaseSessionRsp {
+  int32 error = 1;
+  // true 表示确实删除了租约；false 表示已被顶替或本就过期
+  bool released = 2;
+}
+
+// 显式登出：释放租约并吊销令牌
+message LogoutSessionReq {
+  int32 uid = 1;
+  string session_id = 2;
+  // 只有当前租约的持有者才能吊销令牌，避免被顶掉的旧连接影响新会话
+  int64 epoch = 3;
+}
+
+message LogoutSessionRsp {
+  int32 error = 1;
+  // 租约与令牌都已删除时为 true；会话已被顶替或已过期时为 false
+  bool revoked = 2;
+}
+
+// 单用户位置查询
+message LookupRouteReq {
+  int32 uid = 1;
+}
+
+message LookupRouteRsp {
+  int32 error = 1;
+  bool online = 2;
+  // 在线时为用户所在实例名
+  string instance = 3;
+  int64 epoch = 4;
+}
+
+// 批量位置查询
+message BatchLookupRouteReq {
+  repeated int32 uids = 1;
+}
+
+message RouteEntry {
+  int32 uid = 1;
+  bool online = 2;
+  string instance = 3;
+  int64 epoch = 4;
+}
+
+message BatchLookupRouteRsp {
+  int32 error = 1;
+  repeated RouteEntry entries = 2;
+}
+
+// 实例注册
+message RegisterInstanceReq {
+  // 实例名，必须存在于 StatusServer 的配置白名单
+  string name = 1;
+  // 客户端可访问的地址，随登录路由下发给客户端
+  string host = 2;
+  // 客户端连接的 TCP 端口
+  int32 client_port = 3;
+  // 实例间 gRPC 端口
+  int32 rpc_port = 4;
+  // 该实例期望承载的会话数，用于加权调度
+  int32 capacity = 5;
+  // 实例间 RPC 使用的主机名；容器部署时与客户端地址不同，留空表示与 host 相同
+  string rpc_host = 6;
+}
+
+message RegisterInstanceRsp {
+  int32 error = 1;
+  // 建议的心跳间隔（秒）
+  int32 heartbeat_seconds = 2;
+  bool draining = 3;
+}
+
+// 实例注销
+message UnregisterInstanceReq {
+  string name = 1;
+}
+
+message UnregisterInstanceRsp {
+  int32 error = 1;
+}
+
+// 实例下线
+message DrainInstanceReq {
+  string name = 1;
+  // 宽限时间（秒），期间已有会话仍可续租
+  int32 grace_seconds = 2;
+}
+
+message DrainInstanceRsp {
+  int32 error = 1;
 }
 
 // 聊天服务，仅在 ChatServer 实例之间互相调用，客户端不直接访问。
-// 每个实例既是服务端也是客户端：先查 Redis 的 uip_<uid> 得到对方实例名，再按配置里的地址发起调用。
+// 每个实例既是服务端也是客户端：先查本地路由缓存，未命中向 StatusServer 查询实例名，再发起调用。
 // 通用约定：RPC 调用成功不代表业务成功，具体结果看响应报文的 error 字段。
 service ChatService {
   // 跨实例通知：有人申请加你为好友，由申请人所在实例发给被申请人所在实例
   rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {}
-  // 预留：同意/拒绝好友申请。当前客户端走 TCP 的 ID_AUTH_FRIEND_REQ，由 AuthFriendApply 处理，未使用本方法
-  rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {}
-  // 预留：单条文本消息投递。当前聊天走 NotifyTextChatMsg，一次可携带多条消息，未使用本方法
-  rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {}
   // 跨实例通知：对方已通过你的好友申请，由通过方所在实例发给申请方所在实例
   rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}
   // 跨实例转发聊天消息，接收方不在本实例时使用
   rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
-  // 跨实例踢人：同账号在另一实例登录后，通知旧实例把该用户的旧连接踢下线
-  rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
+  // 租约被新登录顶替时由 StatusServer 调用，通知旧实例关闭连接。
+  // 这是尽力通知：即使丢失，旧连接也会在下一次续租收到 Fenced 后自行断开
+  rpc KickSession (KickSessionReq) returns (KickSessionRsp) {}
   // 资源服务器在聊天图片/视频/文件完整落盘后通知 ChatServer 把消息标记为已上传
   rpc NotifyImageUploaded (NotifyImageUploadedReq) returns (NotifyImageUploadedRsp) {}
   // 资源服务器改了头像后，让用户所在实例把新资料推给他的在线好友
@@ -149,44 +310,22 @@ message AddFriendRsp {
   int32 touid = 3;
 }
 
-// 预留：处理好友申请的请求
-message RplyFriendReq {
-  // 处理申请的一方，即原被申请人
-  int32 rplyuid = 1;
-  // 处理结果，true 为同意，false 为拒绝
-  bool agree = 2;
-  // 原申请人的用户 ID
-  int32 touid = 3;
+// 顶号通知：新会话拿到更高 epoch 后，旧连接必须立即退出
+message KickSessionReq {
+  int32 uid = 1;
+  // StatusServer 刚授予的新 epoch，旧实例用它判断本地连接是否已经过期
+  int64 epoch = 2;
+  // 1 同账号异地登录 / 2 登录过期 / 3 服务端下线，客户端按它选择提示语
+  int32 reason = 3;
+  // 被顶替的旧连接 ID：必须按连接而不是按 uid 定位，
+  // 否则新连接可能已经写入本地 uid 映射，踢人请求会打到新连接上
+  string session_id = 4;
 }
 
-// 预留：处理好友申请的响应
-message RplyFriendRsp {
-  // 业务错误码，0 表示成功
+message KickSessionRsp {
   int32 error = 1;
-  // 回显处理人 ID
-  int32 rplyuid = 2;
-  // 回显申请人 ID
-  int32 touid = 3;
-}
-
-// 预留：单条文本消息投递的请求
-message SendChatMsgReq {
-  // 发送方用户 ID
-  int32 fromuid = 1;
-  // 接收方用户 ID
-  int32 touid = 2;
-  // 文本内容
-  string message = 3;
-}
-
-// 预留：单条文本消息投递的响应
-message SendChatMsgRsp {
-  // 业务错误码，0 表示成功
-  int32 error = 1;
-  // 回显发送方 ID
-  int32 fromuid = 2;
-  // 回显接收方 ID
-  int32 touid = 3;
+  // true 表示本实例确实找到并关闭了该连接
+  bool closed = 2;
 }
 
 // 好友申请通过的请求
@@ -263,20 +402,6 @@ message TextChatMsgRsp {
   int64 thread_id = 5;
 }
 
-// 跨实例踢人的请求
-message KickUserReq {
-  // 需要被踢下线的用户 ID
-  int32 uid = 1;
-}
-
-// 跨实例踢人的响应
-message KickUserRsp {
-  // 业务错误码，0 表示成功；该用户已不在目标实例上时同样按成功返回
-  int32 error = 1;
-  // 回显被踢用户 ID
-  int32 uid = 2;
-}
-
 // 资源上传完成的请求：由 ResourceServer 在聊天图片全部落盘后发给 ChatServer
 message NotifyImageUploadedReq {
   // chat_message 自增主键，图片消息落库时已经返回给客户端并随分片带给 ResourceServer
@@ -287,7 +412,7 @@ message NotifyImageUploadedReq {
   int64 thread_id = 3;
   // 资源文件名
   string name = 4;
-  // 接收者 uid：资源服务器按它查 uip_<uid>，把推送发到对方所在的 ChatServer
+  // 接收者 uid：资源服务器按它向状态服务查询，把推送发到对方所在的 ChatServer
   int32 receiver = 5;
   // 发送方客户端消息 ID，接收方用它与历史消息去重
   string client_msg_id = 6;
@@ -307,7 +432,7 @@ message NotifyImageUploadedRsp {
 
 // 资料变更广播请求：资源服务器换了头像后，请该用户所在实例查好友并分发
 message BroadcastProfileReq {
-  // 改了资料的 uid，实例名由资源服务器按 uip_<uid> 找到
+  // 改了资料的 uid，实例名由资源服务器向状态服务查询
   int32 uid = 1;
 }
 

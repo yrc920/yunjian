@@ -22,14 +22,10 @@ using message::AddFriendRsp;
 using message::AuthFriendReq;
 using message::AuthFriendRsp;
 using message::GetChatServerRsp;
-using message::LoginRsp;
-using message::LoginReq;
 using message::ChatService;
 using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
-using message::KickUserReq;
-using message::KickUserRsp;
 using message::ProfileChangedReq;
 using message::ProfileChangedRsp;
 using message::ChatEventReq;
@@ -50,7 +46,6 @@ public:
 	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
 	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip,
 		const TextChatMsgReq& req, const Json::Value& rtvalue);
-    KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& req);
 	//把某人的资料变更推给对端实例上的好友, 一次携带多个 uid
 	ProfileChangedRsp NotifyProfileChanged(std::string server_ip, const ProfileChangedReq& req);
 	//会话事件（已读/撤回）转给对方所在实例

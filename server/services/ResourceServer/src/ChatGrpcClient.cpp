@@ -1,6 +1,6 @@
 #include "ChatGrpcClient.h"
 #include "ConfigMgr.h"
-#include "RedisMgr.h"
+#include "StatusGrpcClient.h"
 #include "const.h"
 #include <algorithm>
 #include <chrono>
@@ -53,7 +53,7 @@ bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int rece
 	const bool group = thread_type == 2;
 	const int target_uid = group ? sender : receiver;
 	std::string server_name;
-	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(target_uid), server_name))
+	if (!StatusGrpcClient::GetInstance()->LookupRoute(target_uid, server_name))
 		return false;
 
 	auto iter = _stubs.find(server_name);
@@ -91,7 +91,7 @@ bool ChatGrpcClient::BroadcastProfileChanged(int uid)
 		return false;
 
 	std::string server_name;
-	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(uid), server_name))
+	if (!StatusGrpcClient::GetInstance()->LookupRoute(uid, server_name))
 		return false;
 
 	auto iter = _stubs.find(server_name);

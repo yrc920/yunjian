@@ -1,6 +1,5 @@
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
-#include "DistLock.h"
 
 RedisMgr::RedisMgr()
 {
@@ -379,37 +378,6 @@ bool RedisMgr::HDel(const std::string& key, const std::string& field)
 
 	freeReplyObject(reply); //释放redisCommand执行后返回的redisReply所占用的内存
 	return success;
-}
-
-std::string RedisMgr::acquireLock(const std::string& lockName, int lockTimeout, int acquireTimeout)
-{
-    auto connect = _con_pool->getConnection(); //从连接池中获取一个可用的redisContext对象
-    if (connect == nullptr) {
-        return "";
-    }
-
-    Defer defer([&connect, this]() {
-        _con_pool->returnConnection(connect);
-    });
-
-    return DistLock::Inst().acquireLock(connect, lockName, lockTimeout, acquireTimeout);
-}
-
-bool RedisMgr::releaseLock(const std::string& lockName, const std::string& identifier)
-{
-    if (identifier.empty()) {
-        return true;
-    }
-    auto connect = _con_pool->getConnection();
-    if (connect == nullptr) {
-        return false;
-    }
-
-    Defer defer([&connect, this]() {
-        _con_pool->returnConnection(connect);
-        });
-
-    return DistLock::Inst().releaseLock(connect, lockName, identifier);
 }
 
 void RedisMgr::Close()

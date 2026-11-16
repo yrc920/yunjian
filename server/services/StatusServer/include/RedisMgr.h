@@ -5,6 +5,8 @@
 #include "const.h"
 #include <hiredis/hiredis.h>
 #include <queue>
+#include <vector>
+#include <map>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -20,8 +22,17 @@ public:
 
 	bool Get(const std::string& key, std::string& value); //获取key对应的value
 	bool Set(const std::string& key, const std::string& value); //设置key和value
+	bool SetEx(const std::string& key, int seconds, const std::string& value); //写入并设置过期时间
 	bool Del(const std::string& key); //删除key
 	bool ExistsKey(const std::string& key); //检查key是否存在
+
+	//执行 Lua 脚本，keys 与 args 原样传入；返回的 reply 由调用方 freeReplyObject，失败返回 nullptr
+	redisReply* Eval(const std::string& script, const std::vector<std::string>& keys,
+		const std::vector<std::string>& args);
+	bool SAdd(const std::string& key, const std::string& member); //集合添加成员
+	bool SRem(const std::string& key, const std::string& member); //集合移除成员
+	bool SMembers(const std::string& key, std::vector<std::string>& members); //读取集合全部成员
+	bool HGetAll(const std::string& key, std::map<std::string, std::string>& fields); //读取整个哈希
 
 	bool LPush(const std::string& key, const std::string& value); //将value插入到key对应的列表的头部
 	bool LPop(const std::string& key, std::string& value); //移除并返回key对应的列表的头部元素
@@ -47,8 +58,8 @@ class RedisConPool {
 public:
 	RedisConPool(size_t poolSize, const char* host, int port, const char* pwd);
 	~RedisConPool();
-	//从连接池中获取一个可用的redisContext对象, 如果连接池为空则等待直到有连接可用
-	redisContext* getConnection();
+	//从连接池中获取一个可用的redisContext对象；最多等待 timeout_ms，超时返回 nullptr
+	redisContext* getConnection(int timeout_ms = 2000);
 	redisContext* getConNonBlock(); //非阻塞获取连接, 如果连接池为空则返回nullptr
 	//将使用完的redisContext对象返回连接池, 使其可供其他线程使用
 	void returnConnection(redisContext* context);

@@ -8,20 +8,18 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "ChatServiceImpl.h"
+#include "StatusGrpcClient.h"
 
 int main()
 {
 	auto& cfg = ConfigMgr::Inst(); //获取配置管理器实例
-	auto server_name = cfg["SelfServer"]["Name"]; //从配置文件中获取自身服务器的名称
 	try {
 		auto pool = IOContextPool::GetInstance(); //获取IOContextPool单例实例
-		
-		RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, "0"); //将登录数设置为0
+
 		//启动时把数据库连接池建好: tags 补列这类一次性 DDL 在启动阶段完成,
 		//不落到第一个登录请求上, 失败也能在启动日志里看到
 		MysqlMgr::GetInstance();
-	    Defer derfer ([server_name]() {
-                RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name);
+	    Defer derfer ([]() {
                 RedisMgr::GetInstance()->Close();
             });
 
@@ -29,7 +27,6 @@ int main()
 	    auto port_str = cfg["SelfServer"]["Port"];
 	    //创建Cserver智能指针
 	    auto pointer_server = std::make_shared<CServer>(io_context, atoi(port_str.c_str()));
-	    pointer_server->StartTimer(); //启动定时器
 
 		//从配置文件中获取服务器的主机地址和RPC端口号，构成服务器的监听地址
 		std::string server_address(cfg["SelfServer"]["Host"] + ":" + cfg["SelfServer"]["RPCPort"]);
@@ -54,6 +51,10 @@ int main()
 			server->Wait();
 			});
 
+		//注册要放在 gRPC 服务开始监听之后：否则状态服务可能先分配登录，
+		//而踢人或消息转发会连到一个还没 listening 的端口
+		pointer_server->StartTimer();
+
 		//创建一个信号集，监听SIGINT和SIGTERM信号
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
 		//当接收到SIGINT或SIGTERM信号时
@@ -69,6 +70,8 @@ int main()
 		grpc_server_thread.join(); //等待grpc服务线程结束
 	    LogicSystem::GetInstance()->Stop(); //先排空业务线程，之后再清理会话和共享资源
 	    pointer_server->Stop(); //停止 accept/timer 并清理会话；析构时重复调用是安全的
+	    //停服会把每条连接的释放任务排进队列，这里等它们真正发给状态服务再退出
+	    StatusGrpcClient::GetInstance()->Shutdown();
 	    pool->StopAfterDrain(); //让已投递的socket关闭和取消回调先完成，再回收会话IO线程
 	    return 0;
 	}

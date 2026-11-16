@@ -161,35 +161,40 @@ ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer 把 `status
 | 键 | 类型 | 写入方 | 读取方 | TTL | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `code_<email>` | String | VerifyServer | GateServer | 600s | 验证码，`SETEX` 写入 |
-| `utoken_<uid>` | String | StatusServer | ChatServer | 无 | 登录令牌（UUID） |
-| `uip_<uid>` | String | ChatServer | ChatServer | 无 | 该用户当前所在实例名 |
+| `utoken_<uid>` | String | StatusServer | ChatServer、ResourceServer | 7d | 登录令牌（UUID），每次登录刷新，主动登出立即删除 |
+| `sess_<uid>` | Hash | StatusServer | StatusServer | 90s | 会话租约：`sid` / `inst` / `epoch`，续租刷新 |
+| `epoch_<uid>` | String | StatusServer | StatusServer | 无 | 围栏令牌计数器，取 `max(计数+1, 毫秒)`，只增不减 |
+| `inst_<name>` | Hash | StatusServer | StatusServer | 90s | 实例地址、客户端/RPC 端口、容量、负载、draining |
+| `instances` | Set | StatusServer | StatusServer | 无 | 已注册实例名，过期时清理 |
 | `ubaseinfo_<uid>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按 uid 缓存的用户资料；头像上传后由资源服务器刷新 |
 | `nameinfo_<name>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按用户名缓存的用户资料；头像上传后由资源服务器刷新 |
-| `logincount` | Hash | ChatServer | StatusServer | 无 | field=实例名，value=在线连接数 |
 | `file_upload_<md5>` | String(JSON) | ResourceServer | ResourceServer | 3600s | 分段上传进度：路径、文件名、uid、seq、总大小、已落盘大小、是否头像 |
 
-未使用的历史前缀：`ipcount_`（`IPCOUNTPREFIX`），当前代码中无引用。
+`sess_` / `epoch_` / `inst_` / `instances` 只由 StatusServer 写入；ChatServer 通过 RPC 查询，
+不再直接读写在线状态键。`utoken_` 由 StatusServer 写入，ChatServer 只读它做登录前的快速失败。
 
-### `logincount` 与最小连接数调度
+### 实例注册与加权选路
 
 ```mermaid
 sequenceDiagram
     participant CS as ChatServer
-    participant R as Redis
     participant S as StatusServer
+    participant R as Redis
 
-    Note over CS,R: 启动
-    CS->>R: HSET logincount #lt;self_name#gt; 0
+    Note over CS,S: 启动（gRPC 开始监听之后）
+    CS->>S: RegisterInstance(name, host, rpc_host, ports, capacity)
+    S->>R: HSET inst_#lt;name#gt; + SADD instances
 
-    Note over CS,R: 每 60 秒扫描会话
-    CS->>R: HSET logincount #lt;self_name#gt; 未过期连接数
+    Note over CS,S: 每 30 秒
+    CS->>S: RenewSessions(instance, sessions, conns)
+    S->>R: HSET inst_#lt;name#gt; sessions/conns + PEXPIRE 90s
 
     Note over S,R: 分配实例
-    S->>R: HGET logincount #lt;name#gt; 逐个实例
-    S->>S: 取最小值返回
+    S->>R: SMEMBERS instances + HGETALL inst_*
+    S->>S: 跳过 draining，按 sessions/capacity 取最小
 
-    Note over CS,R: 进程退出
-    CS->>R: HDEL logincount #lt;self_name#gt;
+    Note over CS,S: 进程退出
+    CS->>S: UnregisterInstance(name)
 ```
 
 设计要点：

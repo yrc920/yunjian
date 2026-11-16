@@ -19,7 +19,12 @@ Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
 
-# 图片上传完成后按 uip_<receiver> 选择实例：更新状态并把下载通知推给接收方
+# 在线位置只在状态服务里查，资源服务器不再直接读 Redis 的位置键
+[StatusServer]
+Host = 127.0.0.1
+Port = 50052
+
+# 实例名到 RPC 地址的映射：按状态服务返回的实例名找到对应通道
 [ChatServers]
 Servers = chatserver1,chatserver2
 

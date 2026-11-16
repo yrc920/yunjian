@@ -7,9 +7,9 @@
 **按职责切分服务，而不是按数据切分。** 五个进程各自拥有一份配置、线程池与连接池，
 任一进程崩溃只影响它的直接依赖方，不会连带其他服务已经建立的连接。
 
-**无状态网关 + 有状态聊天节点。** GateServer 不保存会话，只做协议转换与 RPC 编排；
-长连接状态放在 ChatServer 进程内存里，用户落在哪个实例记在 Redis（`uip_<uid>`），
-这样聊天节点可以随意加减。
+**无状态网关 + 有状态聊天节点 + 集中会话控制面。** GateServer 不保存会话，只做协议转换与 RPC 编排；
+长连接状态放在 ChatServer 进程内存里，用户落在哪个实例、由哪个 epoch 说了算，统一记在
+StatusServer 维护的租约表里（`sess_<uid>`），这样聊天节点可以随意加减。
 
 **进程内状态优先。** 同实例的消息直投，不落 Redis；消息正文统一写 MySQL，跨实例才走 gRPC。
 Redis 只承担跨节点寻址与登录计数，持久化交给 MySQL。
@@ -52,7 +52,7 @@ flowchart TB
     Gate -->|"gRPC GetChatServer"| Status
     Gate --> Store
     Verify -->|"SMTP 465 SSL"| Mail
-    Status -->|"HGET logincount"| Store
+    Status -->|"实例表 sess_/inst_"| Store
     Chat --> Store
     Res --> Store
 ```
@@ -96,7 +96,7 @@ RPC 调用与数据库访问，会阻塞该 IO 线程。这是当前实现的吞
 
 资源服务没有 ChatServer 那样的单消费者队列，而是两级分派：同一连接固定到一个 LogicWorker，
 同一文件固定到一个 FileWorker，既保证分片顺序，又让不同文件并行。聊天图片完整落盘后，
-FileWorker 按 `uip_<receiver>` 通过 gRPC 通知接收方所在的 ChatServer 更新状态并推送下载通知。详见
+FileWorker 向 StatusServer 查询接收方所在实例，再通过 gRPC 通知该 ChatServer 更新状态并推送下载通知。详见
 [13-ResourceServer](13-resource-server.md)。
 
 ### StatusServer / VerifyServer
@@ -154,20 +154,25 @@ sequenceDiagram
     G->>G: MysqlMgr::CheckPwd() Argon2id 校验 → uid
     G->>S: GetChatServer(uid)
     S->>S: 生成 UUID token
-    S->>R: SET utoken_#lt;uid#gt; #lt;token#gt;
-    S->>R: HGET logincount #lt;实例名#gt; 逐个比较
+    S->>R: SETEX utoken_#lt;uid#gt; 7 天 #lt;token#gt;
+    S->>R: SMEMBERS instances + HGETALL inst_*，按负载选路
     S-->>G: {host, port, token}
     G-->>C: {error=0, uid, token, host, port}
 
     C->>CS: TCP connect host:port
     C->>CS: 帧 [1005] {uid, token}
-    CS->>R: GET utoken_#lt;uid#gt; 比对 token
-    CS->>R: 获取用户登录锁，检查已有会话
-    CS->>R: SET uip_#lt;uid#gt; #lt;self#gt;
-    CS->>CS: UserMgr::SetUserSession(uid, session)
+    CS->>R: GET utoken_#lt;uid#gt; 快速校验（只读）
+    CS->>CS: 加载资料、好友与会话列表
+    CS->>S: AllocateSession(uid, token, session_id, instance)
+    S->>R: 写 sess_#lt;uid#gt;，epoch 取 max(计数+1, 毫秒)
+    S-->>CS: {epoch, lease_seconds, 被顶替的实例与 session_id}
+    S-)CS2: KickSession（异步，尽力通知旧连接）
+    CS->>CS: session->SetEpoch / UserMgr::SetUserSession
     CS-->>C: [1006] 用户资料 + 好友申请 + 好友列表
     Note over C: 登录成功，切换到聊天界面
 ```
+
+租约申请放在资料加载之后：新设备登录失败时不会把旧设备踢掉。
 
 ### 1.4.3 跨实例文本消息
 
@@ -183,7 +188,11 @@ sequenceDiagram
 
     A->>C1: [1017] {fromuid, touid, text_array}
     C1-->>A: [1018] 发送方回执
-    C1->>R: GET uip_#lt;touid#gt;
+    C1->>C1: SessionRouter 查缓存（30 秒）
+    opt 缓存未命中
+        C1->>S: LookupRoute(touid)
+        S-->>C1: {online, instance, epoch}
+    end
     alt 位置 == 本实例
         C1->>B: UserMgr::GetSession(touid) → 直投 [1019]
     else 位置 == 其他实例
@@ -197,12 +206,12 @@ sequenceDiagram
 | 场景 | 路径 | 说明 |
 | --- | --- | --- |
 | 同实例在线 | `UserMgr` 内存映射 → `CSession::Send()` | 零网络开销，逻辑线程内完成 |
-| 跨实例在线 | `uip_<uid>` 定位实例名 → gRPC Stub 连接池 → 对端 `ChatServiceImpl` → `UserMgr` → `Send()` | 一次 RPC 跳转 |
+| 跨实例在线 | `SessionRouter` 定位实例名 → gRPC Stub 连接池 → 对端 `ChatServiceImpl` → `UserMgr` → `Send()` | 一次 RPC 跳转 |
 | 目标离线 | 消息写 `chat_message` 后返回 | 下次登录按 `thread_id + message_id` 同步；不实时推送 |
 
-`uip_<uid>` 在登录时写入，在会话清理时不删除（仅解绑 `UserMgr`），
-因此离线用户仍会残留一个过期的位置值；由于离线判定最终以 `UserMgr::GetSession()` 返回空为准，
-残留值不会导致错误投递，但会造成一次无效的 gRPC 调用。
+位置权威在 StatusServer 的租约表里，ChatServer 只保留 30 秒的本地缓存（离线负缓存 5 秒）。
+缓存过期不会投错：对端找不到会话会返回 `UidInvalid`，发送方失效缓存后回源重试一次。
+群广播与资料推送走 `BatchLookupRoute`，一次查完全部成员。
 
 ## 1.6 连接池与资源池
 

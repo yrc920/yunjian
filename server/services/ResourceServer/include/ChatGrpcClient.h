@@ -1,9 +1,9 @@
 #pragma once
 // 资源服务器 -> ChatServer 的 gRPC 通知客户端
 //
-// 聊天图片全部落盘后，先按 Redis 的 uip_<receiver> 找到接收方所在的 ChatServer，
+// 聊天图片全部落盘后，先向 StatusServer 查询接收方所在的 ChatServer，
 // 再通知它更新消息状态并把下载信息推给接收方；接收方离线时调用方直接写库兜底。
-// 群聊没有单一接收方，改按 uip_<sender> 找到发送者所在实例，由它按成员广播。
+// 群聊没有单一接收方，改查发送者所在实例，由它按成员广播。
 
 #include <grpcpp/grpcpp.h>
 #include <memory>

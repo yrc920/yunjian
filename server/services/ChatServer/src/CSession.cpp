@@ -7,6 +7,7 @@
 #include <json/reader.h>
 #include "LogicSystem.h"
 #include "RedisMgr.h"
+#include "StatusGrpcClient.h"
 #include <cstdint>
 #include <limits>
 
@@ -41,6 +42,16 @@ int CSession::GetUserId()
 	return _user_uid;
 }
 
+void CSession::SetEpoch(long long epoch)
+{
+	_epoch = epoch;
+}
+
+long long CSession::GetEpoch() const
+{
+	return _epoch;
+}
+
 void CSession::Close() {
     //读失败、写失败和心跳超时都可能关闭同一连接，exchange返回旧值，保证只投递一次关闭操作
     if (_b_close.exchange(true)) {
@@ -53,6 +64,18 @@ void CSession::Close() {
         boost::system::error_code ec;
         self->_socket.close(ec); //使用error_code接收错误，避免在异步回调中抛出异常
     });
+}
+
+void CSession::CloseSoon(int delay_ms)
+{
+    //定时器由回调持有，连接提前销毁也不会留下悬空对象
+    auto self = shared_from_this();
+    auto timer = std::make_shared<boost::asio::steady_timer>(_socket.get_executor());
+    timer->expires_after(std::chrono::milliseconds(delay_ms));
+    timer->async_wait([self, timer](const boost::system::error_code& ec) {
+        if (!ec)
+            self->Close();
+        });
 }
 
 std::shared_ptr<CSession>CSession::SharedSelf() {
@@ -273,11 +296,12 @@ void CSession::AsyncReadHead(int /*total_len*/)
 	});
 }
 
-void CSession::NotifyOffline(int uid)
+void CSession::NotifyOffline(int uid, int reason)
 {
     Json::Value rtvalue; //创建一个Json对象，用于存储返回的结果
     rtvalue["error"] = ErrorCodes::Success;
     rtvalue["uid"] = uid;
+    rtvalue["reason"] = reason; //客户端按原因选择提示语，不能一律显示"网络断开"
 
     std::string return_str = rtvalue.toStyledString(); //将Json对象转换为字符串形式
     Send(return_str, ID_NOTIFY_OFF_LINE_REQ); //调用Send函数发送离线通知消息给客户端
@@ -375,43 +399,24 @@ void CSession::UpdateHeartbeat()
 
 void CSession::DealExceptionSession()
 {
-    //登录登记与断连清理共用会话锁，保证读取uid时登录流程已结束，避免刚清理完又登记为在线
+    //登录登记与断连清理共用会话锁，保证读取 uid 与 epoch 时登录流程已结束
     auto lifecycle = LockLifecycle();
     if (_cleanup_started.exchange(true)) return; //多条异常路径只允许执行一次清理
     auto self = shared_from_this();
     const int uid = GetUserId();
-    //未认证连接没有Redis登录状态，直接清理本地记录，不为uid为0的连接争抢同一把用户锁
-    if (uid == 0) {
-        _server->ClearSession(_session_id);
-        return;
-    }
-    auto uid_str = std::to_string(uid);
-    auto lock_key = LOCK_PREFIX + uid_str;
-    auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
 
-    //无论获取锁或查询Redis是否成功，都要移除本地会话；释放锁时使用identifier校验持有者
-    Defer defer([identifier, lock_key, self, this]() {
+    //先摘掉本地登记：即使状态服务不可达，本机也不会再把消息投给这条连接
+    Defer defer([self, this]() {
         _server->ClearSession(_session_id);
-        RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
         });
 
-    //没有拿到用户锁就不能删除共享登录状态，只执行上面的本地清理
-    if (identifier.empty())
+    //未认证连接没有租约，清理本地记录即可
+    if (uid == 0)
         return;
 
-    std::string redis_session_id = "";
-    auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
-    if (!bsuccess)
-        return;
-
-    if (redis_session_id != _session_id) {
-        //Redis已经指向另一条连接，可能是同实例或跨实例重新登录，不能删除新连接的状态
-        return;
-    }
-
-    RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
-    //清除用户登录信息
-    RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
+    //释放租约走异步队列，断连路径不等待状态服务；
+    //已被顶替时服务端按 epoch 拒绝，不会删掉新会话的租约
+    StatusGrpcClient::GetInstance()->ReleaseAsync(uid, _session_id, GetEpoch());
 }
 
 

@@ -114,8 +114,10 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	reply->set_error(ErrorCodes::Success);
 	reply->set_thread_id(request->thread_id());
 
-	//用户不在内存中则直接返回
+	//目标不在本实例：返回 UidInvalid 让发送方失效路由缓存并重试一次，
+	//不能一律回成功，否则用户换实例后这条消息会静默地只落库不推送
 	if (session == nullptr) {
+		reply->set_error(ErrorCodes::UidInvalid);
 		return Status::OK;
 	}
 
@@ -190,29 +192,35 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 	return true;
 }
 
-Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context,
-    const KickUserReq* request, KickUserRsp* reply)
+Status ChatServiceImpl::KickSession(::grpc::ServerContext* context,
+    const KickSessionReq* request, KickSessionRsp* reply)
 {
-    //此处不需要加锁，因为此grpc服务调用前已加锁，再次加锁会引发死锁
-    //查找用户是否在本服务器
-    auto uid = request->uid();
-    auto session = UserMgr::GetInstance()->GetSession(uid);
+    reply->set_error(ErrorCodes::Success);
+    reply->set_closed(false);
 
-    Defer defer([request, reply]() {
-        reply->set_error(ErrorCodes::Success);
-        reply->set_uid(request->uid());
-        });
+    const int uid = request->uid();
+    if (uid <= 0 || request->epoch() <= 0) {
+        reply->set_error(ErrorCodes::Error_Json);
+        return Status::OK;
+    }
 
-    //用户不在内存中则直接返回
+    //按 session_id 找旧连接：uid 映射可能已经被同实例的新登录覆盖，
+    //按 uid 找会把踢人请求打到新连接上，表现为旧连接一直在线
+    auto session = _p_server->GetSession(request->session_id());
     if (session == nullptr) {
         return Status::OK;
     }
 
-    //在内存中则直接发送通知对方
-    session->NotifyOffline(uid);
-    //清除旧的连接
-    _p_server->ClearSession(session->GetSessionId());
+    //防御：session_id 与 uid 必须对得上；本地 epoch 不小于通知里的 epoch 说明本地更新
+    if (session->GetUserId() != uid || session->GetEpoch() >= request->epoch()) {
+        return Status::OK;
+    }
 
+    //先发下线原因再延迟断开，保证客户端能收到"为什么被下线"
+    session->NotifyOffline(uid, request->reason());
+    session->CloseSoon(300);
+    _p_server->ClearSession(session->GetSessionId());
+    reply->set_closed(true);
     return Status::OK;
 }
 
@@ -247,7 +255,7 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
         message.message_id, message.sender_id, 1);
     response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
 
-    //接收方在本实例在线时立即推送；资源服务器已按 uip_<receiver> 选好目标实例。
+    //接收方在本实例在线时立即推送；资源服务器已向状态服务查好目标实例。
     //群聊没有单一接收方：按成员列表广播，发送者自己已经看到消息，跳过
     if (ok) {
         int thread_type = static_cast<int>(ThreadType::Private);
