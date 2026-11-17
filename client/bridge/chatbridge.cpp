@@ -12,6 +12,7 @@
 #include <QSaveFile>
 #include <QTimer>
 #include <QStringList>
+#include <QUrl>
 #include <QUuid>
 
 #include "chatservice.h"
@@ -25,6 +26,42 @@
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "userdata.h"
+
+namespace {
+struct SelectedMessage {
+    QString client_id;
+    qint64 server_id = 0;
+};
+
+QVector<SelectedMessage> parseSelectedMessages(const QVariantList &keys)
+{
+    QVector<SelectedMessage> selected;
+    selected.reserve(keys.size());
+    for (const QVariant &key : keys) {
+        const QVariantMap item = key.toMap();
+        SelectedMessage message;
+        message.client_id = item.value(QStringLiteral("msgId")).toString();
+        message.server_id = item.value(QStringLiteral("messageId")).toLongLong();
+        if (!message.client_id.isEmpty() || message.server_id > 0)
+            selected.push_back(message);
+    }
+    return selected;
+}
+
+bool isSelectedMessage(const std::shared_ptr<TextChatData> &message,
+                       const QVector<SelectedMessage> &selected)
+{
+    if (!message)
+        return false;
+    for (const auto &item : selected) {
+        if (item.server_id > 0 && message->_message_id == item.server_id)
+            return true;
+        if (!item.client_id.isEmpty() && message->_msg_id == item.client_id)
+            return true;
+    }
+    return false;
+}
+} // namespace
 
 ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
 {
@@ -824,11 +861,9 @@ void ChatBridge::showContactMode()
     clearFriendSearch();
     setMode(ContactMode);
 
-    // 第一次进入落在「新的朋友」；之后回到联系人区域沿用上次停留的页面
-    if (_pane != ApplyFriendPage && _pane != FriendInfoPage) {
-        _lastContactPane = ApplyFriendPage;
-        setPane(ApplyFriendPage);
-    }
+    //第一次进入停在联系人占位页；之后回到联系人区域沿用上次停留的资料/申请页
+    if (_pane != ApplyFriendPage && _pane != FriendInfoPage)
+        setPane(_lastContactPane);
 }
 
 void ChatBridge::showSettings()
@@ -836,7 +871,9 @@ void ChatBridge::showSettings()
     closeAddFriend();
     clearFriendSearch();
     setMode(SettingsMode);
-    setPane(UserInfoPage);
+    //设置区也保留上次停留的分栏：从通用切走再点设置，不应该强制跳回个人资料
+    if (_pane != UserInfoPage && _pane != GeneralPage)
+        setPane(_lastSettingsPane);
 }
 
 void ChatBridge::openGeneralSettings()
@@ -1014,6 +1051,8 @@ void ChatBridge::backFromProfile()
         setPane(ChatPage);
         return;
     }
+    //从联系人资料页返回：右栏回到联系人占位，之后切走再切回也不会重新弹开旧资料
+    _lastContactPane = EmptyPane;
     setMode(ContactMode);
     setPane(EmptyPane);
 }
@@ -1028,6 +1067,11 @@ void ChatBridge::deleteFriend(int uid)
     //失败时由回包处理把这一行恢复
     UserMgr::GetInstance()->RemoveFriend(uid);
     FriendService::GetInstance()->deleteFriend(uid);
+    //右栏正停在被删好友的资料上时退回联系人占位，避免左边已没有这个人、右边还留着旧页面
+    if (_pane == FriendInfoPage && _profile.value(QStringLiteral("uid")).toInt() == uid) {
+        _lastContactPane = EmptyPane;
+        setPane(EmptyPane);
+    }
 }
 
 // 打开确认：名字优先取备注，其次昵称，最后用户名
@@ -1183,6 +1227,120 @@ void ChatBridge::openThread(qint64 threadId, int kind, int peerUid)
         if (uid > 0)
             openChat(uid);
     }
+}
+
+//多选转发：按当前消息顺序逐条重发，文本用原文，媒体复用本机文件重新上传
+int ChatBridge::forwardMessages(const QVariantList &keys, qint64 targetThreadId,
+                                int targetKind, int targetPeerUid)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    auto data = mgr->ThreadData(_currentThreadId);
+    if (!data || targetThreadId <= 0)
+        return 0;
+    const auto selected = parseSelectedMessages(keys);
+    if (selected.isEmpty())
+        return 0;
+
+    ConversationRef target;
+    target._thread_id = targetThreadId;
+    target._kind = targetKind == static_cast<int>(ChatThreadKind::Group)
+        ? ChatThreadKind::Group : ChatThreadKind::Private;
+    target._peer_uid = target._kind == ChatThreadKind::Private ? targetPeerUid : 0;
+    if (target._kind == ChatThreadKind::Private && target._peer_uid <= 0)
+        return 0;
+
+    auto chat = ChatService::GetInstance();
+    //先快照选中的消息：sendText/sendImage 会往同一个 _chat_msgs 里追加，
+    //直接遍历原容器会在扩容时失效，表现为只转发了第一条
+    std::vector<std::shared_ptr<TextChatData>> chosen;
+    for (const auto &message : data->_chat_msgs) {
+        if (isSelectedMessage(message, selected))
+            chosen.push_back(message);
+    }
+
+    int sent = 0;
+    for (const auto &message : chosen) {
+        if (!message || message->_recalled)
+            continue;
+        if (message->_msg_type == ChatMsgType::System)
+            continue;
+
+        QString localPath = message->_local_path;
+        if (localPath.isEmpty() && message->_imageSource.startsWith(QStringLiteral("file:")))
+            localPath = QUrl(message->_imageSource).toLocalFile();
+
+        bool ok = false;
+        switch (message->_msg_type) {
+        case ChatMsgType::Text:
+            ok = !message->_msg_content.isEmpty()
+                && chat->sendText(target, message->_msg_content);
+            break;
+        case ChatMsgType::Image:
+            if (QFileInfo::exists(localPath)) {
+                const QString thumb = message->_imageSource.isEmpty()
+                    ? localPath : message->_imageSource;
+                ok = chat->sendImage(target, thumb, localPath,
+                                     message->_imageWidth, message->_imageHeight);
+            }
+            break;
+        case ChatMsgType::Video:
+            if (QFileInfo::exists(localPath))
+                ok = chat->sendVideo(target, localPath, message->_file_name,
+                                     message->_file_size);
+            break;
+        case ChatMsgType::File:
+            if (QFileInfo::exists(localPath))
+                ok = chat->sendFile(target, localPath, message->_file_name,
+                                    message->_file_size);
+            break;
+        default:
+            break;
+        }
+        if (ok)
+            ++sent;
+    }
+    return sent;
+}
+
+//本机删除：库与内存一起移除；服务端记录保持不动，重新安装/清库后仍可能同步回来
+int ChatBridge::deleteMessages(const QVariantList &keys)
+{
+    if (_currentThreadId <= 0)
+        return 0;
+    auto *mgr = UserMgr::GetInstance().get();
+    auto data = mgr->ThreadData(_currentThreadId);
+    if (!data)
+        return 0;
+    const auto selected = parseSelectedMessages(keys);
+    if (selected.isEmpty())
+        return 0;
+
+    QVector<qint64> serverIds;
+    QStringList clientIds;
+    QSet<qint64> serverSet;
+    QSet<QString> clientSet;
+    int removed = 0;
+    for (const auto &message : data->_chat_msgs) {
+        if (!isSelectedMessage(message, selected))
+            continue;
+        ++removed;
+        if (message->_message_id > 0) {
+            serverIds.push_back(message->_message_id);
+            serverSet.insert(message->_message_id);
+        }
+        if (!message->_msg_id.isEmpty()) {
+            clientIds.push_back(message->_msg_id);
+            clientSet.insert(message->_msg_id);
+        }
+    }
+    if (removed == 0)
+        return 0;
+
+    LocalStore::GetInstance()->DeleteMessages(_currentThreadId, serverIds, clientIds);
+    mgr->RemoveChatMsgs(_currentThreadId, serverSet, clientSet);
+    if (_messages)
+        _messages->reload();
+    return removed;
 }
 
 //上滑加载更早的消息：只读本地库，不走网络。
@@ -1553,8 +1711,23 @@ bool ChatBridge::sendParts(const QVariantList &parts)
             return false;
         }
     }
-    for (const QString &path : sent_uploads)
-        QFile::remove(path); //发送失败时保留文件，用户可以直接重试
+    //整批成功后删除输入区临时压缩图；但 source 与 upload 指向同一文件时不能删，
+    //否则气泡缩略图会立刻变成空白（调用方也可能把永久路径当 source 传入）
+    QSet<QString> keep_paths;
+    for (const QVariant &part : parts) {
+        const QVariantMap item = part.toMap();
+        if (item.value("kind").toString() != "image")
+            continue;
+        const QString source = item.value("source").toString();
+        if (source.startsWith(QStringLiteral("file:")))
+            keep_paths.insert(QUrl(source).toLocalFile());
+        else if (!source.isEmpty() && QFileInfo(source).isFile())
+            keep_paths.insert(source);
+    }
+    for (const QString &path : sent_uploads) {
+        if (!keep_paths.contains(path))
+            QFile::remove(path);
+    }
     return true;
 }
 

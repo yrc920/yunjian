@@ -11,6 +11,7 @@
 #include <QStandardPaths>
 #include <QTextDocument>
 #include <QUrl>
+#include <algorithm>
 
 namespace {
 constexpr qint64 MaxAvatarBytes = 4 * 1024 * 1024;
@@ -1206,6 +1207,44 @@ void UserMgr::AppendChatMsgs(const ConversationRef &conv,
     }
 
     emit ConversationChanged(thread_id, conv._peer_uid);
+}
+
+//本机删除：库已删完后同步内存窗口与列表预览，避免会话行继续显示已删正文
+void UserMgr::RemoveChatMsgs(qint64 thread_id, const QSet<qint64> &server_ids,
+                             const QSet<QString> &client_ids)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data)
+        return;
+
+    auto &msgs = data->_chat_msgs;
+    const size_t before = msgs.size();
+    msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
+                              [&](const std::shared_ptr<TextChatData> &msg) {
+                                  if (!msg)
+                                      return true;
+                                  return (msg->_message_id > 0
+                                          && server_ids.contains(msg->_message_id))
+                                      || (!msg->_msg_id.isEmpty()
+                                          && client_ids.contains(msg->_msg_id));
+                              }),
+               msgs.end());
+    if (msgs.size() == before)
+        return;
+
+    const int peer = FriendIdByThread(thread_id);
+    if (msgs.empty()) {
+        if (peer > 0) {
+            if (auto friend_info = _friend_map.value(peer)) {
+                friend_info->_last_msg.clear();
+                friend_info->_last_time = 0;
+            }
+        }
+        if (auto group = _group_map.value(thread_id))
+            group->_last_time = 0;
+    }
+    emit ConversationChanged(thread_id, peer);
 }
 
 //登录返回的会话列表是分页的，这里只负责把本页的会话合并进来。

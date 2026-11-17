@@ -250,6 +250,11 @@ public:
     Q_INVOKABLE void openGroup(qint64 threadId);
     //通知点击：按会话类型回到对应聊天；私聊优先用 peer uid，兼容还没有 thread_id 的老数据
     Q_INVOKABLE void openThread(qint64 threadId, int kind, int peerUid);
+    //多选转发：keys 是 {msgId, messageId} 列表，返回实际发出的条数
+    Q_INVOKABLE int forwardMessages(const QVariantList &keys, qint64 targetThreadId,
+                                    int targetKind, int targetPeerUid);
+    //本机删除：只删当前会话的本地记录与缓存，服务端与对方不受影响
+    Q_INVOKABLE int deleteMessages(const QVariantList &keys);
     // 撤回自己发的消息：服务端校验时间窗，成功后双方都换成提示行
     Q_INVOKABLE void recallMessage(qint64 messageId);
     // 重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新发送
@@ -413,7 +418,7 @@ private:
     QString _chatNotice;      //一次性提示，界面显示后调用 clearChatNotice 清掉
     int _notFriendUid = 0;    //最近一次因"对方不是好友"发送失败的会话对象
     int _reAddSentUid = 0;    //已经从这里发过验证的会话对象，提示改成"等待通过"
-    int _lastContactPane = ApplyFriendPage; //联系人区域的停留页，切回来时恢复
+    int _lastContactPane = EmptyPane; //联系人区域的停留页；默认占位，选中联系人后才切资料页
     bool _deleteConfirmVisible = false;
     bool _clearConfirmVisible = false;
     bool _clearConfirmDelete = false;

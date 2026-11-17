@@ -40,6 +40,7 @@ XiguChat 是一个分布式即时通讯系统。客户端用 Qt 6 实现登录�
 | 资源池化 | io_context 线程池（= CPU 核心数）、Redis 连接池、gRPC Stub 连接池 |
 | 口令安全 | libsodium Argon2id 哈希存储，DAO 层统一加盐哈希 |
 | 跨平台构建 | CMakePresets 覆盖三平台 × Debug/Release；后端由 vcpkg manifest 锁定依赖版本 |
+| 消息能力 | 文本/图片/视频/文件、撤回、已读、草稿、置顶/免打扰、本地搜索定位、多选转发与本机删除 |
 
 ---
 

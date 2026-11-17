@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import XiguChat
 
 // 窗口负责页面装载、窗口尺寸和会话中断提示。
@@ -14,6 +15,8 @@ Window {
     property int notifyKind: 1
     property int notifyPeer: 0
     property bool quitting: false
+    //上一个页面类型：登录→聊天、聊天→登录时用来判断是否需要重新居中
+    property string lastPage: ""
 
     onClosing: (close) => {
         if (!quitting && tray.available && shell.page === "chat") {
@@ -81,21 +84,43 @@ Window {
         // 切页前先解除上一页的固定尺寸，否则聊天页会被认证页的 420 宽卡住
         maximumWidth = 16777215
         maximumHeight = 16777215
+        const areaX = Screen.availableX || 0
+        const areaY = Screen.availableY || 0
+        const areaW = Screen.availableWidth > 0 ? Screen.availableWidth : Screen.width
+        const areaH = Screen.availableHeight > 0 ? Screen.availableHeight : Screen.height
+        const limitW = Math.max(420, areaW - 16)
+        const limitH = Math.max(480, areaH - 16)
+        const enteringChat = name === "chat" && lastPage !== "chat"
         if (name === "chat") {
-            minimumWidth = 960
-            minimumHeight = 680
-            width = Math.max(width, 1060)
-            height = Math.max(height, 740)
+            minimumWidth = Math.min(960, limitW)
+            minimumHeight = Math.min(680, limitH)
+            width = Math.min(Math.max(width, 1060), limitW)
+            height = Math.min(Math.max(height, 740), limitH)
+            //从认证页进入聊天时重新居中，避免登录后还要手动拖窗口；
+            //已经是聊天页时保留用户自己拉过的位置，但不能跑到屏幕外
+            if (enteringChat) {
+                x = areaX + Math.max(8, (areaW - width) / 2)
+                y = areaY + Math.max(8, (areaH - height) / 2)
+            } else {
+                if (x < areaX || x + width > areaX + areaW)
+                    x = areaX + Math.max(8, (areaW - width) / 2)
+                if (y < areaY || y + height > areaY + areaH)
+                    y = areaY + Math.max(8, (areaH - height) / 2)
+            }
         } else {
-            // 认证页高度按内容区分：登录 560、注册 740、重置 680
+            // 认证页高度按内容区分：登录 560、注册 740、重置 680；超出屏幕时由 AuthPage 内部滚动
             const h = name === "register" ? 740 : name === "reset" ? 680 : 560
+            const pageH = Math.min(h, limitH)
             minimumWidth = 420
-            minimumHeight = h
+            minimumHeight = pageH
             maximumWidth = 420
-            maximumHeight = h
+            maximumHeight = pageH
             width = 420
-            height = h
+            height = pageH
+            x = areaX + Math.max(0, (areaW - width) / 2)
+            y = areaY + Math.max(0, (areaH - height) / 2)
         }
+        lastPage = name
         loader.setSource(pageFile(name))
     }
     Component.onCompleted: showPage(shell.page)

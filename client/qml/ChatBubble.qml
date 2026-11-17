@@ -39,13 +39,15 @@ Item {
     readonly property real availableWidth: Math.max(1, Math.min(Theme.bubbleMaxWidth, width - 102))
 
     //优先用消息里保存的缩略图像素尺寸；没有尺寸时用固定占位，避免图片异步加载时
-    //反复改写气泡高度，长会话里会出现列表抖动和自动滚底竞争
+    //反复改写气泡高度，长会话里会出现列表抖动和自动滚底竞争。
+    //宽高必须同比例缩放，不能分别套最小值：长图/宽图会被拉成另一个比例，
+    //表现为聊天里的缩略图和点开后的原图不一致
     readonly property real sourceWidth: imageWidth > 0 ? imageWidth : 150
     readonly property real sourceHeight: imageHeight > 0 ? imageHeight : 96
     readonly property real pictureScale: Math.min(1,
         Math.min(imageMaxWidth / Math.max(1, sourceWidth), imageMaxHeight / Math.max(1, sourceHeight)))
-    readonly property real pictureWidth: Math.max(48, sourceWidth * pictureScale)
-    readonly property real pictureHeight: Math.max(36, sourceHeight * pictureScale)
+    readonly property real pictureWidth: Math.max(1, sourceWidth * pictureScale)
+    readonly property real pictureHeight: Math.max(1, sourceHeight * pictureScale)
 
     //气泡宽度直接取文档排完版的内容宽度：表情是等宽行内对象，混排、换行、
     //连续表情都算得准，不再用 token 原文宽度去猜。
@@ -211,7 +213,7 @@ Item {
         anchors.fill: pictureFrame
         source: root.imageSource
         visible: root.localImage //圆角由下面的蒙版裁出来，软件渲染时退化为直角
-        fillMode: Image.PreserveAspectCrop //尺寸与缩略图一致时等于原样铺满，尺寸缺失时也不会留白
+        fillMode: Image.PreserveAspectFit //框已按缩略图比例计算，Fit 不再裁切长图/宽图
         asynchronous: true
         cache: true
         layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software

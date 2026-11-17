@@ -260,6 +260,7 @@ set(QML_FILES
     qml/AddFriendPopover.qml
     qml/FriendSearchPopup.qml
     qml/MessageSearchPanel.qml
+    qml/ForwardDialog.qml
     qml/ChatPage.qml
     qml/FriendInfoPage.qml
     qml/GroupInfoPage.qml

@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QList>
+#include <QSet>
 #include <QSize>
 #include <memory>
 #include <singleton.h>
@@ -88,6 +89,9 @@ public:
     //按会话追加消息：单聊写好友对象里的容器，群聊写群对象；随后发出对应的变化通知。
     //conv 的 thread_id 允许为 0（客户端还没建单聊会话），此时按 peer_uid 回落到好友容器
     void AppendChatMsgs(const ConversationRef &conv, std::vector<std::shared_ptr<TextChatData>> msgs);
+    //本机批量删除：从当前窗口/预览里移除指定消息；库里的删除由调用方先完成
+    void RemoveChatMsgs(qint64 thread_id, const QSet<qint64> &server_ids,
+                        const QSet<QString> &client_ids);
     void SetChatThreads(const QJsonArray &threads); //登录时重置并写入全部会话映射
     void AppendChatThreads(const QJsonArray &threads); //追加会话映射, 不动已有消息
     void RefreshFriendList(); //仅通知列表重建, 数据已由调用方改好

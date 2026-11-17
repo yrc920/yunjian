@@ -756,6 +756,61 @@ void LocalStore::DeleteMessage(qint64 thread_id, const QString &client_msg_id)
     RefreshThreadPreview(thread_id);
 }
 
+//批量删除本机消息：服务端消息号与未回执消息的客户端 ID 分别处理，事务内一次完成
+void LocalStore::DeleteMessages(qint64 thread_id, const QVector<qint64> &server_ids,
+                                const QStringList &client_ids)
+{
+    if (!IsOpen() || thread_id <= 0 || (server_ids.isEmpty() && client_ids.isEmpty()))
+        return;
+
+    if (!_db.transaction()) {
+        qWarning() << "[localstore] delete transaction failed" << _db.lastError().text();
+        return;
+    }
+
+    bool ok = true;
+    for (const qint64 server_id : server_ids) {
+        if (server_id <= 0)
+            continue;
+        QSqlQuery query(_db);
+        query.prepare(QStringLiteral(
+            "DELETE FROM message WHERE thread_id = ? AND server_id = ?"));
+        query.addBindValue(thread_id);
+        query.addBindValue(server_id);
+        if (!query.exec()) {
+            logError(query);
+            ok = false;
+            break;
+        }
+    }
+    if (ok) {
+        for (const QString &client_id : client_ids) {
+            if (client_id.isEmpty())
+                continue;
+            QSqlQuery query(_db);
+            query.prepare(QStringLiteral(
+                "DELETE FROM message WHERE thread_id = ? AND client_msg_id = ?"));
+            query.addBindValue(thread_id);
+            query.addBindValue(textValue(client_id));
+            if (!query.exec()) {
+                logError(query);
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    if (!ok) {
+        _db.rollback();
+        return;
+    }
+    if (!_db.commit()) {
+        qWarning() << "[localstore] delete commit failed" << _db.lastError().text();
+        return;
+    }
+    RefreshThreadPreview(thread_id);
+}
+
 //清空一个会话的消息，但保留 sync_cursor 与 last_time：
 //游标留着，下一次登录不会把刚清掉的历史又全量拉回来；时间留着，会话行不会突然沉到列表底部
 void LocalStore::ClearThreadMessages(qint64 thread_id)

@@ -151,6 +151,9 @@ public:
     void MarkRecalled(qint64 server_id, const QString &recalled_text);
     void MarkReadTo(qint64 thread_id, int self_uid, qint64 up_to_message_id);
     void DeleteMessage(qint64 thread_id, const QString &client_msg_id);
+    //批量删除本机消息：优先按服务端消息号，未回执消息按客户端 ID；删完重算会话预览
+    void DeleteMessages(qint64 thread_id, const QVector<qint64> &server_ids,
+                        const QStringList &client_ids);
     //清空一个会话的消息但保留游标：清完不会在下一次登录又被全量拉回来
     void ClearThreadMessages(qint64 thread_id);
     //清空所有会话的消息，保留会话、好友、群与游标

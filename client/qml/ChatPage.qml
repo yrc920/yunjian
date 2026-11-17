@@ -66,6 +66,13 @@ Item {
     //消息搜索面板与搜索命中的一次性高亮
     property bool messageSearchOpen: false
     property double highlightMessageId: 0
+    //消息多选：selectedItems 里保存 {key, msgId, messageId}，key 用于去重
+    property bool selecting: false
+    property var selectedItems: []
+    readonly property int selectedCount: selectedItems.length
+    property bool forwardOpen: false
+    property bool deleteConfirmOpen: false
+    property var pendingDeleteItems: []
 
     //@ 成员选择：anchor 是当前 "@" 在文档里的位置，用户继续输入时当作过滤词
     property int mentionAnchor: -1
@@ -88,6 +95,11 @@ Item {
     onConversationKeyChanged: {
         composerBridge.switchConversation(input.textDocument, currentThreadId)
         messageSearchOpen = false
+        selecting = false
+        selectedItems = []
+        forwardOpen = false
+        deleteConfirmOpen = false
+        pendingDeleteItems = []
         closeMentionPicker()
         root.emojiOpen = false //换会话时收起面板，避免停在新会话上
         root.stickBottom = true
@@ -524,7 +536,8 @@ Item {
         anchors.right: parent.right
         anchors.top: root.blockedText.length > 0 ? blockedBar.bottom
                    : (root.hasNotice ? groupNoticeBar.bottom : header.bottom)
-        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
+        anchors.bottom: root.selecting ? selectionBar.top
+                        : (root.inputLocked ? readOnlyBar.top : composer.top)
         anchors.leftMargin: 28
         anchors.rightMargin: 28
         anchors.topMargin: 24
@@ -687,7 +700,7 @@ Item {
                     transferProgress: model.transferProgress
                     onImageClicked: root.openImage(model.messageId, model.imageSource)
                     onContextRequested: (x, y) => root.showMessageMenu(
-                        model.messageId, model.msgType, model.text, model.imageSource,
+                        model.messageId, model.msgId, model.msgType, model.text, model.imageSource,
                         mapToItem(root, x, y), model.canRecall)
                 }
             }
@@ -712,6 +725,48 @@ Item {
                     onContextRequested: (x, y) => root.showMediaMenu(
                         model.messageId, model.msgId, model.msgType, model.transferState,
                         model.fileName, mapToItem(root, x, y), model.canRecall)
+                }
+            }
+
+            //多选态覆盖整行：点任意位置切换选中，左侧圆形勾选给明确反馈
+            Item {
+                id: selectOverlay
+                anchors.fill: parent
+                visible: root.selecting
+                z: 40
+                readonly property bool checked: root.selectedItems.some(function(item) {
+                    const client = String(model.msgId || "")
+                    if (client.length > 0 && item.msgId === client)
+                        return true
+                    return item.messageId > 0 && item.messageId === model.messageId
+                })
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: selectOverlay.checked ? Theme.selected : "transparent"
+                    opacity: selectOverlay.checked ? 0.55 : 0
+                }
+                Rectangle {
+                    x: 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 20
+                    height: 20
+                    radius: 10
+                    color: selectOverlay.checked ? Theme.primary : Theme.panelBg
+                    border.width: 1
+                    border.color: selectOverlay.checked ? Theme.primary : Theme.line
+                    Text {
+                        anchors.centerIn: parent
+                        visible: selectOverlay.checked
+                        text: "✓"
+                        color: Theme.primaryText
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: root.toggleSelected(model.msgId, model.messageId)
                 }
             }
         }
@@ -1495,7 +1550,11 @@ Item {
     }
 
     //普通消息：目前提供复制，图片额外支持查看、复制图片、另存为与定位文件
-    function showMessageMenu(messageId, msgType, text, imageUrl, point, canRecall) {
+    function showMessageMenu(messageId, msgId, msgType, text, imageUrl, point, canRecall) {
+        const deleteItem = { text: "删除", action: () => root.requestDelete([
+            { key: root.messageKey(msgId, messageId), msgId: String(msgId || ""),
+              messageId: messageId }]) }
+        const selectItem = { text: "多选", action: () => root.beginSelecting() }
         // 撤回只在时间窗内、自己发的、未撤回的消息上出现，不做成灰掉的菜单项
         const recallItem = { text: "撤回", action: () => root.bridge.recallMessage(messageId) }
         if (msgType === 1) {
@@ -1509,7 +1568,9 @@ Item {
                 { text: "另存为", enabled: local,
                   action: () => root.beginImageSaveAs(messageId, imageUrl) },
                 { text: "打开文件夹", enabled: local,
-                  action: () => root.bridge.revealResource(messageId) }
+                  action: () => root.bridge.revealResource(messageId) },
+                selectItem,
+                deleteItem
             ]
             if (canRecall)
                 items.push(recallItem)
@@ -1518,7 +1579,9 @@ Item {
         }
         const items = [
             { text: "复制文字", enabled: text.length > 0,
-              action: () => root.bridge.copyText(text) }
+              action: () => root.bridge.copyText(text) },
+            selectItem,
+            deleteItem
         ]
         if (canRecall)
             items.push(recallItem)
@@ -1548,6 +1611,10 @@ Item {
         items.push({ text: "另存为", action: () => root.beginSaveAs(messageId, fileName) })
         items.push({ text: "复制文件名", enabled: fileName.length > 0,
                      action: () => root.bridge.copyText(fileName) })
+        items.push({ text: "多选", action: () => root.beginSelecting() })
+        items.push({ text: "删除", action: () => root.requestDelete([
+            { key: root.messageKey(msgId, messageId), msgId: String(msgId || ""),
+              messageId: messageId }]) })
         if (canRecall)
             items.push({ text: "撤回", action: () => root.bridge.recallMessage(messageId) })
         contextMenu.open(point.x, point.y, items)
@@ -1672,6 +1739,88 @@ Item {
         onAccepted: composerBridge.addAttachment(selectedFile, "video")
     }
 
+    // ---- 多选与转发/删除 ----
+    function messageKey(msgId, messageId) {        const client = String(msgId || "")
+        return client.length > 0 ? "c:" + client : "s:" + String(messageId || 0)
+    }
+    function isSelected(msgId, messageId) {
+        if (!selecting)
+            return false
+        const client = String(msgId || "")
+        for (let i = 0; i < selectedItems.length; ++i) {
+            const item = selectedItems[i]
+            if (item.key === messageKey(msgId, messageId))
+                return true
+            if (client.length > 0 && item.msgId === client)
+                return true
+            if (messageId > 0 && item.messageId === messageId)
+                return true
+        }
+        return false
+    }
+    function toggleSelected(msgId, messageId) {
+        const key = messageKey(msgId, messageId)
+        const client = String(msgId || "")
+        const next = selectedItems.slice()
+        for (let i = 0; i < next.length; ++i) {
+            const item = next[i]
+            if (item.key === key
+                || (client.length > 0 && item.msgId === client)
+                || (messageId > 0 && item.messageId === messageId)) {
+                next.splice(i, 1)
+                selectedItems = next
+                return
+            }
+        }
+        next.push({ key: key, msgId: client, messageId: messageId })
+        selectedItems = next
+    }
+    function beginSelecting() {
+        if (selecting)
+            return
+        emojiOpen = false
+        closeMentionPicker()
+        input.focus = false
+        selectedItems = []
+        selecting = true
+    }
+    function cancelSelecting() {
+        selecting = false
+        selectedItems = []
+        forwardOpen = false
+        deleteConfirmOpen = false
+        pendingDeleteItems = []
+    }
+    function requestDelete(items) {
+        if (!items || items.length === 0)
+            return
+        pendingDeleteItems = items.slice()
+        deleteConfirmOpen = true
+    }
+    function requestDeleteSelected() {
+        requestDelete(selectedItems)
+    }
+    function confirmDelete() {
+        const count = root.bridge.deleteMessages(pendingDeleteItems)
+        deleteConfirmOpen = false
+        pendingDeleteItems = []
+        cancelSelecting()
+        showActionMessage(count > 0 ? "已删除 " + count + " 条本机记录" : "没有可删除的消息")
+    }
+    function chooseForwardTarget(threadId, kind, uid) {
+        const requested = selectedCount
+        const count = root.bridge.forwardMessages(selectedItems, threadId, kind, uid)
+        forwardOpen = false
+        if (count > 0) {
+            showActionMessage(count === requested
+                ? "已转发 " + count + " 条消息"
+                : "已转发 " + count + " 条，" + (requested - count) + " 条未转发")
+            cancelSelecting()
+        } else {
+            showActionMessage("没有可转发的消息")
+        }
+    }
+
     FileDialog {
         id: fileDialog
         title: "发送文件"
@@ -1704,7 +1853,8 @@ Item {
     Rectangle {
         visible: root.actionMessage.length > 0
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
+        anchors.bottom: root.selecting ? selectionBar.top
+                        : (root.inputLocked ? readOnlyBar.top : composer.top)
         anchors.bottomMargin: 14
         width: toastLabel.width + 28
         height: 30
@@ -1719,6 +1869,157 @@ Item {
             text: root.actionMessage
             color: Theme.textSecondary
             font.pixelSize: 11
+        }
+    }
+
+    //多选工具条：固定在输入区上方，消息列表相应缩短，不遮住最后一条
+    Rectangle {
+        id: selectionBar
+        visible: root.selecting
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
+        height: 46
+        z: 30
+        color: Theme.panelAlt
+        Rectangle {
+            anchors.top: parent.top
+            width: parent.width
+            height: 1
+            color: Theme.line
+        }
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            text: "已选择 " + root.selectedCount + " 条"
+            font.pixelSize: 11
+            color: Theme.textSecondary
+        }
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 18
+            Text {
+                text: "取消"
+                font.pixelSize: 11
+                color: Theme.textSecondary
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.cancelSelecting()
+                }
+            }
+            Text {
+                text: "转发"
+                font.pixelSize: 11
+                color: root.selectedCount > 0 ? Theme.primary : Theme.textHint
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: root.selectedCount > 0
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.forwardOpen = true
+                }
+            }
+            Text {
+                text: "删除"
+                font.pixelSize: 11
+                color: root.selectedCount > 0 ? Theme.danger : Theme.textHint
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: root.selectedCount > 0
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.requestDeleteSelected()
+                }
+            }
+        }
+    }
+
+    ForwardDialog {
+        controller: root.bridge
+        open: root.forwardOpen
+        count: root.selectedCount
+        onTargetChosen: (threadId, kind, uid) => root.chooseForwardTarget(threadId, kind, uid)
+        onCloseRequested: root.forwardOpen = false
+    }
+
+    //本机删除确认：只删本机记录，避免用户误以为对方也会消失
+    Item {
+        visible: root.deleteConfirmOpen
+        anchors.fill: parent
+        z: 100
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.overlay
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.deleteConfirmOpen = false
+            }
+        }
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(340, parent.width - 40)
+            height: 176
+            radius: 10
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+            MouseArea { anchors.fill: parent }
+            Text {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
+                anchors.topMargin: 22
+                text: "删除 " + root.pendingDeleteItems.length + " 条消息？"
+                font.pixelSize: 14
+                font.bold: true
+                color: Theme.textPrimary
+            }
+            Text {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
+                anchors.topMargin: 52
+                text: "只删除本机记录，服务端与对方仍保留这些消息。"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+                color: Theme.textSecondary
+            }
+            Row {
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: 20
+                anchors.bottomMargin: 16
+                spacing: 18
+                Text {
+                    text: "取消"
+                    font.pixelSize: 12
+                    color: Theme.textSecondary
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.deleteConfirmOpen = false
+                            root.pendingDeleteItems = []
+                        }
+                    }
+                }
+                Text {
+                    text: "删除"
+                    font.pixelSize: 12
+                    color: Theme.danger
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.confirmDelete()
+                    }
+                }
+            }
         }
     }
 }

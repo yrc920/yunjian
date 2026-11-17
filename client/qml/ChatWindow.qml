@@ -12,6 +12,8 @@ Item {
     readonly property var chatBridge: bridge
 
     readonly property int sidebarWidth: 72
+
+
     readonly property int indexWidth: 280
     readonly property int listHeaderHeight: 78
 
@@ -59,8 +61,36 @@ Item {
         }
     }
 
+    //右栏实际可显示的页面：区域与页面不匹配、或资料/会话数据已失效时统一落占位页，
+    //避免出现"左边已经切走、右边还停着旧页面"的割裂状态
+    readonly property int visiblePane: {
+        const pane = bridge.pane
+        if (bridge.mode === ChatBridge.ChatMode) {
+            if (pane === ChatBridge.FriendInfoPage || pane === ChatBridge.ApplyFriendPage
+                || pane === ChatBridge.UserInfoPage || pane === ChatBridge.GeneralPage)
+                return ChatBridge.EmptyPane
+            if (pane === ChatBridge.ChatPage && bridge.currentThreadId <= 0)
+                return ChatBridge.EmptyPane
+            if (pane === ChatBridge.GroupInfoPage && bridge.currentThreadId <= 0)
+                return ChatBridge.EmptyPane
+        } else if (bridge.mode === ChatBridge.ContactMode) {
+            if (pane === ChatBridge.ChatPage || pane === ChatBridge.GroupInfoPage
+                || pane === ChatBridge.UserInfoPage || pane === ChatBridge.GeneralPage)
+                return ChatBridge.EmptyPane
+            if (pane === ChatBridge.FriendInfoPage
+                && (!bridge.profile || !(bridge.profile.uid > 0)))
+                return ChatBridge.EmptyPane
+        } else if (bridge.mode === ChatBridge.SettingsMode) {
+            if (pane !== ChatBridge.UserInfoPage && pane !== ChatBridge.GeneralPage)
+                return ChatBridge.EmptyPane
+        }
+        return pane
+    }
+
     // 右栏空态跟着区域走：会话区说"聊天"，联系人区说"联系人"，不能混用
     readonly property string emptyTitle: {
+        if (bridge.mode === ChatBridge.SettingsMode)
+            return "设置"
         if (bridge.mode === ChatBridge.ContactMode) {
             if (friendCount === 0)
                 return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
@@ -74,6 +104,8 @@ Item {
         return chatCount === 0 ? "还没有会话，去联系人看看" : "选一位朋友，聊聊吧"
     }
     readonly property string emptyAction: {
+        if (bridge.mode === ChatBridge.SettingsMode)
+            return ""
         if (bridge.mode === ChatBridge.ContactMode) {
             if (pendingCount > 0)
                 return "去处理"
@@ -619,8 +651,8 @@ Item {
                     id: convRow
                     width: conversationList.width
                     height: 76
-                    readonly property bool chosen: (bridge.pane === ChatBridge.ChatPage
-                        || bridge.pane === ChatBridge.GroupInfoPage)
+                    readonly property bool chosen: (root.visiblePane === ChatBridge.ChatPage
+                        || root.visiblePane === ChatBridge.GroupInfoPage)
                         && bridge.currentThreadId === model.threadId
                     readonly property bool group: model.kind === 2
                     activeFocusOnTab: true
@@ -906,7 +938,7 @@ Item {
                         width: parent.width - 24
                         height: 62
                         radius: 7
-                        color: bridge.pane === ChatBridge.ApplyFriendPage ? Theme.selected
+                        color: root.visiblePane === ChatBridge.ApplyFriendPage ? Theme.selected
                                : (newFriendArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
                         border.width: 1
                         border.color: activeFocus ? Theme.primary : "transparent"
@@ -1003,7 +1035,7 @@ Item {
                     id: friendRow
                     width: friendsList.width
                     height: 60
-                    readonly property bool chosen: bridge.pane === ChatBridge.FriendInfoPage
+                    readonly property bool chosen: root.visiblePane === ChatBridge.FriendInfoPage
                         && bridge.profile.uid === model.uid
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
@@ -1188,7 +1220,7 @@ Item {
                 anchors.centerIn: parent
                 width: Math.min(360, parent.width - 80)
                 spacing: 18
-                visible: bridge.pane === ChatBridge.EmptyPane
+                visible: root.visiblePane === ChatBridge.EmptyPane
                 PaperCompanion {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: 160
@@ -1217,7 +1249,7 @@ Item {
             ChatPage {
                 id: chatPage
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.ChatPage
+                visible: root.visiblePane === ChatBridge.ChatPage
                 bridge: bridge
                 currentUid: bridge.currentUid
                 currentThreadId: bridge.currentThreadId
@@ -1240,7 +1272,7 @@ Item {
             }
             FriendInfoPage {
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.FriendInfoPage
+                visible: root.visiblePane === ChatBridge.FriendInfoPage
                 profile: bridge.profile
                 onChatRequested: bridge.openChat(bridge.profile.uid)
                 onDeleteRequested: bridge.askDeleteFriend(bridge.profile.uid)
@@ -1254,13 +1286,13 @@ Item {
             }
             GroupInfoPage {
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.GroupInfoPage
+                visible: root.visiblePane === ChatBridge.GroupInfoPage
                 controller: bridge
                 onBackRequested: bridge.backToChat()
             }
             ApplyFriendPage {
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.ApplyFriendPage
+                visible: root.visiblePane === ChatBridge.ApplyFriendPage
                 applies: bridge.applies
                 onAuthRequested: (uid, name, desc) => dialogs.openAuthDialog(uid, name, desc)
                 onChatRequested: (uid) => bridge.openChat(uid)
@@ -1268,14 +1300,14 @@ Item {
             UserInfoPage {
                 id: userInfoPage
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.UserInfoPage
+                visible: root.visiblePane === ChatBridge.UserInfoPage
                 controller: bridge
                 onEditAvatarRequested: avatarEditor.chooseImage()
                 onEditProfileRequested: (field) => profileDialogs.openSelf(field)
             }
             GeneralSettingsPage {
                 anchors.fill: parent
-                visible: bridge.pane === ChatBridge.GeneralPage
+                visible: root.visiblePane === ChatBridge.GeneralPage
                 controller: bridge
             }
         }
