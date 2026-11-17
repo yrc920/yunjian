@@ -103,6 +103,7 @@ signals:
     void sig_group_changed(const QJsonObject &data); //1068 群资料/成员/被移出/解散
     void sig_notify_offline(int reason); //收到服务器踢人消息：1 异地登录 / 2 登录过期 / 3 服务端下线
     void sig_logout_rsp(); //登出回包：服务端已吊销租约与令牌
+    void sig_heartbeat_ok(); //心跳回包：会话层用它喂看门狗，发现"静默断网"
     void sig_connection_closed(); //连接断开的信号
 };
 

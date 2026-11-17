@@ -75,14 +75,14 @@ endif()
 # Qt 安装路径两种来源（任选其一，互不覆盖）：
 #  1) Qt Creator：选择本机 Qt 6.5 Kit（三平台通用），Kit 自动注入 CMAKE_PREFIX_PATH
 #  2) 命令行/VSCode：QT_ROOT 环境变量
-find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
+find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Widgets Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
 if(NOT Qt6_FOUND AND DEFINED ENV{QT_ROOT})
     list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT}")
-    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Widgets Network Sql Quick QuickControls2 QuickDialogs2 Multimedia)
 endif()
 if(NOT Qt6_FOUND)
     message(FATAL_ERROR
-        "找不到 Qt 6.5（Core/Gui/Network/Quick/QuickControls2/QuickDialogs2），两种方式任选其一：\n"
+        "找不到 Qt 6.5（Core/Gui/Widgets/Network/Quick/QuickControls2/QuickDialogs2），两种方式任选其一：\n"
         "  1) Qt Creator：选择本机 Qt 6.5 Kit 打开工程\n"
         "  2) 命令行/VSCode：设置 QT_ROOT 环境变量\n"
         "       macOS/Linux: export QT_ROOT=~/Qt/6.5.3/macos\n"
@@ -192,6 +192,7 @@ set(BRIDGE_SOURCES
     bridge/messagetext.cpp
     bridge/chatbridge.cpp
     bridge/imagecropper.cpp
+    bridge/traycontroller.cpp
 )
 set(BRIDGE_HEADERS
     bridge/shellbridge.h
@@ -207,6 +208,7 @@ set(BRIDGE_HEADERS
     bridge/messagetext.h
     bridge/chatbridge.h
     bridge/imagecropper.h
+    bridge/traycontroller.h
 )
 
 # ------------------------------------------------------------
@@ -257,6 +259,7 @@ set(QML_FILES
     qml/SearchField.qml
     qml/AddFriendPopover.qml
     qml/FriendSearchPopup.qml
+    qml/MessageSearchPanel.qml
     qml/ChatPage.qml
     qml/FriendInfoPage.qml
     qml/GroupInfoPage.qml
@@ -292,6 +295,7 @@ qt_add_qml_module(xiguchat
 target_link_libraries(xiguchat PRIVATE
     xiguchat_core
     Qt6::Gui
+    Qt6::Widgets
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::QuickDialogs2

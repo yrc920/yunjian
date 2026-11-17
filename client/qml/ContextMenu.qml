@@ -6,6 +6,7 @@ Item {
     id: root
 
     property var items: []
+    property int activeIndex: -1
     visible: false
     z: 600
     focus: visible
@@ -14,6 +15,7 @@ Item {
         items = list || []
         if (items.length === 0)
             return
+        activeIndex = 0
         panel.x = Math.max(8, Math.min(px, width - panel.width - 8))
         const below = py + panel.height + 8 <= height
         panel.y = below ? py : Math.max(8, py - panel.height)
@@ -24,9 +26,38 @@ Item {
     function close() {
         visible = false
         items = []
+        activeIndex = -1
+    }
+
+    function move(delta) {
+        if (items.length === 0)
+            return
+        let next = activeIndex
+        for (let i = 0; i < items.length; ++i) {
+            next = (next + delta + items.length) % items.length
+            if (items[next].enabled !== false)
+                break
+        }
+        activeIndex = next
+    }
+
+    function activate(index) {
+        if (index < 0 || index >= items.length)
+            return
+        const item = items[index]
+        if (!item || item.enabled === false)
+            return
+        const action = item.action
+        close()
+        if (action)
+            action()
     }
 
     Keys.onEscapePressed: close()
+    Keys.onUpPressed: move(-1)
+    Keys.onDownPressed: move(1)
+    Keys.onReturnPressed: activate(activeIndex)
+    Keys.onEnterPressed: activate(activeIndex)
 
     MouseArea {
         anchors.fill: parent
@@ -57,7 +88,8 @@ Item {
                     width: column.width
                     height: 31
                     radius: 5
-                    color: itemArea.containsMouse && modelData.enabled !== false
+                    readonly property bool highlighted: index === root.activeIndex
+                    color: (itemArea.containsMouse || highlighted) && modelData.enabled !== false
                         ? Theme.panelAlt : "transparent"
                     opacity: modelData.enabled === false ? 0.4 : 1
 
@@ -79,12 +111,8 @@ Item {
                         hoverEnabled: true
                         enabled: modelData.enabled !== false
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            const action = modelData.action
-                            root.close()
-                            if (action)
-                                action()
-                        }
+                        onEntered: root.activeIndex = index
+                        onClicked: root.activate(index)
                     }
                 }
             }

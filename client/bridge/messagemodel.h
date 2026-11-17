@@ -67,6 +67,10 @@ public:
 
     // 切换到某个会话；thread_id 为 0 时清空。peer_uid 只在单聊里有值
     void setConversation(qint64 thread_id, int kind, int peer_uid);
+    //消息窗口被按消息号重新装载（搜索结果跳转）后强制刷新整表
+    void reload();
+    //搜索结果跳转：按服务端消息号找行，找不到返回 -1
+    Q_INVOKABLE int rowForMessage(qint64 message_id) const;
 
 signals:
     void countChanged();

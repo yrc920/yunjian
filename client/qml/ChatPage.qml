@@ -23,6 +23,8 @@ Item {
     readonly property bool isGroup: currentKind === 2
     //已离开的群只剩历史：不再提供资料入口，也不展示公告
     readonly property int groupLeftState: isGroup && groupInfo ? (groupInfo.leftState || 0) : 0
+    //被移出或解散后输入区整体关闭，避免"还能打字但发不出去"的假交互
+    readonly property bool inputLocked: isGroup && groupLeftState > 0
     readonly property bool hasNotice: isGroup && groupLeftState === 0 && groupInfo
         && String(groupInfo.notice || "").length > 0
     signal sendRequested(var parts)
@@ -37,6 +39,9 @@ Item {
     property bool reAddOpen: false
     property string reAddDraft: ""
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
+    //停在底部之外时新到的消息条数：底部浮签用它提示，不把用户强行拉回末尾
+    property int pendingNew: 0
+    property int lastMessageCount: 0
     // 上滑加载更早消息：插入头部会让内容高度突然变大，这段时间按差值补偿 contentY，
     // 把用户正在看的那一条按在原地，而不是被新插入的内容顶下去
     property bool prepending: false
@@ -44,6 +49,9 @@ Item {
     // 刚切进会话的一小段时间：模型在重建、图片在加载，contentY 会被反复改写。
     // 这段时间内不改写 stickBottom，并持续贴底，避免"打开会话停在第一条"。
     property bool settling: false
+    //搜索结果跳转期间禁止自动贴底与内容高度变化触发的回尾逻辑
+    property bool jumping: false
+    property int jumpRow: -1
 
     readonly property bool hasAttachment: composerBridge.hasAttachment
     readonly property int headerHeight: 78
@@ -55,6 +63,9 @@ Item {
 
     property int saveAsMessageId: 0
     property string actionMessage: ""
+    //消息搜索面板与搜索命中的一次性高亮
+    property bool messageSearchOpen: false
+    property double highlightMessageId: 0
 
     //@ 成员选择：anchor 是当前 "@" 在文档里的位置，用户继续输入时当作过滤词
     property int mentionAnchor: -1
@@ -76,25 +87,46 @@ Item {
     // 草稿按 thread_id 存，群聊与单聊用同一套键，不会互相串
     onConversationKeyChanged: {
         composerBridge.switchConversation(input.textDocument, currentThreadId)
+        messageSearchOpen = false
         closeMentionPicker()
         root.emojiOpen = false //换会话时收起面板，避免停在新会话上
         root.stickBottom = true
+        root.pendingNew = 0
         root.settling = true
-        root.prepping = false
+        root.jumping = false
+        root.jumpRow = -1
+        jumpTimer.stop()
+        root.prepending = false
         root.prependHeight = 0
         settleTimer.restart()
+        root.lastMessageCount = root.messages ? root.messages.count : 0
+        if (root.bridge)
+            root.bridge.setChatAtBottom(true)
         Qt.callLater(messageList.positionViewAtEnd)
     }
     Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentThreadId)
-    onVisibleChanged: if (visible) input.forceActiveFocus()
+    onVisibleChanged: if (visible && !inputLocked) input.forceActiveFocus()
+    onInputLockedChanged: {
+        if (inputLocked) {
+            root.emojiOpen = false
+            input.focus = false
+        }
+    }
+    //停/离底部决定当前会话算不算"正在看"：只有贴底时才允许清未读
+    onStickBottomChanged: {
+        if (root.bridge)
+            root.bridge.setChatAtBottom(stickBottom)
+        if (stickBottom)
+            root.pendingNew = 0
+    }
 
     // 上滑到顶时向桥接要一页更早的消息：库里没有更早的会立即返回，代价是一次空查询
     function loadOlder() {
         if (!root.bridge)
             return
-        if (root.prepping || root.settling || root.currentThreadId <= 0)
+        if (root.prepending || root.settling || root.currentThreadId <= 0)
             return
-        root.prepping = true
+        root.prepending = true
         root.prependHeight = messageList.contentHeight
         root.bridge.loadOlderMessages()
         prependTimer.restart()
@@ -102,6 +134,67 @@ Item {
 
     // 输入区、消息气泡与媒体卡片共用一套右键菜单，父项是整页，坐标直接是页面坐标
     ContextMenu { id: contextMenu; anchors.fill: parent }
+
+    //消息搜索覆盖整页；点结果会切会话并回到原消息
+    MessageSearchPanel {
+        id: messageSearchPanel
+        controller: root.bridge
+        open: root.messageSearchOpen
+        currentThreadId: root.currentThreadId
+        currentKind: root.currentKind
+        onCloseRequested: root.messageSearchOpen = false
+    }
+
+    //Ctrl/Cmd+F 打开消息搜索
+    Shortcut {
+        sequence: StandardKey.Find
+        onActivated: root.messageSearchOpen = true
+    }
+
+    //搜索结果定位：先把目标行滚到中间，再短暂描边；找不到说明上下文没装载成功
+    function scrollToMessage(id) {
+        if (!root.bridge)
+            return
+        const row = root.bridge.messageRow(id)
+        if (row < 0) {
+            root.bridge.clearScrollToMessage()
+            return
+        }
+        root.settling = false
+        root.stickBottom = false
+        root.pendingNew = 0
+        root.jumping = true
+        root.jumpRow = row
+        messageList.positionViewAtIndex(row, ListView.Center)
+        jumpTimer.restart()
+        root.highlightMessageId = id
+        highlightTimer.restart()
+        root.bridge.clearScrollToMessage()
+    }
+    Connections {
+        target: root.bridge
+        function onScrollToMessageChanged() {
+            const id = root.bridge ? root.bridge.scrollToMessageId : 0
+            if (id > 0)
+                Qt.callLater(function() { root.scrollToMessage(id) })
+        }
+    }
+    Timer {
+        id: highlightTimer
+        interval: 2500
+        onTriggered: root.highlightMessageId = 0
+    }
+    //等列表完成一次布局后再定位一次，随后恢复正常滚动判定
+    Timer {
+        id: jumpTimer
+        interval: 700
+        onTriggered: {
+            if (root.jumpRow >= 0)
+                messageList.positionViewAtIndex(root.jumpRow, ListView.Center)
+            root.jumping = false
+            root.jumpRow = -1
+        }
+    }
 
     Connections {
         target: root.bridge
@@ -137,8 +230,8 @@ Item {
             id: titleRow
             anchors.left: parent.left
             anchors.leftMargin: 28
-            anchors.right: profileButton.left
-            anchors.rightMargin: 20
+            anchors.right: messageSearchButton.left
+            anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             height: 26
 
@@ -173,6 +266,36 @@ Item {
                 enabled: root.isGroup && root.groupLeftState === 0
                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: root.groupInfoRequested()
+            }
+        }
+
+        // 搜索本机消息：入口放在资料按钮左侧，键盘也可用 Ctrl/Cmd+F
+        Rectangle {
+            id: messageSearchButton
+            anchors.right: profileButton.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            width: 34
+            height: 34
+            radius: 7
+            color: searchButtonArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: "搜索消息"
+            Keys.onReturnPressed: root.messageSearchOpen = true
+            Keys.onSpacePressed: root.messageSearchOpen = true
+            AppIcon {
+                anchors.centerIn: parent
+                name: "search"
+                size: 17
+                color: Theme.textSecondary
+            }
+            MouseArea {
+                id: searchButtonArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.messageSearchOpen = true
             }
         }
 
@@ -267,7 +390,7 @@ Item {
         Text {
             anchors.left: parent.left
             anchors.leftMargin: 28
-            anchors.right: blockedAction.left
+            anchors.right: blockedAction.visible ? blockedAction.left : parent.right
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             text: root.blockedText
@@ -278,6 +401,8 @@ Item {
         }
         Rectangle {
             id: blockedAction
+            //只有单聊关系断了才需要"发送朋友验证"；群被移出/解散时这个按钮没有意义
+            visible: !root.isGroup
             anchors.right: parent.right
             anchors.rightMargin: 24
             anchors.verticalCenter: parent.verticalCenter
@@ -314,8 +439,11 @@ Item {
         id: reAddOverlay
         anchors.fill: parent
         visible: root.reAddOpen
+        focus: visible
         color: Theme.overlay
         z: 60
+        Keys.onEscapePressed: root.reAddOpen = false
+        onVisibleChanged: if (visible) reAddInput.forceInputFocus()
 
         MouseArea {
             anchors.fill: parent
@@ -351,14 +479,17 @@ Item {
                     font.pixelSize: 11
                     wrapMode: Text.Wrap
                 }
-                TextField {
+                AppInput {
                     id: reAddInput
                     width: parent.width
-                    height: 36
+                    maximumLength: 60
                     text: root.reAddDraft
-                    placeholderText: "说点什么…"
-                    selectByMouse: true
-                    onTextChanged: root.reAddDraft = text
+                    placeholder: "说点什么…"
+                    onTextEdited: root.reAddDraft = text
+                    onAccepted: if (root.reAddDraft.trim().length > 0) {
+                        root.bridge.sendReAdd(root.reAddDraft.trim())
+                        root.reAddOpen = false
+                    }
                 }
                 Row {
                     spacing: 10
@@ -393,7 +524,7 @@ Item {
         anchors.right: parent.right
         anchors.top: root.blockedText.length > 0 ? blockedBar.bottom
                    : (root.hasNotice ? groupNoticeBar.bottom : header.bottom)
-        anchors.bottom: composer.top
+        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
         anchors.leftMargin: 28
         anchors.rightMargin: 28
         anchors.topMargin: 24
@@ -429,6 +560,39 @@ Item {
                         font.pixelSize: 10
                         horizontalAlignment: Text.AlignHCenter
                         elide: Text.ElideRight
+                    }
+                }
+
+                // 进入会话时的未读起点：一条细线加一枚小标签，位置固定在这条消息上，
+                // 后续新消息不会把它推走
+                Item {
+                    readonly property bool showDivider: root.bridge && model.messageId > 0
+                        && model.messageId === root.bridge.entryDividerId
+                    width: parent.width
+                    height: showDivider ? 34 : 0
+                    visible: showDivider
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        height: 1
+                        color: Theme.line
+                    }
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: dividerLabel.implicitWidth + 22
+                        height: 20
+                        radius: 10
+                        color: Theme.panelBg
+                        border.width: 1
+                        border.color: Theme.accent
+                        Text {
+                            id: dividerLabel
+                            anchors.centerIn: parent
+                            text: "以下 " + (root.bridge ? root.bridge.entryUnread : 0) + " 条未读"
+                            color: Theme.accent
+                            font.pixelSize: 10
+                        }
                     }
                 }
 
@@ -508,6 +672,9 @@ Item {
                     status: model.status
                     statusText: model.statusText
                     retryable: model.canRetry
+                    mentioned: model.mentioned
+                    highlighted: root.highlightMessageId > 0
+                        && model.messageId === root.highlightMessageId
                     onRetryRequested: {
                         const code = root.bridge.retryMessage(model.msgId)
                         if (code === 1)
@@ -552,15 +719,26 @@ Item {
         // 只有停在底部时才跟随新消息；向上翻历史时不再被拉回底部，
         // 图片异步加载导致的高度变化也用短定时器合并，避免连续跳动
         onCountChanged: {
-            //正在向前补历史时不贴底：那会把刚翻上去的内容又甩回末尾
-            if (root.prepping)
+            const total = messageList.count
+            const delta = total - root.lastMessageCount
+            root.lastMessageCount = total
+            if (root.jumping)
                 return
-            if (root.stickBottom || root.settling)
+            //正在向前补历史时不贴底：那会把刚翻上去的内容又甩回末尾，也不该计新消息
+            if (root.prepending)
+                return
+            if (delta > 0 && !root.stickBottom && !root.settling)
+                root.pendingNew += delta
+            if (root.stickBottom || root.settling) {
+                root.pendingNew = 0
                 Qt.callLater(messageList.positionViewAtEnd)
+            }
         }
         onContentHeightChanged: {
+            if (root.jumping)
+                return
             //插入期间按差值把 contentY 往下推，视觉上内容停在原位
-            if (root.prepping) {
+            if (root.prepending) {
                 messageList.contentY += messageList.contentHeight - root.prependHeight
                 root.prependHeight = messageList.contentHeight
             }
@@ -570,7 +748,12 @@ Item {
         //离底部 64px 内就视为“在底部”：图片加载让 contentHeight 变高时还能继续跟到底，
         //快速滚动到末尾也不会停在最后一张图上
         onMovementEnded: {
-            //用户主动拖动说明要自己看，settling 立即结束，不再强行贴底
+            //用户主动拖动说明要自己看，settling 立即结束，jumping 也取消，不再强行贴底
+            if (root.jumping) {
+                root.jumping = false
+                root.jumpRow = -1
+                jumpTimer.stop()
+            }
             if (root.settling) {
                 root.settling = false
                 settleTimer.stop()
@@ -580,13 +763,15 @@ Item {
                 scrollTimer.restart() //滚动期间新加载的图片可能把底部又推高了
         }
         onContentYChanged: {
+            if (root.jumping)
+                return
             //settling 期间的位置变化是程序贴底造成的，不能据此判定"用户翻上去了"
             if (root.settling)
                 return
             if (!moving && !flicking)
                 root.stickBottom = contentY + height >= contentHeight - 64
             //离顶部 120px 内就开始预取，别等真的拉到 0 才发请求
-            if (contentY < 120 && count > 0 && !root.prepping)
+            if (contentY < 120 && count > 0 && !root.prepending)
                 root.loadOlder()
         }
     }
@@ -597,6 +782,8 @@ Item {
         interval: 320
         onTriggered: {
             root.settling = false
+            if (root.jumping)
+                return
             if (root.stickBottom)
                 messageList.positionViewAtEnd()
         }
@@ -608,7 +795,7 @@ Item {
         id: prependTimer
         interval: 160
         onTriggered: {
-            root.prepping = false
+            root.prepending = false
             root.prependHeight = 0
         }
     }
@@ -616,7 +803,7 @@ Item {
     Timer {
         id: scrollTimer
         interval: 40
-        onTriggered: if (root.stickBottom) messageList.positionViewAtEnd()
+        onTriggered: if (root.stickBottom && !root.jumping) messageList.positionViewAtEnd()
     }
 
     // 没有消息时只显示一个轻提示，输入区仍然可以正常使用
@@ -702,13 +889,14 @@ Item {
     // 附件多时只让附件列表变高并自身滚动，不再挤压文字输入空间。
     Rectangle {
         id: composer
+        visible: !root.inputLocked
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.leftMargin: 24
         anchors.rightMargin: 24
         anchors.bottomMargin: 22
-        height: root.composerHeight
+        height: root.inputLocked ? 0 : root.composerHeight
         radius: 10
         color: Theme.fieldBg
         border.width: composerDrop.containsDrag ? 2 : 1
@@ -980,7 +1168,7 @@ Item {
 
             Text {
                 visible: input.length === 0 && !input.inputMethodComposing
-                text: "写点什么…"
+                text: "写点什么…（Enter 发送）"
                 color: Theme.textHint
                 font.pixelSize: Theme.fontBody
             }
@@ -1008,6 +1196,71 @@ Item {
             onDropped: (drop) => {
                 root.acceptFiles(drop.urls)
                 drop.acceptProposedAction()
+            }
+        }
+    }
+
+    // 已离开的群：输入区整体收掉，只留一条说明，避免"能打字但发不出去"
+    Rectangle {
+        id: readOnlyBar
+        visible: root.inputLocked
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 24
+        anchors.rightMargin: 24
+        anchors.bottomMargin: 22
+        height: visible ? 46 : 0
+        radius: 10
+        color: Theme.panelAlt
+        border.width: 1
+        border.color: Theme.line
+
+        Row {
+            anchors.centerIn: parent
+            spacing: 8
+            AppIcon {
+                name: "lock"
+                size: 15
+                color: Theme.textSecondary
+            }
+            Text {
+                text: "输入已关闭，只能查看历史消息"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+            }
+        }
+    }
+
+    // 上翻历史时新消息到了：不强行拉回底部，只给一张可点的浮签
+    Rectangle {
+        id: newMessagePill
+        visible: root.pendingNew > 0 && !root.inputLocked
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
+        anchors.bottomMargin: 12
+        width: pillLabel.implicitWidth + 30
+        height: 30
+        radius: 15
+        color: Theme.panelBg
+        border.width: 1
+        border.color: Theme.accent
+        z: 20
+
+        Text {
+            id: pillLabel
+            anchors.centerIn: parent
+            text: "↓ " + (root.pendingNew > 99 ? "99+" : root.pendingNew) + " 条新消息"
+            color: Theme.accent
+            font.pixelSize: 11
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                root.pendingNew = 0
+                root.stickBottom = true
+                messageList.positionViewAtEnd()
             }
         }
     }
@@ -1165,6 +1418,7 @@ Item {
         input.clear()
         inputView.contentY = 0
         composerBridge.clearAttachments()
+        composerBridge.clearDraft()
     }
 
     // 自己刚发出一条消息：无论之前翻到哪里都跟到底部
@@ -1450,7 +1704,7 @@ Item {
     Rectangle {
         visible: root.actionMessage.length > 0
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: composer.top
+        anchors.bottom: root.inputLocked ? readOnlyBar.top : composer.top
         anchors.bottomMargin: 14
         width: toastLabel.width + 28
         height: 30

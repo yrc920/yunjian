@@ -100,6 +100,7 @@ public:
     int ThreadPeer(qint64 thread_id) const; //单聊对方 uid，群聊 0
     QString ThreadTitle(qint64 thread_id) const; //单聊显示名或群名称
     int ThreadMemberCount(qint64 thread_id) const; //群成员数，单聊返回0
+    bool ThreadMuted(qint64 thread_id) const; //群免打扰看服务端字段，单聊看本地标记
     qint64 LastMessageId(const ConversationRef &conv) const; //当前最大消息ID, 作为翻页游标
     bool HasPendingPrivateChat(int friend_id) const; //是否正在等待 1026 回包
     void MarkPrivateChatPending(int friend_id, bool pending);
@@ -118,6 +119,12 @@ public:
     bool ThreadAtMe(qint64 thread_id) const;
     //未读里出现 @我：会话行显示"[有人@我]"，打开会话时随未读一起清掉
     void MarkThreadAtMe(qint64 thread_id);
+    //本机会话整理：置顶、单聊免打扰、删除会话后隐藏；只影响这台设备
+    void SetThreadPinned(qint64 thread_id, bool pinned);
+    void SetThreadMuted(qint64 thread_id, bool muted);
+    void SetThreadHidden(qint64 thread_id, bool hidden);
+    //手动标为未读：至少显示 1，打开会话时照常清零
+    void MarkThreadUnread(qint64 thread_id, int count = 1);
     //收到未知群的消息时先建占位，避免系统消息与首条聊天没有容器可放
     void EnsureGroup(qint64 thread_id);
     int UnreadTotal() const;
@@ -187,8 +194,7 @@ public:
     int GroupCount() const;
     std::shared_ptr<GroupInfo> GroupAt(int index) const;
     //群消息里的发送者显示名：群昵称 > 好友备注 > 昵称 > 用户名
-    QString GroupSenderName(qint64 thread_id, int uid) const;
-    QString GroupSenderIcon(qint64 thread_id, int uid) const;
+    QString GroupSenderName(qint64 thread_id, int uid) const;    QString GroupSenderIcon(qint64 thread_id, int uid) const;
     void SetGroupMuted(qint64 thread_id, bool muted);
 
     //新会话开始前清空上一个账号的数据，避免重新登录后好友与申请重复
@@ -237,6 +243,8 @@ signals:
     //草稿被清掉：0 表示全部，其余是具体会话；输入框据此清空缓存与文档
     void DraftsCleared(qint64 thread_id);
     void UnreadChanged(); // 未读数变化：会话行与左侧栏徽标一起刷新
+    //置顶以外的整理状态变化（草稿、免打扰）：模型只刷这一行，不重排整表
+    void ThreadStateChanged(qint64 thread_id);
     void FriendIconChanged(int uid); // 好友头像下载完成，只刷新对应行
     void ApplyIconChanged(int uid);  // 好友申请里同一个人头像变化，只刷新申请行
     //群资料、成员或我在群里的设置变化；消息变化仍走 ConversationChanged
@@ -268,6 +276,9 @@ private:
     QMap<qint64, int> _unread; //thread_id -> 未读条数，只在当前登录会话内有效
     QSet<qint64> _at_me_threads; //有未读 @我 的群会话
     qint64 _active_thread = 0; //正在看的会话，0 表示不在会话里
+    //消息窗口所属会话：只用于"保留整段消息窗口"，与已读判定无关。
+    //切到设置/联系人、窗口失焦或上翻历史时不能清掉，否则下一条消息会把历史替换成一条
+    qint64 _window_thread = 0;
     bool _upload_paused = false;
 };
 

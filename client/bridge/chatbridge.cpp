@@ -1,6 +1,7 @@
 #include "chatbridge.h"
 
 #include <QClipboard>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -19,6 +20,7 @@
 #include "profileservice.h"
 #include "fileservice.h"
 #include "groupservice.h"
+#include "localstore.h"
 #include "shellbridge.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
@@ -186,6 +188,21 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
         emit chatBlockedChanged();
         if (!_friendQuery.trimmed().isEmpty())
             rebuildFriendMatches();
+
+        //新好友第一次建会话：1025 之后 1026 才带回 thread_id。这里接住它，
+        //否则会一直停在 thread_id=0 上，新消息只能留下最新一条预览
+        if (_mode == ChatMode && _pane == ChatPage && !isGroup()
+            && _currentUid > 0 && _currentThreadId <= 0) {
+            auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
+            if (info && info->_chat_thread && info->_chat_thread->_thread_id > 0) {
+                _currentThreadId = info->_chat_thread->_thread_id;
+                ChatService::GetInstance()->OpenWindow(_currentThreadId);
+                _messages->setConversation(_currentThreadId, _currentKind, _currentUid);
+                captureEntryUnread(_currentThreadId);
+                emit currentChanged();
+                refreshActiveThread();
+            }
+        }
     });
     connect(userMgr, &UserMgr::ConversationChanged, this, [this](qint64, int) {
         //下载完成信号发出时 UserMgr 还持有自己的锁，排到事件循环末尾再复制文件
@@ -379,6 +396,96 @@ void ChatBridge::clearSearch()
     emit searchTextChanged();
     emit searchResultChanged();
     emit searchStateChanged();
+}
+
+//本地消息搜索：只查本机已同步的文本，不触发网络请求。
+//结果按最新在前，点击后由 openMessageResult 切会话并装载上下文
+void ChatBridge::searchMessages(const QString &query, bool currentOnly)
+{
+    _messageSearchResults.clear();
+    const QString text = query.trimmed();
+    const qint64 threadId = currentOnly ? _currentThreadId : 0;
+    if (text.isEmpty() || (currentOnly && threadId <= 0)) {
+        emit messageSearchChanged();
+        return;
+    }
+
+    auto *mgr = UserMgr::GetInstance().get();
+    const auto hits = LocalStore::GetInstance()->SearchMessages(text, threadId, 100);
+    for (const auto &hit : hits) {
+        const qint64 id = hit.message.thread_id;
+        if (id <= 0)
+            continue;
+        QString title = mgr->ThreadTitle(id);
+        if (title.isEmpty())
+            title = tr("会话");
+        const bool group = hit.thread_type == static_cast<int>(ChatThreadKind::Group);
+        QString sender = group
+            ? mgr->GroupSenderName(id, hit.message.sender_id)
+            : (hit.message.sender_id == mgr->GetUid() ? tr("我") : title);
+        if (sender.isEmpty())
+            sender = tr("群成员");
+
+        QString snippet = hit.message.content;
+        snippet.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        snippet = snippet.simplified();
+        if (snippet.size() > 90)
+            snippet = snippet.left(90) + QStringLiteral("…");
+
+        QVariantMap item;
+        item.insert(QStringLiteral("threadId"), id);
+        item.insert(QStringLiteral("kind"), hit.thread_type);
+        item.insert(QStringLiteral("peerUid"), hit.peer_uid);
+        item.insert(QStringLiteral("messageId"), hit.message.server_id);
+        item.insert(QStringLiteral("threadTitle"), title);
+        item.insert(QStringLiteral("senderName"), sender);
+        item.insert(QStringLiteral("snippet"), snippet);
+        item.insert(QStringLiteral("timeText"),
+                    hit.message.created_at > 0
+                        ? QDateTime::fromSecsSinceEpoch(hit.message.created_at)
+                              .toString(QStringLiteral("MM-dd HH:mm"))
+                        : QString());
+        item.insert(QStringLiteral("isGroup"), group);
+        _messageSearchResults.append(item);
+    }
+    emit messageSearchChanged();
+}
+
+void ChatBridge::clearMessageSearch()
+{
+    if (_messageSearchResults.isEmpty())
+        return;
+    _messageSearchResults.clear();
+    emit messageSearchChanged();
+}
+
+//搜索结果点击：切会话 → 按消息号装载上下文 → 让列表定位并高亮
+void ChatBridge::openMessageResult(qint64 threadId, int kind, int peerUid, qint64 messageId)
+{
+    if (threadId <= 0)
+        return;
+    openThread(threadId, kind, peerUid);
+    if (messageId <= 0 || _currentThreadId != threadId)
+        return;
+    if (!ChatService::GetInstance()->OpenWindowAt(threadId, messageId))
+        return;
+    if (_messages)
+        _messages->reload();
+    _scrollToMessageId = messageId;
+    emit scrollToMessageChanged();
+}
+
+int ChatBridge::messageRow(qint64 messageId) const
+{
+    return _messages ? _messages->rowForMessage(messageId) : -1;
+}
+
+void ChatBridge::clearScrollToMessage()
+{
+    if (_scrollToMessageId == 0)
+        return;
+    _scrollToMessageId = 0;
+    emit scrollToMessageChanged();
 }
 
 // 打开加好友浮层；从聊天页过来时先落到联系人，右侧仍显示「新的朋友」
@@ -749,6 +856,21 @@ void ChatBridge::askClearHistory(qint64 threadId, int kind, const QString &title
     _clearThreadId = threadId;
     _clearKind = kind;
     _clearConfirmTitle = title.isEmpty() ? tr("清除聊天记录") : title;
+    _clearConfirmDelete = false;
+    _clearConfirmVisible = true;
+    emit clearConfirmChanged();
+}
+
+//删除会话：清掉本机记录后隐藏这一行。好友关系、群成员身份与服务端历史都不动，
+//重新从联系人打开或收到新消息时会回到列表
+void ChatBridge::askDeleteConversation(qint64 threadId, int kind, const QString &title)
+{
+    if (threadId <= 0)
+        return;
+    _clearThreadId = threadId;
+    _clearKind = kind;
+    _clearConfirmTitle = title.isEmpty() ? tr("这个会话") : title;
+    _clearConfirmDelete = true;
     _clearConfirmVisible = true;
     emit clearConfirmChanged();
 }
@@ -758,12 +880,32 @@ void ChatBridge::confirmClearHistory()
     if (!_clearConfirmVisible)
         return;
     const qint64 threadId = _clearThreadId;
+    const int kind = _clearKind;
+    const bool deleting = _clearConfirmDelete;
     _clearConfirmVisible = false;
+    _clearConfirmDelete = false;
     _clearThreadId = 0;
     _clearConfirmTitle.clear();
     emit clearConfirmChanged();
-    if (threadId > 0)
-        UserMgr::GetInstance()->ClearThreadHistory(threadId);
+    if (threadId <= 0)
+        return;
+
+    const bool was_current = _currentThreadId == threadId && _currentKind == kind;
+    if (deleting)
+        UserMgr::GetInstance()->SetThreadHidden(threadId, true);
+    UserMgr::GetInstance()->ClearThreadHistory(threadId);
+    if (deleting && was_current) {
+        //当前会话被删掉：右侧回到空态，输入区与标题一起清空
+        _currentThreadId = 0;
+        _currentUid = 0;
+        _currentName.clear();
+        _currentSubtitle.clear();
+        _messages->setConversation(0, _currentKind, 0);
+        setPane(EmptyPane);
+        emit currentChanged();
+        emit groupChanged();
+        emit chatBlockedChanged();
+    }
 }
 
 void ChatBridge::cancelClearHistory()
@@ -771,9 +913,28 @@ void ChatBridge::cancelClearHistory()
     if (!_clearConfirmVisible)
         return;
     _clearConfirmVisible = false;
+    _clearConfirmDelete = false;
     _clearThreadId = 0;
     _clearConfirmTitle.clear();
     emit clearConfirmChanged();
+}
+
+//本机会话整理：只改当前账号的本地库，不通知服务端
+void ChatBridge::setThreadPinned(qint64 threadId, bool pinned)
+{
+    UserMgr::GetInstance()->SetThreadPinned(threadId, pinned);
+}
+
+void ChatBridge::setThreadMuted(qint64 threadId, bool muted)
+{
+    if (UserMgr::GetInstance()->ThreadKind(threadId) == ChatThreadKind::Group)
+        return; //群免打扰在群资料页写服务端，避免两套状态打架
+    UserMgr::GetInstance()->SetThreadMuted(threadId, muted);
+}
+
+void ChatBridge::markThreadUnread(qint64 threadId)
+{
+    UserMgr::GetInstance()->MarkThreadUnread(threadId);
 }
 
 void ChatBridge::clearAllHistory()
@@ -813,6 +974,48 @@ void ChatBridge::logout()
 {
     if (auto *shell = ShellBridge::instance())
         shell->logout();
+}
+
+//退出登录会断开连接、清空当前账号的内存数据；未发送的附件不会保留。
+//先让用户确认，避免在设置页误点一下就直接回到登录页
+void ChatBridge::askLogout()
+{
+    if (_logoutConfirmVisible)
+        return;
+    _logoutConfirmVisible = true;
+    emit logoutConfirmChanged();
+}
+
+void ChatBridge::confirmLogout()
+{
+    if (!_logoutConfirmVisible)
+        return;
+    _logoutConfirmVisible = false;
+    emit logoutConfirmChanged();
+    logout();
+}
+
+void ChatBridge::cancelLogout()
+{
+    if (!_logoutConfirmVisible)
+        return;
+    _logoutConfirmVisible = false;
+    emit logoutConfirmChanged();
+}
+
+//资料页返回：有当前会话就回会话，否则回联系人空态。
+//从聊天点开资料不再是一条"只能靠发消息回来"的死路
+void ChatBridge::backFromProfile()
+{
+    const bool fromChat = _profileFromChat;
+    _profileFromChat = false;
+    if (fromChat && _currentThreadId > 0) {
+        setMode(ChatMode);
+        setPane(ChatPage);
+        return;
+    }
+    setMode(ContactMode);
+    setPane(EmptyPane);
 }
 
 void ChatBridge::deleteFriend(int uid)
@@ -894,6 +1097,8 @@ void ChatBridge::openChat(int uid)
 
     // 消息模型切到这条会话，随后触发的 countChanged 会让界面滚到底
     _messages->setConversation(_currentThreadId, _currentKind, uid);
+    //未读还在的时候先记下起点，后面进入会话会把它清零
+    captureEntryUnread(_currentThreadId);
     emit currentChanged();
     emit groupChanged();
     emit chatBlockedChanged();
@@ -946,6 +1151,7 @@ void ChatBridge::openGroup(qint64 threadId)
 
     ChatService::GetInstance()->OpenWindow(threadId);
     _messages->setConversation(threadId, _currentKind, 0);
+    captureEntryUnread(threadId);
     emit currentChanged();
     emit groupChanged();
     emit chatBlockedChanged();
@@ -958,6 +1164,25 @@ void ChatBridge::openGroup(qint64 threadId)
     //成员列表用于气泡名字与 @ 候选；没拉过就补一次
     if (group->_member_map.isEmpty())
         GroupService::GetInstance()->RequestGroupInfo(threadId);
+}
+
+//系统通知点击：回到通知指向的会话。私聊优先走 peer，避免通知里只有 thread_id
+void ChatBridge::openThread(qint64 threadId, int kind, int peerUid)
+{
+    if (kind == static_cast<int>(ChatThreadKind::Group)) {
+        if (threadId > 0)
+            openGroup(threadId);
+        return;
+    }
+    if (peerUid > 0) {
+        openChat(peerUid);
+        return;
+    }
+    if (threadId > 0) {
+        const int uid = UserMgr::GetInstance()->FriendIdByThread(threadId);
+        if (uid > 0)
+            openChat(uid);
+    }
 }
 
 //上滑加载更早的消息：只读本地库，不走网络。
@@ -1089,6 +1314,8 @@ void ChatBridge::openProfile(int uid)
     if (!info)
         return;
 
+    //联系人列表、空态等入口：返回时回联系人区域
+    _profileFromChat = false;
     closeAddFriend();
     rebuildProfile(info);
     //资料页同样拉一次最新昵称与签名
@@ -1097,6 +1324,18 @@ void ChatBridge::openProfile(int uid)
     _lastContactPane = FriendInfoPage;
     setMode(ContactMode);
     setPane(FriendInfoPage);
+}
+
+//从聊天标题点"资料"：资料页仍然是联系人区域的一个页面，但返回目标改成会话
+void ChatBridge::openProfileFromChat(int uid)
+{
+    auto info = UserMgr::GetInstance()->GetFriendById(uid);
+    if (!info)
+        return;
+    openProfile(uid);
+    if (_pane == FriendInfoPage
+        && _profile.value(QStringLiteral("uid")).toInt() == uid)
+        _profileFromChat = true;
 }
 
 //按当前数据重建资料页快照；字段缺失时 QML 侧有兜底
@@ -1170,12 +1409,52 @@ void ChatBridge::setMode(int mode)
     emit modeChanged();
 }
 
-//当前是否真的在看某个会话：只有会话模式 + 停在会话页 + 有 thread 时才成立。
-//统一在这里判断，避免各个入口各写一份、切来切去把状态弄丢
+//当前是否真的在看某个会话：窗口在前台、停在会话页、列表在底部，三者同时成立才算。
+//只看 mode/pane 会把"切到浏览器"和"上翻历史"都当成已读，用户就会漏消息
 void ChatBridge::refreshActiveThread()
 {
-    const bool viewing = _mode == ChatMode && _pane == ChatPage && _currentThreadId > 0;
+    const bool viewing = _windowActive && _chatAtBottom
+        && _mode == ChatMode && _pane == ChatPage && _currentThreadId > 0;
     UserMgr::GetInstance()->SetActiveThread(viewing ? _currentThreadId : 0);
+}
+
+void ChatBridge::setWindowActive(bool active)
+{
+    if (_windowActive == active)
+        return;
+    _windowActive = active;
+    refreshActiveThread();
+}
+
+void ChatBridge::setChatAtBottom(bool atBottom)
+{
+    if (_chatAtBottom == atBottom)
+        return;
+    _chatAtBottom = atBottom;
+    refreshActiveThread();
+}
+
+//未读起点只在打开会话的瞬间算一次：消息窗口刚装好，未读还没被清掉。
+//未读超过当前窗口时找不到第一条，分割线退化为不画，避免把线插错位置
+void ChatBridge::captureEntryUnread(qint64 thread_id)
+{
+    _entryUnread = 0;
+    _entryDividerId = 0;
+    if (thread_id <= 0)
+        return;
+    _entryUnread = UserMgr::GetInstance()->ThreadUnread(thread_id);
+    if (_entryUnread <= 0)
+        return;
+    auto data = UserMgr::GetInstance()->ThreadData(thread_id);
+    if (!data || data->_chat_msgs.empty())
+        return;
+    const int size = static_cast<int>(data->_chat_msgs.size());
+    const int index = size - _entryUnread;
+    if (index < 0 || index >= size)
+        return;
+    const auto &message = data->_chat_msgs[index];
+    if (message && message->_message_id > 0)
+        _entryDividerId = message->_message_id;
 }
 
 void ChatBridge::setPane(int pane)

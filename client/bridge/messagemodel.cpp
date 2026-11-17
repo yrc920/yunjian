@@ -64,6 +64,36 @@ void MessageModel::setConversation(qint64 thread_id, int kind, int peer_uid)
     emit countChanged();
 }
 
+void MessageModel::reload()
+{
+    beginResetModel();
+    auto data = threadData();
+    if (data)
+        syncCache(data->_chat_msgs);
+    else {
+        _cachedCount = 0;
+        _cachedIds.clear();
+        _cachedStatus.clear();
+    }
+    endResetModel();
+    emit countChanged();
+}
+
+int MessageModel::rowForMessage(qint64 message_id) const
+{
+    if (message_id <= 0)
+        return -1;
+    auto data = threadData();
+    if (!data)
+        return -1;
+    const auto &msgs = data->_chat_msgs;
+    for (int row = 0; row < static_cast<int>(msgs.size()); ++row) {
+        if (msgs[row] && msgs[row]->_message_id == message_id)
+            return row;
+    }
+    return -1;
+}
+
 std::shared_ptr<ChatThreadData> MessageModel::threadData() const
 {
     auto *mgr = UserMgr::GetInstance().get();

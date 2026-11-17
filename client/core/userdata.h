@@ -189,6 +189,12 @@ struct ChatThreadData {
 
     qint64 _thread_id = 0;
     std::vector<std::shared_ptr<TextChatData>> _chat_msgs;
+    //会话在本机的整理状态：置顶、免打扰（单聊）与本地隐藏。
+    //群免打扰仍以服务端 grp.muted 为准，这里是单聊的本地设置
+    bool _pinned = false;
+    bool _muted = false;
+    bool _hidden = false;
+    QString _draft_preview; //草稿纯文本，会话列表用它替代最后一条消息
 };
 
 //群成员：账号资料来自服务端 user 表，群昵称只在这个群里生效
@@ -371,6 +377,9 @@ struct TextChatMsg{
                     static_cast<int>(ChatMessageStatus::Sent))));
             //实时消息也带服务端落库时间，时间条与列表排序都靠它
             msg_ptr->_time = msg_obj["time"].toVariant().toLongLong();
+            //实时帧也要带类型：图片/文件/系统消息不能当成普通文本弹通知或画气泡
+            msg_ptr->_msg_type = static_cast<ChatMsgType>(msg_obj["msg_type"].toInt(
+                static_cast<int>(ChatMsgType::Text)));
             //@ 名单在 JSON 里是逗号串，转成 uid 列表供气泡高亮与会话行提示
             const QString mentions = msg_obj["mentions"].toString();
             for (const QString &uid : mentions.split(QLatin1Char(','), Qt::SkipEmptyParts))

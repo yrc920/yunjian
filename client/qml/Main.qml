@@ -9,7 +9,67 @@ Window {
     title: "xiguchat"
     color: Theme.bgTop
 
+    //通知点击后要回到哪条会话；关闭到托盘时用 quitting 区分"隐藏"和"真退出"
+    property int notifyThread: 0
+    property int notifyKind: 1
+    property int notifyPeer: 0
+    property bool quitting: false
+
+    onClosing: (close) => {
+        if (!quitting && tray.available && shell.page === "chat") {
+            close.accepted = false
+            window.hide()
+        }
+    }
+
     ShellBridge { id: shell }
+
+    //系统托盘：QtWidgets 只作为平台集成层（QSystemTrayIcon/QMenu），
+    //QML/Quick 仍是唯一 UI 层，不创建任何 QWidget 页面
+    TrayController {
+        id: tray
+        tooltip: shell.unreadTotal > 0
+            ? "xiguchat · " + shell.unreadTotal + " 条未读" : "xiguchat"
+
+        onOpenRequested: {
+            window.show()
+            window.raise()
+            window.requestActivate()
+        }
+        onQuitRequested: {
+            window.quitting = true
+            tray.hide()
+            Qt.quit()
+        }
+        onMessageClicked: {
+            window.show()
+            window.raise()
+            window.requestActivate()
+            if (loader.item && loader.item.chatBridge && notifyThread > 0)
+                loader.item.chatBridge.openThread(notifyThread, notifyKind, notifyPeer)
+        }
+    }
+
+    //新消息只在窗口不在前台时弹系统通知；点击后回到对应会话
+    Connections {
+        target: shell
+        function onMessageArrived(title, body, threadId, threadType, peerUid) {
+            notifyThread = threadId
+            notifyKind = threadType
+            notifyPeer = peerUid
+            if (!window.active && tray.available)
+                tray.showMessage(title, body, 6000)
+        }
+    }
+
+    //关闭到托盘后，从 Dock/任务栏重新激活要能把窗口带回来
+    Connections {
+        target: Qt.application
+        function onStateChanged() {
+            if (Qt.application.state === Qt.ApplicationActive && !window.visible)
+                window.show()
+        }
+    }
 
     function pageFile(name) {
         if (name === "chat") return "ChatWindow.qml"
@@ -44,9 +104,44 @@ Window {
         function onPageChanged() { window.showPage(shell.page) }
     }
 
+    //普通断线时先给一条非阻塞的重连横条：缓存消息还能看，不强行弹回登录页
+    Rectangle {
+        id: reconnectBar
+        anchors.top: parent.top
+        width: parent.width
+        height: visible ? 32 : 0
+        visible: shell.reconnecting
+        color: Theme.panelAlt
+        z: 50
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: Theme.line
+        }
+        Row {
+            anchors.centerIn: parent
+            spacing: 8
+            AppIcon {
+                name: "reset"
+                size: 14
+                color: Theme.accent
+            }
+            Text {
+                text: shell.reconnectText
+                color: Theme.accent
+                font.pixelSize: 12
+                elide: Text.ElideRight
+            }
+        }
+    }
+
     Loader {
         id: loader
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: reconnectBar.visible ? reconnectBar.bottom : parent.top
         enabled: shell.notice.length === 0
     }
     Rectangle {

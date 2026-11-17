@@ -20,6 +20,10 @@ Item {
     property int transferProgress: -1
     property string statusText: "" //「已读」/「未读」，只对自己发的最后一条有值
     property bool retryable: false //发送失败：给出可点击的重发入口
+    //群聊里这条消息 @ 了我：气泡左侧给一条 accent 竖线，翻历史时一眼能看到
+    property bool mentioned: false
+    //搜索命中：短暂给气泡描边，帮助用户从搜索面板跳回后立刻找到目标
+    property bool highlighted: false
     signal imageClicked() //图片气泡点击后交给查看器打开原图
     signal retryRequested() //点击失败提示，重新发送这条消息
     signal contextRequested(real x, real y) //右键菜单：坐标相对当前气泡
@@ -102,6 +106,17 @@ Item {
         name: root.name
     }
 
+    // 自己发的消息在左侧留状态位；被 @ 的消息在气泡外侧画一条竖线
+    Rectangle {
+        visible: root.mentioned && !root.isSelf && !root.isImage
+        x: textBubble.x - 6
+        y: textBubble.y + 5
+        width: 2
+        height: Math.max(0, textBubble.height - 10)
+        radius: 1
+        color: Theme.accent
+    }
+
     // 文字气泡：只有文本消息才有底色、边框和内边距
     Rectangle {
         id: textBubble
@@ -112,8 +127,8 @@ Item {
         height: root.bubbleHeight
         radius: 9
         color: root.bubbleColor
-        border.width: root.isSelf ? 0 : 1
-        border.color: Theme.line
+        border.width: root.highlighted ? 2 : (root.isSelf ? 0 : 1)
+        border.color: root.highlighted ? Theme.accent : Theme.line
         Behavior on color { ColorAnimation { duration: 160 } }
 
         TextEdit {
@@ -187,8 +202,8 @@ Item {
         height: root.pictureHeight
         radius: 10
         color: Theme.fieldBg
-        border.width: root.localImage ? 0 : 1
-        border.color: Theme.line
+        border.width: root.highlighted ? 2 : (root.localImage ? 0 : 1)
+        border.color: root.highlighted ? Theme.accent : Theme.line
     }
 
     Image {

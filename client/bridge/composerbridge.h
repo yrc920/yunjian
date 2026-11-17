@@ -40,6 +40,8 @@ public:
     Q_INVOKABLE int insertEmoji(QQuickTextDocument *document, int position,
                                 const QString &token, const QUrl &url, int width, int height);
     Q_INVOKABLE QVariantList parts(QQuickTextDocument *document) const;
+    //发送成功后立即清掉当前会话草稿：不等 600ms 防抖，列表不会短暂显示"未寄出"
+    Q_INVOKABLE void clearDraft();
     //按扩展名区分拖入/粘贴的本地文件：image 走富文本，video/file 走附件列表
     Q_INVOKABLE QString fileKind(const QUrl &url) const;
     //剪贴板里的本地文件（Finder/资源管理器复制的文件），没有时返回空，交给 paste 处理文本和位图
@@ -72,6 +74,8 @@ private:
     qint64 _threadId = 0;
     int _emojiSerial = 0; //表情格式序号：每个表情一个，仅用于拆开相邻 fragment
     QHash<qint64, QString> _drafts;
+    //附件按会话暂存：切走再回来时待发送的文件还在，不因为换会话被动丢掉
+    QHash<qint64, QVariantList> _attachment_drafts;
     QTextDocument *_document = nullptr; //当前绑定的输入文档，切会话复用同一个对象
     QTimer _draftTimer;                 //停止输入 600ms 后落库，避免每敲一个字写一次盘
     QHash<QString, int> _mentions; //@显示名 -> uid，发送时按正文里是否还有该名字过滤

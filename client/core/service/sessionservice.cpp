@@ -17,14 +17,35 @@
 
 namespace {
 constexpr int kSessionTimeoutMs = 12000; // 连接 + 登录帧回包的整体上限
+constexpr int kMaxReconnectAttempts = 6; //约一分钟仍连不上就交给用户重新登录
+constexpr int kReconnectBaseMs = 1000;
+constexpr int kReconnectMaxMs = 15000;
 }
 
 SessionService::SessionService() : _ready(false)
 {
     _timeout.setSingleShot(true);
     _timeout.setInterval(kSessionTimeoutMs);
-    connect(&_timeout, &QTimer::timeout, this, [this] {
-        failAndReset(QStringLiteral("连接聊天服务超时"));
+    connect(&_timeout, &QTimer::timeout, this, &SessionService::onSessionTimeout);
+
+    //断线后不立刻猛连：按 1/2/4/8/15 秒退避，给服务端重启与网络恢复留时间
+    _reconnect_timer.setSingleShot(true);
+    connect(&_reconnect_timer, &QTimer::timeout, this, &SessionService::startReconnectAttempt);
+
+    //TCP 在 Wi-Fi 掉线/休眠后可能长时间不报 disconnected；心跳回包 35 秒没来就主动重连
+    _heartbeat_watchdog.setSingleShot(true);
+    _heartbeat_watchdog.setInterval(35000);
+    connect(&_heartbeat_watchdog, &QTimer::timeout, this, [this] {
+        if (!_ready)
+            return;
+        qWarning() << "[session] heartbeat timeout, reconnect";
+        _ready = false;
+        _heartbeat.stop();
+        UserMgr::GetInstance()->FailPendingMessages();
+        FileService::GetInstance()->CloseResource();
+        _reconnect_attempt = 0;
+        TcpMgr::GetInstance()->CloseConnectionAsync(); //主动关，避免再走一次断线回调
+        scheduleReconnect(QStringLiteral("与服务器的连接已超时"));
     });
 
     //服务端按心跳判活，断掉就踢下线；它属于会话而不是某个页面，
@@ -42,12 +63,17 @@ SessionService::SessionService() : _ready(false)
     });
 
     auto *tcp = TcpMgr::GetInstance().get();
+    connect(tcp, &TcpMgr::sig_heartbeat_ok, this, [this] {
+        //只有在线会话需要喂狗；重连/登录阶段的回包不参与
+        if (_ready)
+            _heartbeat_watchdog.start();
+    });
 
     // 收到新消息：单聊与群聊都按 thread 落到 UserMgr。
     // 只有别人发来的才计未读；正在看的会话立刻上报已读。
     // 群聊先把 conv 归到群，未读按 thread 计，@我 单独标出来
     connect(tcp, &TcpMgr::sig_text_chat_msg, this,
-            [](std::shared_ptr<TextChatMsg> msg) {
+            [this](std::shared_ptr<TextChatMsg> msg) {
                 if (!msg)
                     return;
                 auto *mgr = UserMgr::GetInstance().get();
@@ -88,6 +114,29 @@ SessionService::SessionService() : _ready(false)
                 //服务端可能刚刚补建了会话，这里同步 thread_id
                 if (conv._kind == ChatThreadKind::Private && msg->_thread_id > 0)
                     conv._thread_id = msg->_thread_id;
+                //只在没看这条会话时提示；看完最后一条再弹通知会显得多余
+                if (incoming > 0 && conv._thread_id > 0
+                    && conv._thread_id != mgr->ActiveThread()) {
+                    std::shared_ptr<TextChatData> latest;
+                    for (const auto &chat : msg->_chat_msgs) {
+                        if (chat && chat->_from_uid != self
+                            && chat->_msg_type == ChatMsgType::Text && !chat->_recalled)
+                            latest = chat;
+                    }
+                    if (latest) {
+                        QString body = latest->_msg_content;
+                        if (conv._kind == ChatThreadKind::Group)
+                            body = mgr->GroupSenderName(conv._thread_id, latest->_from_uid)
+                                + QStringLiteral("：") + body;
+                        if (latest->_mentions.contains(QString::number(self)))
+                            body.prepend(QStringLiteral("[有人@我] "));
+                        QString title = mgr->ThreadTitle(conv._thread_id);
+                        if (title.isEmpty())
+                            title = tr("新消息");
+                        emit messageArrived(title, body.left(120), conv._thread_id,
+                                            static_cast<int>(conv._kind), conv._peer_uid);
+                    }
+                }
                 if (conv._thread_id == mgr->ActiveThread())
                     ChatService::GetInstance()->MarkSessionRead(conv);
             });
@@ -146,17 +195,26 @@ SessionService::SessionService() : _ready(false)
         ChatService::GetInstance()->uploadPendingImage(uniqueId, messageId, conv);
     });
     //接收方图片上传完成：补消息并下载资源，界面先在会话里显示占位和进度
-    connect(tcp, &TcpMgr::sig_image_notify, this, [](const QJsonObject &data) {
+    connect(tcp, &TcpMgr::sig_image_notify, this, [this](const QJsonObject &data) {
+        auto *mgr = UserMgr::GetInstance().get();
         const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         const int from = data.value("fromuid").toInt();
-        const int self = UserMgr::GetInstance()->GetUid();
-        if (from > 0 && from != self && threadId > 0 && threadId != UserMgr::GetInstance()->ActiveThread())
-            UserMgr::GetInstance()->IncThreadUnread(threadId);
+        const int self = mgr->GetUid();
+        if (from > 0 && from != self && threadId > 0 && threadId != mgr->ActiveThread())
+            mgr->IncThreadUnread(threadId);
         ChatService::GetInstance()->HandleImageNotify(data);
-        if (threadId > 0 && threadId == UserMgr::GetInstance()->ActiveThread()) {
+        const int kind = data.value("thread_type").toInt(1);
+        if (from > 0 && from != self && threadId > 0 && threadId != mgr->ActiveThread()) {
+            QString title = mgr->ThreadTitle(threadId);
+            if (title.isEmpty())
+                title = tr("新消息");
+            emit messageArrived(title, tr("[图片]"), threadId, kind,
+                                kind == static_cast<int>(ChatThreadKind::Private) ? from : 0);
+        }
+        if (threadId > 0 && threadId == mgr->ActiveThread()) {
             ConversationRef conv;
             conv._thread_id = threadId;
-            conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+            conv._kind = static_cast<ChatThreadKind>(kind);
             conv._peer_uid = conv._kind == ChatThreadKind::Private ? from : 0;
             ChatService::GetInstance()->MarkSessionRead(conv);
         }
@@ -165,17 +223,33 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_resource_chat_rsp, this, [](const QJsonObject &data) {
         ChatService::GetInstance()->HandleResourceRsp(data);
     });
-    connect(tcp, &TcpMgr::sig_resource_notify, this, [](const QJsonObject &data) {
+    connect(tcp, &TcpMgr::sig_resource_notify, this, [this](const QJsonObject &data) {
+        auto *mgr = UserMgr::GetInstance().get();
         const qint64 threadId = data.value("thread_id").toVariant().toLongLong();
         const int from = data.value("fromuid").toInt();
-        const int self = UserMgr::GetInstance()->GetUid();
-        if (from > 0 && from != self && threadId > 0 && threadId != UserMgr::GetInstance()->ActiveThread())
-            UserMgr::GetInstance()->IncThreadUnread(threadId);
+        const int self = mgr->GetUid();
+        if (from > 0 && from != self && threadId > 0 && threadId != mgr->ActiveThread())
+            mgr->IncThreadUnread(threadId);
         ChatService::GetInstance()->HandleResourceNotify(data);
-        if (threadId > 0 && threadId == UserMgr::GetInstance()->ActiveThread()) {
+        const int kind = data.value("thread_type").toInt(1);
+        if (from > 0 && from != self && threadId > 0 && threadId != mgr->ActiveThread()) {
+            const int msgType = data.value("msg_type").toInt(
+                static_cast<int>(ChatMsgType::File));
+            QString body = msgType == static_cast<int>(ChatMsgType::Video)
+                ? tr("[视频]") : tr("[文件]");
+            const QString name = data.value("file_name").toString();
+            if (!name.isEmpty())
+                body += QLatin1Char(' ') + name;
+            QString title = mgr->ThreadTitle(threadId);
+            if (title.isEmpty())
+                title = tr("新消息");
+            emit messageArrived(title, body.left(120), threadId, kind,
+                                kind == static_cast<int>(ChatThreadKind::Private) ? from : 0);
+        }
+        if (threadId > 0 && threadId == mgr->ActiveThread()) {
             ConversationRef conv;
             conv._thread_id = threadId;
-            conv._kind = static_cast<ChatThreadKind>(data.value("thread_type").toInt(1));
+            conv._kind = static_cast<ChatThreadKind>(kind);
             conv._peer_uid = conv._kind == ChatThreadKind::Private ? from : 0;
             ChatService::GetInstance()->MarkSessionRead(conv);
         }
@@ -324,27 +398,61 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_login_failed, this, &SessionService::onChatLoginFailed);
     connect(tcp, &TcpMgr::sig_login_success, this, &SessionService::onChatLoggedIn);
     connect(tcp, &TcpMgr::sig_con_failed, this, [this](const QString &message) {
+        const QString text = QStringLiteral("无法连接聊天服务器：%1").arg(message);
+        if (_reconnecting) {
+            _connecting = false;
+            scheduleReconnect(text);
+            return;
+        }
         if (!_connecting && !_ready)
             return;
-        failAndReset(QStringLiteral("无法连接聊天服务器：%1").arg(message));
+        //已经连上时，迟到的连接错误可能来自旧 socket；真正断线由 disconnected 处理，
+        //不能因为一条过期错误把健康会话拆掉
+        if (_ready)
+            return;
+        failAndReset(text);
     });
     connect(tcp, &TcpMgr::sig_connection_closed, this, [this] {
-        if (_connecting)
-            failAndReset(QStringLiteral("聊天服务器在登录完成前断开了连接"));
-        else {
-            _ready = false;
-            _heartbeat.stop();
-            UserMgr::GetInstance()->FailPendingMessages();
-            FileService::GetInstance()->CloseResource(); //聊天断开后资源连接也不保留
+        if (!_want_connection) {
+            //主动退出/被顶号：连接关闭是预期结果，不能触发重连
+            _connecting = false;
+            return;
         }
+        if (_connecting) {
+            //登录帧还没回来就断了：首次登录交给登录页，重连则进入下一次退避
+            _connecting = false;
+            if (_reconnecting)
+                scheduleReconnect(QStringLiteral("聊天服务器在登录完成前断开了连接"));
+            else
+                failAndReset(QStringLiteral("聊天服务器在登录完成前断开了连接"));
+            return;
+        }
+        if (!_ready)
+            return;
+        _ready = false;
+        _heartbeat.stop();
+        _heartbeat_watchdog.stop();
+        UserMgr::GetInstance()->FailPendingMessages();
+        FileService::GetInstance()->CloseResource(); //聊天断开后资源连接也不保留
+        //一次新的断线从第 1 次重试重新计数
+        _reconnect_attempt = 0;
+        scheduleReconnect(QStringLiteral("与服务器的连接已断开"));
     });
     connect(tcp, &TcpMgr::sig_notify_offline, this, [this] {
+        //被顶号/登录过期：旧 token 再登录会把新会话顶回去，绝不能自动重连
+        _want_connection = false;
+        _reconnecting = false;
+        _reconnect_attempt = 0;
+        _reconnect_timer.stop();
+        _timeout.stop();
         if (_connecting) {
+            _connecting = false;
             failAndReset(QStringLiteral("登录期间会话被其他终端替换，请重试"));
             return;
         }
         _ready = false;
         _heartbeat.stop();
+        _heartbeat_watchdog.stop();
         FileService::GetInstance()->CloseResource(); //被顶下线后token已失效，资源服务也不能用
     });
 
@@ -363,8 +471,13 @@ SessionService::~SessionService()
 void SessionService::connectToChat(const ServerInfo &info)
 {
     //不复用closeSession：它会把旧连接的关闭信号当成新登录过程中的断线
+    _want_connection = true;
+    _reconnecting = false;
+    _reconnect_attempt = 0;
+    _reconnect_timer.stop();
     _timeout.stop();
     _heartbeat.stop();
+    _heartbeat_watchdog.stop();
     _ready = false;
     _current = {};
     _history_pages = 0;
@@ -393,6 +506,11 @@ void SessionService::connectToChat(const ServerInfo &info)
 // 只有用户明确退出才走这里；被踢、断网、登录超时都不吊销令牌
 void SessionService::logout()
 {
+    _want_connection = false;
+    _reconnecting = false;
+    _reconnect_attempt = 0;
+    _reconnect_timer.stop();
+    _heartbeat_watchdog.stop();
     if (_logging_out)
         return;
     if (!_ready) {
@@ -419,10 +537,15 @@ void SessionService::finishLogout()
 // 主动结束会话：停心跳、停超时、断开连接
 void SessionService::closeSession()
 {
+    _want_connection = false;
+    _reconnecting = false;
+    _reconnect_attempt = 0;
+    _reconnect_timer.stop();
     _logout_timer.stop();
     _logging_out = false;
     _timeout.stop();
     _heartbeat.stop();
+    _heartbeat_watchdog.stop();
     _ready = false;
     _connecting = false;
     _current = {};
@@ -468,6 +591,13 @@ void SessionService::onChatLoginFailed(int code)
     case 1105: text = QStringLiteral("登录过于频繁，请稍后再试"); break;
     default: text = QStringLiteral("登录失败，错误码 %1").arg(code); break;
     }
+    if (_reconnecting) {
+        _connecting = false;
+        //凭证失效/账号不存在是永久错误；其余（服务启动中、过于频繁）继续退避
+        const bool permanent = code == 1010 || code == 1011;
+        scheduleReconnect(text, permanent);
+        return;
+    }
     failAndReset(text);
 }
 
@@ -480,8 +610,13 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
         failAndReset(QStringLiteral("聊天服务返回的账号不匹配"));
         return;
     }
+    const bool was_reconnecting = _reconnecting;
     auto *mgr = UserMgr::GetInstance().get();
     _history_pages = 0;
+    //重连时 1006 会重新下发完整快照：分页状态与"本次出现过的群"必须重新统计，
+    //否则上一次登录的 _seen_threads 会把已解散的群误判成还在
+    _seen_threads.clear();
+    _threads_complete = false;
     mgr->SetToken(_pending.Token); //资源服务器校验同一个utoken
     auto self_info = std::make_shared<UserInfo>(data["uid"].toInt(), data["name"].toString(),
         data["nick"].toString(), data["icon"].toString(), data["sex"].toInt());
@@ -509,8 +644,14 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     _timeout.stop();
     _ready = true;
     _current = _pending;
+    _reconnect_attempt = 0;
+    _reconnecting = false;
+    _reconnect_timer.stop();
     _heartbeat.start();
+    _heartbeat_watchdog.start();
     FileService::GetInstance()->OnSessionReady(); //登录完成后再补拉缺失头像
+    if (was_reconnecting)
+        emit reconnected();
     emit sessionReady();
 }
 
@@ -544,6 +685,92 @@ void SessionService::finishThreadList()
         return;
     _threads_complete = true;
     UserMgr::GetInstance()->MarkMissingGroupsLeft(_seen_threads);
+}
+
+//连接 + 登录帧的整体超时：首次登录交给登录页，重连时进入下一次退避
+void SessionService::onSessionTimeout()
+{
+    if (_reconnecting) {
+        _connecting = false;
+        scheduleReconnect(QStringLiteral("连接聊天服务超时"));
+        return;
+    }
+    failAndReset(QStringLiteral("连接聊天服务超时"));
+}
+
+//普通断线的统一入口：保留 UserMgr 与本地库，只重建 TCP 并重新登录。
+//被顶号/凭证失效/主动退出走 permanent 或 _want_connection=false，不会再重连
+void SessionService::scheduleReconnect(const QString &reason, bool permanent)
+{
+    if (permanent) {
+        _reconnecting = false;
+        _reconnect_attempt = 0;
+        _reconnect_timer.stop();
+        _timeout.stop();
+        _connecting = false;
+        _want_connection = false;
+        _heartbeat_watchdog.stop();
+        TcpMgr::GetInstance()->CloseConnectionAsync();
+        FileService::GetInstance()->CloseResource();
+        emit reconnectFailed(reason);
+        return;
+    }
+    if (!_want_connection || _current.Uid <= 0 || _current.Token.isEmpty()) {
+        _reconnecting = false;
+        _reconnect_attempt = 0;
+        _reconnect_timer.stop();
+        _timeout.stop();
+        _connecting = false;
+        _heartbeat_watchdog.stop();
+        TcpMgr::GetInstance()->CloseConnectionAsync();
+        FileService::GetInstance()->CloseResource();
+        emit reconnectFailed(reason.isEmpty() ? QStringLiteral("登录状态已失效") : reason);
+        return;
+    }
+    //同一次失败可能同时收到 con_failed 与 disconnected：只排一次，避免跳号
+    if (_reconnect_timer.isActive())
+        return;
+    if (_reconnect_attempt >= kMaxReconnectAttempts) {
+        _reconnecting = false;
+        _want_connection = false;
+        _connecting = false;
+        _timeout.stop();
+        _heartbeat.stop();
+        _heartbeat_watchdog.stop();
+        TcpMgr::GetInstance()->CloseConnectionAsync();
+        FileService::GetInstance()->CloseResource();
+        emit reconnectFailed(QStringLiteral("自动重连失败，请检查网络后重新登录"));
+        return;
+    }
+
+    _reconnect_attempt++;
+    _reconnecting = true;
+    _connecting = false;
+    _ready = false;
+    _timeout.stop();
+    _heartbeat.stop();
+    _heartbeat_watchdog.stop();
+    const int shift = qMin(_reconnect_attempt - 1, 4);
+    const int delay = qMin(kReconnectBaseMs << shift, kReconnectMaxMs);
+    emit reconnecting(_reconnect_attempt);
+    _reconnect_timer.start(delay);
+}
+
+//真正发起一次重连：复用当前 token，不清 UserMgr/本地库
+void SessionService::startReconnectAttempt()
+{
+    if (!_reconnecting || !_want_connection)
+        return;
+    if (_current.Uid <= 0 || _current.Token.isEmpty()) {
+        scheduleReconnect(QStringLiteral("登录状态已失效"), true);
+        return;
+    }
+
+    _pending = _current;
+    _connecting = true;
+    _timeout.start();
+    TcpMgr::GetInstance()->ConnectToServer(_pending);
+    FileService::GetInstance()->ConnectToResource(_pending); //资源连接不阻塞聊天重连
 }
 
 // 统一失败出口：停表、复位状态，把原因抛给界面

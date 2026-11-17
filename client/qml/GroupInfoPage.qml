@@ -16,6 +16,10 @@ Item {
     readonly property int memberCount: info.memberCount || members.length
     readonly property string notice: String(info.notice || "")
     readonly property bool muted: info.muted === true
+    //成员卡与移出确认：普通成员也能看到成员资料，不再点了没反应
+    property var cardMember: ({})
+    property int pendingRemoveUid: 0
+    property string pendingRemoveName: ""
 
     signal backRequested()
 
@@ -351,18 +355,28 @@ Item {
                             id: memberArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
+                            //只有能管理的人点成员才会弹管理菜单，其他人点开成员资料
+                            cursorShape: (root.canManage && !modelData.isSelf
+                                && modelData.role !== 2) ? Qt.PointingHandCursor
+                                                         : Qt.ArrowCursor
                             onClicked: {
-                                if (!root.canManage || modelData.isSelf || modelData.role === 2)
-                                    return
-                                const point = mapToItem(root, 10, 10)
-                                memberMenu.open(point.x, point.y, [
-                                    { text: modelData.role === 1 ? "取消管理员" : "设为管理员",
-                                      action: () => controller.setGroupAdmin(modelData.uid,
-                                          modelData.role !== 1) },
-                                    { text: "移出群聊",
-                                      action: () => controller.removeGroupMember(modelData.uid) }
-                                ])
+                                if (root.canManage && !modelData.isSelf && modelData.role !== 2) {
+                                    const point = mapToItem(root, 10, 10)
+                                    memberMenu.open(point.x, point.y, [
+                                        { text: modelData.role === 1 ? "取消管理员" : "设为管理员",
+                                          action: () => controller.setGroupAdmin(modelData.uid,
+                                              modelData.role !== 1) },
+                                        { text: "移出群聊",
+                                          action: () => {
+                                              root.pendingRemoveUid = modelData.uid
+                                              root.pendingRemoveName = modelData.name
+                                              removeConfirm.open()
+                                          } }
+                                    ])
+                                } else {
+                                    root.cardMember = modelData
+                                    memberCard.open()
+                                }
                             }
                         }
                     }
@@ -401,11 +415,152 @@ Item {
                     onClicked: dismissConfirm.open()
                 }
             }
+            Text {
+                width: parent.width
+                topPadding: 8
+                visible: root.isOwner
+                text: "群主不能直接退出，需要先解散群聊。"
+                color: Theme.textHint
+                font.pixelSize: 11
+                wrapMode: Text.Wrap
+            }
             Item { width: parent.width; height: 24 }
         }
     }
 
     ContextMenu { id: memberMenu; anchors.fill: parent }
+
+    // 成员卡：普通成员点头像也能看到是谁，不再是一个"手型但没反应"的死区
+    Popup {
+        id: memberCard
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        width: 300
+        height: 286
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        Column {
+            x: 24
+            y: 24
+            width: parent.width - 48
+            spacing: 10
+
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 64
+                height: 64
+                radius: 16
+                source: root.cardMember.icon || ""
+                name: root.cardMember.name || ""
+                textSize: 24
+            }
+            Text {
+                width: parent.width
+                text: root.cardMember.name || ""
+                textFormat: Text.PlainText
+                color: Theme.textPrimary
+                font.pixelSize: 18
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+            }
+            Text {
+                width: parent.width
+                text: root.cardMember.role === 2 ? "群主"
+                    : root.cardMember.role === 1 ? "管理员" : "群成员"
+                color: Theme.textSecondary
+                font.pixelSize: 11
+                horizontalAlignment: Text.AlignHCenter
+            }
+            Text {
+                width: parent.width
+                visible: String(root.cardMember.groupNick || "").length > 0
+                text: "群昵称：" + String(root.cardMember.groupNick || "")
+                textFormat: Text.PlainText
+                color: Theme.textHint
+                font.pixelSize: 11
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+            }
+            AppButton {
+                width: parent.width
+                height: 36
+                text: "关闭"
+                onClicked: memberCard.close()
+            }
+        }
+    }
+
+    // 移出群聊：不可撤销，先确认成员名字，避免在头像旁点错一行
+    Popup {
+        id: removeConfirm
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        width: 340
+        height: 176
+        padding: 0
+        closePolicy: Popup.CloseOnEscape
+        onClosed: {
+            root.pendingRemoveUid = 0
+            root.pendingRemoveName = ""
+        }
+        background: Rectangle {
+            radius: 10
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        Column {
+            x: 18
+            y: 18
+            width: parent.width - 36
+            spacing: 14
+            Text {
+                text: "移出群聊"
+                color: Theme.textPrimary
+                font.pixelSize: 15
+                font.bold: true
+            }
+            Text {
+                width: parent.width
+                text: "将「" + root.pendingRemoveName + "」移出这个群？"
+                    + "对方会收到移出通知，之后不能再在这里发言。"
+                textFormat: Text.PlainText
+                color: Theme.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            Row {
+                spacing: 10
+                anchors.right: parent.right
+                AppButton {
+                    width: 84
+                    height: 34
+                    text: "取消"
+                    onClicked: removeConfirm.close()
+                }
+                AppButton {
+                    width: 84
+                    height: 34
+                    text: "移出"
+                    onClicked: {
+                        controller.removeGroupMember(root.pendingRemoveUid)
+                        removeConfirm.close()
+                    }
+                }
+            }
+        }
+    }
 
     // 通用编辑弹层：标题 + 输入框 + 取消/保存，群名与公告共用一套样式
     Popup {

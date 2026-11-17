@@ -41,6 +41,7 @@ Item {
         contentHeight: details.height + 84
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        enabled: root.pending.length === 0
 
         Column {
             id: details
@@ -145,8 +146,11 @@ Item {
     Rectangle {
         anchors.fill: parent
         visible: root.pending.length > 0
+        focus: visible
         color: Theme.overlay
         z: 20
+        Keys.onEscapePressed: root.pending = ""
+        onVisibleChanged: if (visible) forceActiveFocus()
 
         MouseArea {
             anchors.fill: parent

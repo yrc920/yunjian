@@ -72,6 +72,8 @@ public:
     //打开会话：从本地库取最近一页装进内存窗口，返回是否还有更早的消息。
     //窗口只在"正在看"的会话上存在，切走不保留，长期使用内存不随历史增长
     bool OpenWindow(qint64 threadId);
+    //从搜索结果跳回：以 messageId 为中心装载前后上下文，返回是否还有更早
+    bool OpenWindowAt(qint64 threadId, qint64 messageId);
     //上滑翻页：再取更早一页插到窗口头部，返回是否还有更早
     bool LoadOlder(qint64 threadId);
     //把库里的一行还原成内存消息：补全本地资源路径，缺文件时按需排入下载队列。

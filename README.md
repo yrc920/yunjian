@@ -1,6 +1,6 @@
 # XiguChat
 
-> 全 C++ 的即时通讯系统：Qt 6 桌面客户端 + gRPC 微服务后端，Windows / macOS / Linux 三平台本地构建运行。
+> 全 C++ 的即时通讯系统：Qt 6 桌面客户端 + gRPC 微服务后端；客户端面向 Windows / macOS，后端三平台部署。
 
 XiguChat 是一个分布式即时通讯系统。客户端用 Qt 6 实现登录注册、好友管理与实时会话；后端拆成五个
 独立的 C++ 进程，分别负责 HTTP 网关、状态路由、长连接消息、验证码下发与资源传输，服务之间用 gRPC 通信，
@@ -153,7 +153,7 @@ ChatServer 是"一套代码、配置驱动多实例"：`services/ChatServer/conf
 
 | 层次 | 技术 |
 | --- | --- |
-| 客户端 | Qt 6.5（Core / Gui / Network / Quick）、C++17、QML + Qt 资源系统（qrc） |
+| 客户端 | Qt 6.5（Core / Gui / Widgets / Network / Quick）、C++17、QML + Qt 资源系统（qrc）；Widgets 仅用于托盘集成 |
 | 服务端 | C++20、gRPC + protobuf、Boost.Asio / Boost.Beast、Boost.PropertyTree、Boost.Uuid |
 | 存储 | MySQL 8（X DevAPI / X Protocol 33060）、Redis（hiredis） |
 | 安全 | libsodium（Argon2id 口令哈希）、Poco NetSSL（SMTP over SSL） |
@@ -201,12 +201,21 @@ macOS / Linux 上 `libsodium` 走 autotools 构建，需系统预装
 
 ```bash
 cd client
-cmake --preset macos-clang                # 或 windows-mingw / linux-gcc
+cmake --preset macos-clang                # Windows 用 windows-mingw
 cmake --build --preset macos-clang
 ```
 
 命令行构建时可用 `QT_ROOT` 指定 Qt 安装；Windows MinGW 还需 `QT_MINGW_ROOT`
 （必须为 Qt 6.5 配套的 `mingw1120_64`）。Qt Creator 用户直接打开 `client/CMakeLists.txt` 选 Kit 即可。
+
+客户端 UI 始终是 `QML + Qt Quick`；`QApplication`/`QSystemTrayIcon` 只作为系统托盘与通知的集成层，
+`bridge/traycontroller.*` 内部不创建任何 QWidget 页面，也不改变 QML 的事件循环与页面结构：
+
+- Windows：`windeployqt --qmldir client/qml` 会把 Qt6Widgets 一并部署；托盘/气泡通知由 `QSystemTrayIcon` 提供。
+- macOS：`QSystemTrayIcon` 提供菜单栏图标与通知；首次通知需要系统授权，Dock 未读角标使用 `QGuiApplication::setBadgeNumber`。
+- 前端目标只有 Windows / macOS；Linux 只用于后端服务部署，不在本轮前端支持范围内。
+- 选择 QtWidgets 而不是双端原生托盘，是为了避免维护 Objective-C++ 与 Win32 两套平台代码；
+  Widgets 仅限托盘这一处，业务与界面层仍保持 QML/Qt Quick。
 
 ### 4. 启动
 

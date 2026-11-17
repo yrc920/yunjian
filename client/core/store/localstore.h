@@ -44,6 +44,13 @@ struct StoredMessage {
     QString thumb_name;
 };
 
+//消息搜索结果：消息本体加上它所属会话的类型与单聊对方
+struct MessageSearchHit {
+    StoredMessage message;
+    int thread_type = 1;
+    int peer_uid = 0;
+};
+
 //会话行：last_* 是列表预览的冗余字段，避免启动时为每个会话各查一次消息
 struct StoredThread {
     qint64 thread_id = 0;
@@ -59,6 +66,10 @@ struct StoredThread {
     bool last_recalled = false;
     QString draft;
     qint64 sync_cursor = 0;
+    //本机会话整理状态：置顶、单聊免打扰、删除会话后隐藏
+    bool pinned = false;
+    bool muted = false;
+    bool hidden = false;
 };
 
 struct StoredFriend {
@@ -122,6 +133,8 @@ public:
     void RefreshThreadPreview(qint64 thread_id);
     void SaveThreadUnread(qint64 thread_id, int unread, bool at_me);
     void SaveThreadDraft(qint64 thread_id, const QString &html);
+    //置顶、私聊免打扰、隐藏会话只影响本机，三者一起写，避免多次往返
+    void SaveThreadFlags(qint64 thread_id, bool pinned, bool muted, bool hidden);
     QVector<StoredThread> LoadThreads() const;
     QString LoadDraft(qint64 thread_id) const;
     qint64 SyncCursor(qint64 thread_id) const;
@@ -147,6 +160,13 @@ public:
     //取比 before_id 更早的一页，按消息号升序返回
     QVector<StoredMessage> LoadBefore(qint64 thread_id, qint64 before_id, int limit,
                                       bool *has_more) const;
+    //以 anchor_id 为中心取前后各一页，供搜索结果跳回上下文
+    QVector<StoredMessage> LoadAround(qint64 thread_id, qint64 anchor_id,
+                                      int before, int after,
+                                      bool *has_before, bool *has_after) const;
+    //本机已缓存文本消息的模糊搜索；thread_id 为 0 表示全部会话
+    QVector<MessageSearchHit> SearchMessages(const QString &keyword, qint64 thread_id,
+                                             int limit) const;
 
     // ---- 好友与群 ----
     void SaveFriend(const StoredFriend &item);
@@ -169,6 +189,7 @@ private:
     bool createSchemaV1();
     bool upgradeSchemaV2(); //v2：会话预览补 last_recalled，撤回后列表不再显示旧正文
     bool upgradeSchemaV3(); //v3：群补 left_state，被移出/解散后仍能保留历史
+    bool upgradeSchemaV4(); //v4：会话补置顶/免打扰/隐藏，支持本机整理会话
     void applyPragmas();
     //SQL 失败时把驱动给出的原始错误一起打出来：只打语句本身很难定位是语法还是约束
     void logError(const QString &sql) const;

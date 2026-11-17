@@ -63,6 +63,12 @@ class ChatBridge : public QObject
     //清除聊天记录的二次确认：标题里带上会话名，避免误清别的会话
     Q_PROPERTY(bool clearConfirmVisible READ clearConfirmVisible NOTIFY clearConfirmChanged)
     Q_PROPERTY(QString clearConfirmTitle READ clearConfirmTitle NOTIFY clearConfirmChanged)
+    //同一个确认层也承接"删除会话"：文案与按钮跟着这个开关切换
+    Q_PROPERTY(bool clearConfirmDelete READ clearConfirmDelete NOTIFY clearConfirmChanged)
+    Q_PROPERTY(bool logoutConfirmVisible READ logoutConfirmVisible NOTIFY logoutConfirmChanged)
+    //进入会话时的未读数与第一条未读消息号：消息列表据此画"以下 N 条未读"
+    Q_PROPERTY(int entryUnread READ entryUnread NOTIFY currentChanged)
+    Q_PROPERTY(qint64 entryDividerId READ entryDividerId NOTIFY currentChanged)
     Q_PROPERTY(QString myIcon READ myIcon NOTIFY myProfileChanged)
     Q_PROPERTY(QVariantMap myProfile READ myProfile NOTIFY myProfileChanged)
     Q_PROPERTY(QString myName READ myName CONSTANT)
@@ -71,6 +77,10 @@ class ChatBridge : public QObject
     Q_PROPERTY(int searchState READ searchState NOTIFY searchStateChanged)
     Q_PROPERTY(QVariantMap searchResult READ searchResult NOTIFY searchResultChanged)
     Q_PROPERTY(QString searchMessage READ searchMessage NOTIFY searchStateChanged)
+    //本地消息搜索：结果项带会话名、发送者、摘要与时间；点击后定位到原消息
+    Q_PROPERTY(QVariantList messageSearchResults READ messageSearchResults NOTIFY messageSearchChanged)
+    Q_PROPERTY(int messageSearchCount READ messageSearchCount NOTIFY messageSearchChanged)
+    Q_PROPERTY(qint64 scrollToMessageId READ scrollToMessageId NOTIFY scrollToMessageChanged)
     Q_PROPERTY(bool addFriendOpen READ addFriendOpen NOTIFY addFriendOpenChanged)
     Q_PROPERTY(QString friendQuery READ friendQuery WRITE setFriendQuery NOTIFY friendQueryChanged)
     Q_PROPERTY(QVariantList friendMatches READ friendMatches NOTIFY friendMatchesChanged)
@@ -155,6 +165,12 @@ public:
     Q_INVOKABLE void askClearHistory(qint64 threadId, int kind, const QString &title);
     Q_INVOKABLE void confirmClearHistory();
     Q_INVOKABLE void cancelClearHistory();
+    //删除会话：清本机记录并隐藏会话，好友关系与服务端记录都保留
+    Q_INVOKABLE void askDeleteConversation(qint64 threadId, int kind, const QString &title);
+    //本机会话整理
+    Q_INVOKABLE void setThreadPinned(qint64 threadId, bool pinned);
+    Q_INVOKABLE void setThreadMuted(qint64 threadId, bool muted);
+    Q_INVOKABLE void markThreadUnread(qint64 threadId);
     //设置-通用：清空全部本地聊天记录 / 清空已下载的媒体文件
     Q_INVOKABLE void clearAllHistory();
     Q_INVOKABLE void clearMediaCache();
@@ -162,6 +178,13 @@ public:
     QString chatBlockedText() const;
     bool clearConfirmVisible() const { return _clearConfirmVisible; }
     QString clearConfirmTitle() const { return _clearConfirmTitle; }
+    bool clearConfirmDelete() const { return _clearConfirmDelete; }
+    int entryUnread() const { return _entryUnread; }
+    qint64 entryDividerId() const { return _entryDividerId; }
+    //窗口是否在前台、消息列表是否在底部：只有两者都成立才算"正在看"，
+    //否则新消息要正常计未读，不能因为会话页还开着就当成已读
+    Q_INVOKABLE void setWindowActive(bool active);
+    Q_INVOKABLE void setChatAtBottom(bool atBottom);
     // 在当前会话里直接发一条朋友验证（不切换区域），验证内容由弹层传入
     Q_INVOKABLE void sendReAdd(const QString &text);
 
@@ -178,6 +201,9 @@ public:
     int searchState() const { return _searchState; }
     QVariantMap searchResult() const { return _searchResult; }
     QString searchMessage() const { return _searchMessage; }
+    QVariantList messageSearchResults() const { return _messageSearchResults; }
+    int messageSearchCount() const { return _messageSearchResults.size(); }
+    qint64 scrollToMessageId() const { return _scrollToMessageId; }
 
     // 联系人页的加好友浮层；打开时搜索框保持焦点
     bool addFriendOpen() const { return _addFriendOpen; }
@@ -222,6 +248,8 @@ public:
     Q_INVOKABLE void openChat(int uid);
     // 打开群聊：thread_id 已经确定，不再走建会话请求
     Q_INVOKABLE void openGroup(qint64 threadId);
+    //通知点击：按会话类型回到对应聊天；私聊优先用 peer uid，兼容还没有 thread_id 的老数据
+    Q_INVOKABLE void openThread(qint64 threadId, int kind, int peerUid);
     // 撤回自己发的消息：服务端校验时间窗，成功后双方都换成提示行
     Q_INVOKABLE void recallMessage(qint64 messageId);
     // 重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新发送
@@ -229,6 +257,13 @@ public:
     Q_INVOKABLE int retryMessage(const QString &msgId);
     // 退出登录：断开长连接、清空账号数据、回到登录页
     Q_INVOKABLE void logout();
+    //退出登录不可撤销：先确认，再交给 ShellBridge 真正断开
+    Q_INVOKABLE void askLogout();
+    Q_INVOKABLE void confirmLogout();
+    Q_INVOKABLE void cancelLogout();
+    bool logoutConfirmVisible() const { return _logoutConfirmVisible; }
+    //好友资料页返回：从聊天进来就回会话，从联系人进来就回联系人空态
+    Q_INVOKABLE void backFromProfile();
     // 删除好友：双向删除，不通知对方；会话与历史保留
     Q_INVOKABLE void deleteFriend(int uid);
     // 删除确认：入口只负责发起，真正的删除等用户确认后再执行
@@ -240,6 +275,8 @@ public:
     bool deleteConfirmVisible() const { return _deleteConfirmVisible; }
     QString deleteTargetName() const { return _deleteTargetName; }
     Q_INVOKABLE void openProfile(int uid);
+    //从聊天页标题进入资料：返回时回到当前会话，而不是联系人列表
+    Q_INVOKABLE void openProfileFromChat(int uid);
     Q_INVOKABLE void openApplyList();
 
     // ---- 群聊 ----
@@ -283,6 +320,14 @@ public:
     Q_INVOKABLE QVariantList mediaItems();
     Q_INVOKABLE void search();
     Q_INVOKABLE void clearSearch();
+    //本地消息搜索：query 为空即清空；currentOnly 只搜当前会话
+    Q_INVOKABLE void searchMessages(const QString &query, bool currentOnly = false);
+    Q_INVOKABLE void clearMessageSearch();
+    //点击搜索结果：切到对应会话并按消息号装载上下文
+    Q_INVOKABLE void openMessageResult(qint64 threadId, int kind, int peerUid, qint64 messageId);
+    Q_INVOKABLE int messageRow(qint64 messageId) const;
+    //消息列表定位完成后调用，清掉一次性滚动请求
+    Q_INVOKABLE void clearScrollToMessage();
     // 发出申请；name/nick/icon 用于在「新的朋友」里立刻显示这条记录，tags 是给对方打的分组
     Q_INVOKABLE void applyTo(int uid, const QString &name, const QString &nick,
                              const QString &icon, const QString &verify, const QString &remark,
@@ -301,6 +346,8 @@ signals:
     void searchTextChanged();
     void searchStateChanged();
     void searchResultChanged();
+    void messageSearchChanged();
+    void scrollToMessageChanged();
     void addFriendOpenChanged();
     void friendQueryChanged();
     void friendMatchesChanged();
@@ -320,6 +367,7 @@ signals:
     //单聊关系提示变化：聊天页顶部横条显示/隐藏
     void chatBlockedChanged();
     void clearConfirmChanged();
+    void logoutConfirmChanged();
     //删除确认弹层开关
     void deleteConfirmChanged();
     //另存为的最终结果：异步下载完成或失败后回到界面提示
@@ -329,6 +377,8 @@ signals:
 private:
     // 按当前模式与页面重新判断"正在看哪个会话"，供未读计数使用
     void refreshActiveThread();
+    //进入会话时记下未读起点：第一条未读的服务端消息号，供消息列表画分割线
+    void captureEntryUnread(qint64 thread_id);
     void setMode(int mode);
     void setPane(int pane);
     //按当前会话重建标题、副标题与群资料快照
@@ -366,16 +416,27 @@ private:
     int _lastContactPane = ApplyFriendPage; //联系人区域的停留页，切回来时恢复
     bool _deleteConfirmVisible = false;
     bool _clearConfirmVisible = false;
+    bool _clearConfirmDelete = false;
+    bool _logoutConfirmVisible = false;
     qint64 _clearThreadId = 0;
     int _clearKind = 1;
     QString _clearConfirmTitle;
+    //进入会话时的未读起点：只在这条会话里有效，切走后由下一次打开覆盖
+    int _entryUnread = 0;
+    qint64 _entryDividerId = 0;
+    bool _windowActive = true;
+    bool _chatAtBottom = true;
     int _lastSettingsPane = UserInfoPage; //设置区上次停留的页，切回来时恢复
+    //资料页来源：从聊天标题进来时，返回要回到会话；从联系人进来时回联系人
+    bool _profileFromChat = false;
     int _deleteTargetUid = 0;
     QString _deleteTargetName;
     QString _searchText;
     int _searchState = SearchIdle;
     QVariantMap _searchResult;
     QString _searchMessage;
+    QVariantList _messageSearchResults;
+    qint64 _scrollToMessageId = 0;
     QString _pendingQuery; // 本次在途搜索的关键词，用于丢弃改词后回来的旧结果
     bool _addFriendOpen = false;
     QString _friendQuery;

@@ -42,6 +42,8 @@ public:
         SubtitleRole, //群聊显示"3 人"，单聊为空
         FriendRole,   //单聊：是否仍是好友；群聊恒为 false
         LeftStateRole, //群聊：0 正常 / 1 被移出 / 2 已解散；单聊恒为 0
+        PinnedRole,   //本机置顶：排在普通会话前
+        DraftRole,    //草稿纯文本：会话行用它替代最后一条消息
     };
 
     explicit ConversationModel(QObject *parent = nullptr);
@@ -63,9 +65,10 @@ private:
         int kind = 1;
         int uid = 0;
         qint64 thread = 0;
+        bool pinned = false;
     };
 
-    //按最后一条消息时间倒序；没有消息的会话排最后，相同时间保持原顺序
+    //按置顶优先、最后一条消息时间倒序；没有消息的会话排最后，相同时间保持原顺序
     void rebuild();
     void refreshRow(int row);
     QVector<Row> computeRows() const;

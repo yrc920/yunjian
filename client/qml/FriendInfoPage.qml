@@ -13,6 +13,8 @@ Item {
     signal editRelationRequested()
     // 删除确认由外层弹层统一处理，页面只负责发起
     signal deleteRequested()
+    // 从聊天里点进来时，看完资料要能回到原来的会话
+    signal backRequested()
 
     readonly property int sex: profile.sex === undefined ? 0 : profile.sex
     // 备注 > 昵称 > 用户名，与列表、聊天标题保持同一条规则
@@ -31,8 +33,37 @@ Item {
         width: parent.width
         height: 74
 
+        Rectangle {
+            id: backButton
+            x: 24
+            anchors.verticalCenter: parent.verticalCenter
+            width: 30
+            height: 30
+            radius: 15
+            color: backArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: "返回"
+            Accessible.onPressAction: root.backRequested()
+            Keys.onSpacePressed: root.backRequested()
+            Keys.onReturnPressed: root.backRequested()
+            AppIcon {
+                anchors.centerIn: parent
+                name: "back"
+                size: 17
+                color: Theme.textSecondary
+            }
+            MouseArea {
+                id: backArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.backRequested()
+            }
+        }
+
         Text {
-            x: 30
+            x: 64
             anchors.verticalCenter: parent.verticalCenter
             text: "联系人资料"
             color: Theme.textPrimary

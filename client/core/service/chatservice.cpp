@@ -1422,6 +1422,29 @@ bool ChatService::OpenWindow(qint64 threadId)
     return hasMore;
 }
 
+//搜索结果跳回：装载 anchor 前后各一页，消息列表随后定位到 anchor
+bool ChatService::OpenWindowAt(qint64 threadId, qint64 messageId)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    if (threadId <= 0 || messageId <= 0 || !mgr->ThreadData(threadId))
+        return false;
+
+    bool hasBefore = false;
+    bool hasAfter = false;
+    const auto rows = LocalStore::GetInstance()->LoadAround(
+        threadId, messageId, kWindowPageSize, kWindowPageSize, &hasBefore, &hasAfter);
+    if (rows.isEmpty())
+        return false;
+
+    std::vector<std::shared_ptr<TextChatData>> messages;
+    messages.reserve(static_cast<size_t>(rows.size()));
+    for (const auto &row : rows)
+        messages.push_back(MessageFromStored(row, mgr->GetUid()));
+    mgr->SetThreadWindow(threadId, std::move(messages));
+    //调用方只关心是否装载成功；更早/更晚的余量由列表滚动时再按需加载
+    return !rows.isEmpty();
+}
+
 //上滑翻页：以窗口里最小的服务端消息号为游标向前取一页
 bool ChatService::LoadOlder(qint64 threadId)
 {

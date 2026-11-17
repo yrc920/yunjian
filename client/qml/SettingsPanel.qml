@@ -1,4 +1,5 @@
 import QtQuick
+import XiguChat
 
 // 设置索引沿用聊天列表的宽度，当前选项对应右侧个人资料。
 // 「个人资料」是唯一分栏，外观切换作为本机快捷开关固定在其下方。
@@ -196,9 +197,9 @@ Rectangle {
         activeFocusOnTab: true
         Accessible.role: Accessible.Button
         Accessible.name: "退出登录"
-        Accessible.onPressAction: root.controller ? root.controller.logout() : undefined
-        Keys.onSpacePressed: if (root.controller) root.controller.logout()
-        Keys.onReturnPressed: if (root.controller) root.controller.logout()
+        Accessible.onPressAction: root.controller ? root.controller.askLogout() : undefined
+        Keys.onSpacePressed: if (root.controller) root.controller.askLogout()
+        Keys.onReturnPressed: if (root.controller) root.controller.askLogout()
 
         AppIcon {
             x: 17
@@ -222,7 +223,7 @@ Rectangle {
             onClicked: {
                 logoutRow.forceActiveFocus()
                 if (root.controller)
-                    root.controller.logout()
+                    root.controller.askLogout()
             }
         }
     }

@@ -29,6 +29,9 @@ Canvas {
         function circle(x, y, r) {
             c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke()
         }
+        function dot(x, y, r) {
+            c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill()
+        }
         function poly(points, closed) {
             c.beginPath(); c.moveTo(points[0], points[1])
             for (let i = 2; i < points.length; i += 2) c.lineTo(points[i], points[i + 1])
@@ -140,6 +143,13 @@ Canvas {
         case "open":
             c.beginPath(); rounded(4, 5, 15, 15, 2); c.stroke()
             line(11, 13, 20, 4); poly([15, 4, 20, 4, 20, 9], false); break
+        case "more":
+            dot(5, 12, 1.5); dot(12, 12, 1.5); dot(19, 12, 1.5); break
+        case "pin":
+            line(12, 13, 12, 21)
+            c.beginPath(); c.moveTo(7, 4); c.lineTo(17, 4); c.lineTo(15.5, 9)
+            c.lineTo(18, 13); c.lineTo(6, 13); c.lineTo(8.5, 9); c.closePath(); c.stroke()
+            break
         }
     }
 }

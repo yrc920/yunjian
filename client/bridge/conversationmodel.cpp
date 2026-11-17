@@ -95,6 +95,14 @@ ConversationModel::ConversationModel(QObject *parent) : QAbstractListModel(paren
             return;
         emit dataChanged(index(0, 0), index(_rows.size() - 1, 0), {UnreadRole, AtMeRole});
     });
+    //草稿与单聊免打扰：只刷新这一行，不重排；置顶会走 ConversationChanged
+    connect(mgr, &UserMgr::ThreadStateChanged, this, [this](qint64 thread_id) {
+        const int row = indexOfThread(thread_id);
+        if (row < 0)
+            return;
+        const auto idx = index(row, 0);
+        emit dataChanged(idx, idx, {DraftRole, MutedRole, PinnedRole});
+    });
     connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
         for (int row = 0; row < _rows.size(); ++row) {
             if (_rows[row].kind == 1 && _rows[row].uid == uid) {
@@ -136,23 +144,34 @@ QVector<ConversationModel::Row> ConversationModel::computeRows() const
         //还没建立会话的好友只在联系人里出现；打开会话（1025）后才进这张表
         if (thread <= 0)
             continue;
+        //本地删除的会话不占列表位置；收到新消息时由 UserMgr 取消隐藏。
+        //隐藏标记与未读不一致时（例如上次异常退出），先让未读把会话带回来
+        if (info->_chat_thread->_hidden && mgr->ThreadUnread(thread) == 0)
+            continue;
         Row row;
         row.kind = 1;
         row.uid = info->_uid;
         row.thread = thread;
+        row.pinned = info->_chat_thread->_pinned;
         rows.push_back(row);
     }
     for (int i = 0; i < mgr->GroupCount(); ++i) {
         auto group = mgr->GroupAt(i);
         if (!group)
             continue;
+        if (group->_chat_thread && group->_chat_thread->_hidden
+            && mgr->ThreadUnread(group->_thread_id) == 0)
+            continue;
         Row row;
         row.kind = 2;
         row.thread = group->_thread_id;
+        row.pinned = group->_chat_thread && group->_chat_thread->_pinned;
         rows.push_back(row);
     }
-    //没有消息的会话排在后面；stable_sort 让同时间的行保持原有顺序，列表不会来回跳
+    //置顶优先；同一组里没有消息的会话排在后面，stable_sort 让同时间的行保持原顺序
     std::stable_sort(rows.begin(), rows.end(), [this](const Row &left, const Row &right) {
+        if (left.pinned != right.pinned)
+            return left.pinned;
         return lastMessageTime(left) > lastMessageTime(right);
     });
     return rows;
@@ -274,6 +293,9 @@ QVariant ConversationModel::data(const QModelIndex &index, int role) const
         case MemberCountRole: return group->_member_count;
         case FriendRole: return false;
         case LeftStateRole: return group->_left_state;
+        case PinnedRole: return group->_chat_thread && group->_chat_thread->_pinned;
+        case DraftRole:
+            return group->_chat_thread ? group->_chat_thread->_draft_preview : QString();
         case SubtitleRole:
             //离开的群用状态文字替换人数：列表上一眼能看出这个群已经不能发言
             if (group->_left_state == 1)
@@ -302,11 +324,13 @@ QVariant ConversationModel::data(const QModelIndex &index, int role) const
     case LastTextRole: return lastText(info);
     case LastTimeRole: return TimeFormat::listTime(lastMessageTime(info));
     case UnreadRole: return mgr->ThreadUnread(row.thread);
-    case MutedRole: return false;
+    case MutedRole: return info->_chat_thread->_muted;
     case AtMeRole: return false;
     case MemberCountRole: return 0;
     case FriendRole: return info->_is_friend;
     case LeftStateRole: return 0;
+    case PinnedRole: return info->_chat_thread->_pinned;
+    case DraftRole: return info->_chat_thread->_draft_preview;
     case SubtitleRole: return QString();
     default: return {};
     }
@@ -330,6 +354,8 @@ QHash<int, QByteArray> ConversationModel::roleNames() const
         {FriendRole, "isFriend"},
         {LeftStateRole, "leftState"},
         {SubtitleRole, "subtitle"},
+        {PinnedRole, "pinned"},
+        {DraftRole, "draft"},
     };
 }
 

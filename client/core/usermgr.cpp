@@ -9,10 +9,33 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QTextDocument>
 #include <QUrl>
 
 namespace {
 constexpr qint64 MaxAvatarBytes = 4 * 1024 * 1024;
+
+//草稿是带格式的 HTML，会话列表只显示一行纯文本。空段落与换行都压成空格，
+//并截断到 120 字，避免一条很长的草稿把整行布局撑坏。
+//空文档的 toHtml() 也会返回完整 HTML 骨架，不能只看"html 非空"就当成草稿
+QString draftPreview(const QString &html)
+{
+    if (html.isEmpty())
+        return {};
+    QTextDocument doc;
+    doc.setHtml(html);
+    const QString raw = doc.toPlainText();
+    //图片/表情在文本里是对象替换符；只有它们没有文字时，仍算一条草稿
+    const bool has_object = raw.contains(QChar::ObjectReplacementCharacter);
+    QString text = raw;
+    text.remove(QChar::ObjectReplacementCharacter);
+    text.replace(QChar::ParagraphSeparator, QLatin1Char(' '));
+    text.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    text = text.simplified();
+    if (text.isEmpty())
+        return has_object ? QStringLiteral("草稿") : QString();
+    return text.left(120);
+}
 
 //头像文件按 PNG 签名和 IEND 尾块校验：下载中断留下的半截文件不能当图片用
 bool isAvatarPng(const QByteArray &png)
@@ -361,6 +384,13 @@ void UserMgr::IncThreadUnread(qint64 thread_id)
     if (thread_id <= 0 || thread_id == _active_thread)
         return;
     std::lock_guard<std::recursive_mutex> lock(_mtx);
+    //被本地删除的会话收到新消息时自动回到列表，不能因为隐藏而漏掉消息
+    if (auto data = findThreadData(thread_id); data && data->_hidden) {
+        data->_hidden = false;
+        LocalStore::GetInstance()->SaveThreadFlags(thread_id, data->_pinned,
+                                                   data->_muted, false);
+        emit ConversationChanged(thread_id, FriendIdByThread(thread_id));
+    }
     ++_unread[thread_id];
     LocalStore::GetInstance()->SaveThreadUnread(thread_id, _unread.value(thread_id, 0),
                                                 _at_me_threads.contains(thread_id));
@@ -428,7 +458,7 @@ int UserMgr::UnreadTotal() const
     return total;
 }
 
-//导航角标用的总数：免打扰的群不计入，会话行仍然自己显示小圆点。
+//导航角标用的总数：免打扰的群与单聊都不计入，会话行仍然自己显示小圆点。
 //这样"消息免打扰"才真的不打扰，而不是只把会话行的数字换成圆点
 int UserMgr::UnreadBadgeTotal() const
 {
@@ -438,6 +468,9 @@ int UserMgr::UnreadBadgeTotal() const
         auto group = _group_map.constFind(it.key());
         if (group != _group_map.constEnd() && *group && (*group)->_muted)
             continue;
+        auto data = findThreadData(it.key());
+        if (data && data->_muted)
+            continue;
         total += it.value();
     }
     return total;
@@ -446,11 +479,94 @@ int UserMgr::UnreadBadgeTotal() const
 //切换当前会话：进入时清零未读，离开时置0；同一会话重复调用不会重复通知
 void UserMgr::SetActiveThread(qint64 thread_id)
 {
+    //从资料页或通知重新打开一个被隐藏的会话时，先让它回到列表
+    if (thread_id > 0) {
+        std::lock_guard<std::recursive_mutex> lock(_mtx);
+        if (auto data = findThreadData(thread_id); data && data->_hidden) {
+            data->_hidden = false;
+            LocalStore::GetInstance()->SaveThreadFlags(thread_id, data->_pinned,
+                                                       data->_muted, false);
+            emit ConversationChanged(thread_id, FriendIdByThread(thread_id));
+        }
+    }
     if (_active_thread == thread_id)
         return;
     _active_thread = thread_id;
     if (thread_id > 0)
         ClearThreadUnread(thread_id);
+}
+
+//置顶只改本机顺序：会话模型收到 ConversationChanged 后重新排序
+void UserMgr::SetThreadPinned(qint64 thread_id, bool pinned)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data || data->_pinned == pinned)
+        return;
+    data->_pinned = pinned;
+    LocalStore::GetInstance()->SaveThreadFlags(thread_id, pinned, data->_muted, data->_hidden);
+    emit ConversationChanged(thread_id, FriendIdByThread(thread_id));
+}
+
+//单聊免打扰：群聊的免打扰由群资料页写服务端，不走这里
+void UserMgr::SetThreadMuted(qint64 thread_id, bool muted)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data || data->_muted == muted)
+        return;
+    data->_muted = muted;
+    LocalStore::GetInstance()->SaveThreadFlags(thread_id, data->_pinned, muted, data->_hidden);
+    emit ThreadStateChanged(thread_id);
+    emit UnreadChanged(); //导航角标要跳过免打扰的会话
+}
+
+//删除会话只在本机隐藏并清空消息，好友关系与服务端记录都不动
+void UserMgr::SetThreadHidden(qint64 thread_id, bool hidden)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (!data || data->_hidden == hidden)
+        return;
+    data->_hidden = hidden;
+    LocalStore::GetInstance()->SaveThreadFlags(thread_id, data->_pinned, data->_muted, hidden);
+    if (hidden) {
+        _unread.remove(thread_id);
+        _at_me_threads.remove(thread_id);
+        LocalStore::GetInstance()->SaveThreadUnread(thread_id, 0, false);
+        if (_active_thread == thread_id)
+            _active_thread = 0;
+        //会话被删掉后不再需要为它保留消息窗口
+        if (_window_thread == thread_id)
+            _window_thread = 0;
+        emit UnreadChanged();
+    }
+    emit ConversationChanged(thread_id, FriendIdByThread(thread_id));
+}
+
+//手动标为未读：至少 1 条；隐藏的会话同时回到列表
+void UserMgr::MarkThreadUnread(qint64 thread_id, int count)
+{
+    if (thread_id <= 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    auto data = findThreadData(thread_id);
+    if (data && data->_hidden) {
+        data->_hidden = false;
+        LocalStore::GetInstance()->SaveThreadFlags(thread_id, data->_pinned,
+                                                   data->_muted, false);
+        emit ConversationChanged(thread_id, FriendIdByThread(thread_id));
+    }
+    _unread[thread_id] = qMax(1, count);
+    LocalStore::GetInstance()->SaveThreadUnread(thread_id, _unread.value(thread_id, 0),
+                                                _at_me_threads.contains(thread_id));
+    emit UnreadChanged();
 }
 
 //所有好友标签去重后按名称排序，空标签不会出现在筛选条里
@@ -764,13 +880,26 @@ void UserMgr::AppendApplyList(QJsonArray array)
         auto status = value["status"].toInt();
         auto direction = value["direction"].toInt();
         auto id = value["id"].toVariant().toLongLong();
-        _apply_list.push_back(std::make_shared<ApplyInfo>(uid, name, desc, icon, nick,
-            sex, status, direction, id));
+        auto apply = std::make_shared<ApplyInfo>(uid, name, desc, icon, nick,
+            sex, status, direction, id);
+        //重连会重新下发完整申请列表：同一个人同一方向只保留一条，
+        //否则断线一次，待处理申请就会翻一倍
+        auto existing = std::find_if(_apply_list.begin(), _apply_list.end(),
+            [uid, direction](const auto &item) {
+                return item && item->_uid == uid && item->_direction == direction;
+            });
+        if (existing != _apply_list.end())
+            *existing = std::move(apply);
+        else
+            _apply_list.push_back(std::move(apply));
     }
     //新的申请排在上面：登录首屏也按 id 倒序，和收到通知时的插入方向一致
     std::stable_sort(_apply_list.begin(), _apply_list.end(),
         [](const auto &left, const auto &right) { return left->_id > right->_id; });
-    _apply_seq = _apply_list.empty() ? 0 : _apply_list.front()->_id;
+    _apply_seq = 0;
+    for (const auto &apply : _apply_list)
+        if (apply)
+            _apply_seq = qMax(_apply_seq, apply->_id);
 
     emit ApplyListChanged();
 }
@@ -1024,10 +1153,11 @@ void UserMgr::AppendChatMsgs(const ConversationRef &conv,
         store->SaveMessages(thread_id, static_cast<int>(kind), conv._peer_uid, stored, cursor);
     }
 
-    //只有正在看的会话保留整段窗口；其余会话只留最新一条做列表预览，
-    //否则登录回填会把每个会话的全部历史重新塞回内存，等于没做本地化
-    const bool active = thread_id > 0 && thread_id == _active_thread;
-    if (active) {
+    //只有窗口里正在显示的会话保留整段消息；其余会话只留最新一条做列表预览。
+    //这里必须用 _window_thread 而不是 _active_thread：后者在切窗口/上翻时会变成 0，
+    //拿它判断会把正在看的历史替换成一条
+    const bool keep_window = thread_id > 0 && thread_id == _window_thread;
+    if (keep_window) {
         //回填的历史页整体比窗口更早，只落库、不进内存：硬插进头部会让正在看的人跳位。
         //窗口为空时（首次打开、库里还没有消息）照常追加，让首屏能显示出来
         const qint64 window_max = thread->_chat_msgs.empty() || !thread->_chat_msgs.back()
@@ -1204,6 +1334,12 @@ void UserMgr::RestoreFromCache()
         if (!data)
             continue;
         data->_thread_id = item.thread_id;
+        data->_pinned = item.pinned;
+        //群免打扰来自 grp，不覆盖；thread.muted 只服务单聊
+        data->_muted = item.thread_type == static_cast<int>(ChatThreadKind::Group)
+            ? false : item.muted;
+        data->_hidden = item.hidden;
+        data->_draft_preview = draftPreview(item.draft);
         if (item.unread > 0)
             _unread[item.thread_id] = item.unread;
         if (item.at_me)
@@ -1239,6 +1375,8 @@ void UserMgr::SetThreadWindow(qint64 thread_id,
         return;
     data->_thread_id = thread_id;
     data->_chat_msgs = std::move(msgs);
+    //从这里开始，这条会话的消息窗口就由内存保留；切走/失焦/上翻都不改变它
+    _window_thread = thread_id;
 }
 
 //上滑翻页：先腾空再按"新页 + 旧窗口"重新合并，复用同一套去重与排序规则。
@@ -1272,7 +1410,12 @@ void UserMgr::SetThreadDraft(qint64 thread_id, const QString &html)
 {
     if (thread_id <= 0)
         return;
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
     LocalStore::GetInstance()->SaveThreadDraft(thread_id, html);
+    if (auto data = findThreadData(thread_id)) {
+        data->_draft_preview = draftPreview(html);
+        emit ThreadStateChanged(thread_id);
+    }
 }
 
 //被移出群或群解散：对象和历史都保留，只记一个状态。
@@ -1349,17 +1492,21 @@ void UserMgr::ClearAllHistory()
     emit FriendListChanged();
     emit GroupListChanged();
     emit DraftsCleared(0);
-    if (_active_thread > 0)
-        emit ConversationChanged(_active_thread, FriendIdByThread(_active_thread));
+    //清空全部历史时，窗口里正在显示的那条会话也要刷新；它可能不在前台
+    const qint64 open_thread = _window_thread > 0 ? _window_thread : _active_thread;
+    if (open_thread > 0)
+        emit ConversationChanged(open_thread, FriendIdByThread(open_thread));
 }
 
 //媒体缓存被清空后，当前窗口里的图片/视频不能再指向已经不存在的文件
 void UserMgr::ForgetActiveResources()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
-    if (_active_thread <= 0)
+    //用消息窗口所属会话，而不是"正在看"：窗口可能已经失焦或在设置页
+    const qint64 open_thread = _window_thread > 0 ? _window_thread : _active_thread;
+    if (open_thread <= 0)
         return;
-    auto data = findThreadData(_active_thread);
+    auto data = findThreadData(open_thread);
     if (!data)
         return;
     for (const auto &message : data->_chat_msgs) {
@@ -1373,7 +1520,7 @@ void UserMgr::ForgetActiveResources()
         message->_transferProgress = -1;
         message->_transfer_state = ResourceTransferState::None;
     }
-    emit ConversationChanged(_active_thread, FriendIdByThread(_active_thread));
+    emit ConversationChanged(open_thread, FriendIdByThread(open_thread));
 }
 
 void UserMgr::RefreshFriendList()
@@ -1999,6 +2146,17 @@ QString UserMgr::ThreadTitle(qint64 thread_id) const
     return DisplayName(info->_back, info->_nick, info->_name);
 }
 
+bool UserMgr::ThreadMuted(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    //群免打扰以服务端 grp.muted 为准；单聊用 thread 上的本地标记
+    auto group = _group_map.constFind(thread_id);
+    if (group != _group_map.constEnd() && (*group))
+        return (*group)->_muted;
+    auto data = findThreadData(thread_id);
+    return data && data->_muted;
+}
+
 int UserMgr::ThreadMemberCount(qint64 thread_id) const
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -2333,6 +2491,7 @@ void UserMgr::ClearSession()
     _unread.clear(); //未读属于上一次登录，换账号必须清掉
     _at_me_threads.clear();
     _active_thread = 0;
+    _window_thread = 0;
     emit UnreadChanged();
     if (hadIcon)
         emit UserIconChanged();

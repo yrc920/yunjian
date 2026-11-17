@@ -8,6 +8,9 @@ Item {
     id: root
     onEnabledChanged: if (!enabled) avatarEditor.dismiss()
 
+    //系统通知点击时由 Main.qml 调进来，避免再复制一份导航状态
+    readonly property var chatBridge: bridge
+
     readonly property int sidebarWidth: 72
     readonly property int indexWidth: 280
     readonly property int listHeaderHeight: 78
@@ -30,6 +33,31 @@ Item {
     property bool tagFilterOpen: false //标签「更多」浮层是否展开
     onTagBarVisibleChanged: if (!tagBarVisible) tagFilterOpen = false
     property bool functionMenuOpen: false
+
+    // 窗口标题与"正在看"判定：最小化或切到别的应用时不能继续把当前会话算成已读
+    readonly property int unreadTotal: bridge.unreadTotal
+    readonly property var hostWindow: Window.window
+    function refreshWindowTitle() {
+        if (!hostWindow)
+            return
+        const count = bridge.unreadTotal
+        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") xiguchat" : "xiguchat"
+    }
+    onUnreadTotalChanged: refreshWindowTitle()
+    onHostWindowChanged: if (hostWindow) bridge.setWindowActive(hostWindow.active)
+    Component.onCompleted: {
+        refreshWindowTitle()
+        if (hostWindow)
+            bridge.setWindowActive(hostWindow.active)
+    }
+    Component.onDestruction: if (hostWindow) hostWindow.title = "xiguchat"
+    Connections {
+        target: root.hostWindow
+        function onActiveChanged() {
+            if (root.hostWindow)
+                bridge.setWindowActive(root.hostWindow.active)
+        }
+    }
 
     // 右栏空态跟着区域走：会话区说"聊天"，联系人区说"联系人"，不能混用
     readonly property string emptyTitle: {
@@ -140,7 +168,9 @@ Item {
 
     Row {
         anchors.fill: parent
-        enabled: !dialogs.visible && !createGroupDialog.visible
+        enabled: !dialogs.visible && !createGroupDialog.visible && !profileDialogs.visible
+            && !viewer.visible && !bridge.clearConfirmVisible
+            && !bridge.deleteConfirmVisible && !bridge.logoutConfirmVisible
 
         // 一级导航：从上到下依次是聊天、联系人、设置；底部固定外观切换与本人头像
         Rectangle {
@@ -317,7 +347,7 @@ Item {
                     id: chatSearch
                     anchors.fill: parent
                     visible: bridge.mode === ChatBridge.ChatMode
-                    placeholder: "搜索好友"
+                    placeholder: "搜索联系人"
                     inputObjectName: "chatSearchInput"
                     onTextEdited: (value) => bridge.friendQuery = value
                     onAccepted: {
@@ -332,7 +362,7 @@ Item {
                     id: addSearch
                     anchors.fill: parent
                     visible: bridge.mode === ChatBridge.ContactMode
-                    placeholder: "想找谁？"
+                    placeholder: "搜索用户名或 ID"
                     inputObjectName: "searchInput"
                     onTextEdited: (value) => bridge.searchText = value
                     onAccepted: bridge.search()
@@ -612,40 +642,42 @@ Item {
                             bridge.openChat(model.uid)
                     }
 
-                    // 群聊右键只给"进入会话/群资料"，退群与解散走群资料页的底部按钮
+                    // 会话菜单只做"整理"，不再重复点击行就能完成的"发消息"。
+                    // 删除好友属于关系操作，只留在好友资料页，避免在列表里误触
+                    function openMenu(px, py) {
+                        //先把当前行的事实抓成常量：菜单开着时列表可能因新消息重排，
+                        //闭包不能再依赖已经失效的 delegate model
+                        const threadId = model.threadId
+                        const kind = model.kind
+                        const title = model.displayName
+                        const pinned = model.pinned
+                        const muted = model.muted
+                        const isGroupRow = group
+                        const items = [
+                            { text: pinned ? "取消置顶" : "置顶会话",
+                              action: () => bridge.setThreadPinned(threadId, !pinned) }
+                        ]
+                        //单聊免打扰是本地设置；群免打扰仍在群资料页，避免两套状态打架
+                        if (!isGroupRow) {
+                            items.push({ text: muted ? "消息免打扰：开" : "消息免打扰",
+                                         action: () => bridge.setThreadMuted(threadId, !muted) })
+                        }
+                        items.push({ text: "标记为未读",
+                                     action: () => bridge.markThreadUnread(threadId) })
+                        items.push({ text: "清除聊天记录",
+                                     action: () => bridge.askClearHistory(threadId, kind, title) })
+                        items.push({ text: "删除会话",
+                                     action: () => bridge.askDeleteConversation(threadId, kind, title) })
+                        friendMenu.open(px, py, items)
+                    }
+
+                    // 右键仍保留为快捷方式，但内容与会话菜单一致
                     MouseArea {
                         anchors.fill: parent
                         acceptedButtons: Qt.RightButton
                         onClicked: (mouse) => {
                             const point = mapToItem(root, mouse.x, mouse.y)
-                            if (group) {
-                                const items = [
-                                    { text: "进入群聊", action: () => bridge.openGroup(model.threadId) }
-                                ]
-                                //已离开的群没有可管理的资料，只剩历史与清理入口
-                                if (model.leftState > 0) {
-                                    items.push({ text: "清除聊天记录", action: () =>
-                                        bridge.askClearHistory(model.threadId, 2, model.displayName) })
-                                } else {
-                                    items.push({ text: "群资料", action: () => {
-                                        bridge.openGroup(model.threadId)
-                                        bridge.openGroupInfo()
-                                    } })
-                                }
-                                friendMenu.open(point.x, point.y, items)
-                            } else {
-                                const items = [
-                                    { text: "发消息", action: () => bridge.openChat(model.uid) },
-                                    { text: "查看资料", action: () => bridge.openProfile(model.uid) }
-                                ]
-                                //还是好友才显示"删除好友"；关系已经断了就只有清理入口
-                                if (model.isFriend)
-                                    items.push({ text: "删除好友", action: () => bridge.askDeleteFriend(model.uid) })
-                                else
-                                    items.push({ text: "清除聊天记录", action: () =>
-                                        bridge.askClearHistory(model.threadId, 1, model.displayName) })
-                                friendMenu.open(point.x, point.y, items)
-                            }
+                            convRow.openMenu(point.x, point.y)
                         }
                     }
 
@@ -679,11 +711,29 @@ Item {
                         source: model.icon
                         name: model.displayName
                     }
+                    // 置顶像别在信封上的一枚小图钉：只占头像左上角，不抢未读与名字的位置
+                    Rectangle {
+                        visible: model.pinned
+                        x: convAvatar.x - 3
+                        y: convAvatar.y - 3
+                        width: 16
+                        height: 16
+                        radius: 8
+                        color: Theme.panelBg
+                        border.width: 1
+                        border.color: Theme.line
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "pin"
+                            size: 10
+                            color: Theme.primary
+                        }
+                    }
                     Column {
                         anchors.left: convAvatar.right
                         anchors.leftMargin: 12
                         anchors.right: parent.right
-                        anchors.rightMargin: 24
+                        anchors.rightMargin: 38
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
 
@@ -737,10 +787,13 @@ Item {
                         Text {
                             width: parent.width
                             text: {
+                                if (model.draft.length > 0)
+                                    return "未寄出 · " + model.draft
                                 const body = model.lastText.length > 0 ? model.lastText : "还没有消息"
                                 return model.atMe ? "[有人@我] " + body : body
                             }
-                            color: model.atMe ? Theme.accent : Theme.textSecondary
+                            color: model.draft.length > 0 || model.atMe
+                                ? Theme.accent : Theme.textSecondary
                             font.pixelSize: 12
                             elide: Text.ElideRight
                             maximumLineCount: 1
@@ -782,6 +835,46 @@ Item {
                         onClicked: {
                             convRow.forceActiveFocus(Qt.MouseFocusReason)
                             convRow.activate()
+                        }
+                    }
+
+                    // 悬停才出现的「…」：会话管理不必依赖右键，触控板与不熟悉右键的用户也能找到
+                    Rectangle {
+                        id: convMore
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 24
+                        height: 24
+                        radius: 6
+                        visible: convArea.containsMouse || convMoreArea.containsMouse
+                            || convRow.activeFocus
+                        color: convMoreArea.containsMouse ? Theme.selected : "transparent"
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "more"
+                            size: 15
+                            color: Theme.textSecondary
+                        }
+                        MouseArea {
+                            id: convMoreArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                const point = convMore.mapToItem(root, 0, convMore.height + 2)
+                                convRow.openMenu(point.x - 126, point.y)
+                            }
+                        }
+                    }
+
+                    // 键盘也能打开同一张菜单：Shift+F10 或菜单键
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_Menu
+                            || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                            const point = convRow.mapToItem(root, 0, 0)
+                            convRow.openMenu(point.x + 48, point.y + 40)
+                            event.accepted = true
                         }
                     }
                 }
@@ -928,19 +1021,8 @@ Item {
                         bridge.openProfile(model.uid)
                     }
 
-                    // 联系人行右键：发消息、看资料、删除好友（删除要二次确认）
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.RightButton
-                        onClicked: (mouse) => {
-                            const point = mapToItem(root, mouse.x, mouse.y)
-                            friendMenu.open(point.x, point.y, [
-                                { text: "发消息", action: () => bridge.openChat(model.uid) },
-                                { text: "查看资料", action: () => bridge.openProfile(model.uid) },
-                                { text: "删除好友", action: () => bridge.askDeleteFriend(model.uid) }
-                            ])
-                        }
-                    }
+                    // 联系人行不再挂右键菜单：点击就是看资料，删除好友只在资料页里做，
+                    // 避免在一张每天要扫很多遍的列表里出现不可逆操作
 
                     Rectangle {
                         x: 10
@@ -1146,7 +1228,7 @@ Item {
                 subtitle: bridge.currentSubtitle
                 messages: bridge.messages
                 blockedText: bridge.chatBlockedText
-                onProfileRequested: bridge.openProfile(bridge.currentUid)
+                onProfileRequested: bridge.openProfileFromChat(bridge.currentUid)
                 onGroupInfoRequested: bridge.openGroupInfo()
                 onMediaViewRequested: (items, index) => viewer.openPlaylist(items, index)
                 onSendRequested: (parts) => {
@@ -1162,6 +1244,7 @@ Item {
                 profile: bridge.profile
                 onChatRequested: bridge.openChat(bridge.profile.uid)
                 onDeleteRequested: bridge.askDeleteFriend(bridge.profile.uid)
+                onBackRequested: bridge.backFromProfile()
                 onEditRelationRequested: profileDialogs.openRemark(bridge.profile.uid,
                                                                   bridge.profile.displayName,
                                                                   bridge.profile.name,
@@ -1319,7 +1402,8 @@ Item {
         anchors.fill: parent
     }
 
-    // 好友行右键菜单：删除入口放在这里，比翻资料页更直接
+    // 会话整理菜单：置顶、免打扰、标记未读、清除记录、删除会话。
+    // 发消息由点击会话完成，删除好友只在资料页出现
     ContextMenu {
         id: friendMenu
         anchors.fill: parent
@@ -1354,15 +1438,18 @@ Item {
                 spacing: 14
 
                 Text {
-                    text: "清除聊天记录"
+                    text: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
                     color: Theme.textPrimary
                     font.pixelSize: 18
                     font.bold: true
                 }
                 Text {
                     width: parent.width
-                    text: "清除与「" + bridge.clearConfirmTitle + "」的本地聊天记录？"
-                        + "只删除这台设备上的内容，服务器与对方的记录不受影响。"
+                    text: bridge.clearConfirmDelete
+                        ? "删除与「" + bridge.clearConfirmTitle + "」的本机会话与聊天记录？"
+                          + "好友关系和服务端记录都会保留，收到新消息时这个会话会重新出现。"
+                        : "清除与「" + bridge.clearConfirmTitle + "」的本地聊天记录？"
+                          + "只删除这台设备上的内容，服务器与对方的记录不受影响。"
                     color: Theme.textSecondary
                     font.pixelSize: 12
                     wrapMode: Text.WordWrap
@@ -1380,7 +1467,7 @@ Item {
                     AppButton {
                         width: (parent.width - 12) / 2
                         height: 42
-                        text: "确认清除"
+                        text: bridge.clearConfirmDelete ? "确认删除" : "确认清除"
                         onClicked: bridge.confirmClearHistory()
                     }
                 }
@@ -1446,6 +1533,69 @@ Item {
                         height: 42
                         text: "确认删除"
                         onClicked: bridge.confirmDeleteFriend()
+                    }
+                }
+            }
+        }
+    }
+
+    // 退出登录确认：设置页里点一下不会立刻断线，避免误触丢失当前上下文
+    Rectangle {
+        anchors.fill: parent
+        visible: bridge.logoutConfirmVisible
+        color: Theme.overlay
+        z: 40
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: bridge.cancelLogout()
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(420, parent.width - 64)
+            implicitHeight: logoutContent.implicitHeight + 48
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+
+            Column {
+                id: logoutContent
+                x: 24
+                y: 24
+                width: parent.width - 48
+                spacing: 14
+
+                Text {
+                    text: "退出登录"
+                    color: Theme.textPrimary
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                Text {
+                    width: parent.width
+                    text: "退出后会断开与服务器的连接。本机聊天记录与草稿会保留，"
+                        + "正在编辑但还没发送的附件不会保留。"
+                    color: Theme.textSecondary
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                Row {
+                    width: parent.width
+                    spacing: 12
+
+                    CodeButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "取消"
+                        onClicked: bridge.cancelLogout()
+                    }
+                    AppButton {
+                        width: (parent.width - 12) / 2
+                        height: 42
+                        text: "退出登录"
+                        onClicked: bridge.confirmLogout()
                     }
                 }
             }

@@ -107,6 +107,14 @@ Item {
     Keys.onEscapePressed: root.close()
     Keys.onLeftPressed: if (visible && items.length > 1) root.step(-1)
     Keys.onRightPressed: if (visible && items.length > 1) root.step(1)
+    Keys.onSpacePressed: if (visible && kind === "video") root.togglePlay()
+
+    function togglePlay() {
+        if (player.playbackState === MediaPlayer.PlayingState)
+            player.pause()
+        else
+            player.play()
+    }
 
     Timer {
         id: noticeTimer
@@ -182,6 +190,14 @@ Item {
         anchors.topMargin: 0
         anchors.bottomMargin: 78
         fillMode: VideoOutput.PreserveAspectFit
+    }
+
+    // 点画面是暂停/继续，不是关闭；关闭只走右上角、Esc 或背景空白处
+    MouseArea {
+        anchors.fill: videoOutput
+        enabled: root.kind === "video"
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.togglePlay()
     }
 
     AudioOutput {

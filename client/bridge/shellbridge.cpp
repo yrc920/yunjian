@@ -1,6 +1,8 @@
 #include "shellbridge.h"
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QGuiApplication>
 #include <QSet>
 
 #include "sessionservice.h"
@@ -22,9 +24,49 @@ ShellBridge::ShellBridge(QObject *parent) : QObject(parent)
 
     auto *tcp = TcpMgr::GetInstance().get();
     connect(SessionService::GetInstance().get(), &SessionService::sessionReady,
-            this, [this] { go(kChat); });
+            this, [this] {
+                setReconnecting(false);
+                go(kChat);
+            });
+    connect(SessionService::GetInstance().get(), &SessionService::reconnecting,
+            this, [this](int attempt) {
+                setReconnecting(true, tr("连接已断开，正在重连…（第 %1 次）").arg(attempt));
+            });
+    connect(SessionService::GetInstance().get(), &SessionService::reconnected,
+            this, [this] { setReconnecting(false); });
+    connect(SessionService::GetInstance().get(), &SessionService::reconnectFailed,
+            this, [this](const QString &message) {
+                setReconnecting(false);
+                showOfflineNotice(message);
+            });
+    //新消息通知：已经在这条会话里看的时候不打扰；页面不在聊天页也不弹
+    connect(SessionService::GetInstance().get(), &SessionService::messageArrived, this,
+            [this](const QString &title, const QString &body,
+                   qint64 threadId, int threadType, int peerUid) {
+                if (_page != kChat || threadId <= 0)
+                    return;
+                if (UserMgr::GetInstance()->ActiveThread() == threadId)
+                    return;
+                //免打扰的会话不弹系统通知，会话行与角标仍然自己更新
+                if (UserMgr::GetInstance()->ThreadMuted(threadId))
+                    return;
+                emit messageArrived(title, body, threadId, threadType, peerUid);
+            });
+    //Dock/任务栏角标跟着未读总数走；免打扰会话已经在 UnreadBadgeTotal 里跳过
+    auto *userMgr = UserMgr::GetInstance().get();
+    connect(userMgr, &UserMgr::UnreadChanged, this, [this, userMgr] {
+        if (auto *app = qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+            app->setBadgeNumber(userMgr->UnreadBadgeTotal());
+        emit unreadTotalChanged();
+    });
+    connect(userMgr, &UserMgr::SessionCleared, this, [this] {
+        if (auto *app = qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+            app->setBadgeNumber(0);
+        emit unreadTotalChanged();
+    });
     connect(tcp, &TcpMgr::sig_notify_offline, this, [this](int reason) {
         // 被顶号时只提示、不自动重连：旧凭证再登录会把新会话顶回去，形成互踢
+        setReconnecting(false);
         QString text;
         switch (reason) {
         case 2: text = tr("登录状态已过期，请重新登录。"); break;
@@ -34,9 +76,8 @@ ShellBridge::ShellBridge(QObject *parent) : QObject(parent)
         showOfflineNotice(text);
         SessionService::GetInstance()->closeSession();
     });
-    connect(tcp, &TcpMgr::sig_connection_closed, this, [this] {
-        showOfflineNotice(tr("与服务器的连接已断开。"));
-    });
+    //普通断线不再直接弹"连接中断"：SessionService 会先自动重连，
+    //连续失败或凭证失效时才通过 reconnectFailed 进入弹层
 }
 
 ShellBridge::~ShellBridge()
@@ -50,6 +91,11 @@ ShellBridge *ShellBridge::instance()
     return g_shell;
 }
 
+int ShellBridge::unreadTotal() const
+{
+    return UserMgr::GetInstance()->UnreadBadgeTotal();
+}
+
 // 切页；未知目标回落到登录页，避免把窗口留空
 void ShellBridge::go(const QString &target)
 {
@@ -61,8 +107,21 @@ void ShellBridge::go(const QString &target)
     if (_page == next)
         return;
 
+    //离开聊天页就不再显示重连横条
+    if (next == kLogin)
+        setReconnecting(false);
     _page = next;
     emit pageChanged();
+}
+
+void ShellBridge::setReconnecting(bool active, const QString &text)
+{
+    const QString next = active ? text : QString();
+    if (_reconnecting == active && _reconnectText == next)
+        return;
+    _reconnecting = active;
+    _reconnectText = next;
+    emit reconnectingChanged();
 }
 
 // 只有停在聊天页时才提示掉线，同一时间只提示一次
@@ -82,6 +141,7 @@ void ShellBridge::logout()
 {
     _notice.clear();
     emit noticeChanged();
+    setReconnecting(false);
     go(kLogin);
     // 明确退出要通知服务端吊销令牌；closeSession 只负责最终断开
     SessionService::GetInstance()->logout();
@@ -93,6 +153,7 @@ void ShellBridge::dismissNotice()
 {
     _notice.clear();
     emit noticeChanged();
+    setReconnecting(false);
 
     // 先离开聊天页：关连接会再发一次 sig_connection_closed，此时已不在聊天页，不会重复提示
     go(kLogin);

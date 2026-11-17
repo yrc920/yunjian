@@ -20,6 +20,11 @@ class ShellBridge : public QObject
     QML_ELEMENT
     Q_PROPERTY(QString page READ page NOTIFY pageChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
+    //普通断线后的自动重连状态：聊天页顶部显示一条非阻塞横条
+    Q_PROPERTY(bool reconnecting READ reconnecting NOTIFY reconnectingChanged)
+    Q_PROPERTY(QString reconnectText READ reconnectText NOTIFY reconnectingChanged)
+    //托盘提示与跨平台未读展示：Dock 角标只在 macOS 生效，Windows/Linux 靠这里兜底
+    Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadTotalChanged)
 
 public:
     explicit ShellBridge(QObject *parent = nullptr);
@@ -30,6 +35,9 @@ public:
 
     QString page() const { return _page; }
     QString notice() const { return _notice; }
+    bool reconnecting() const { return _reconnecting; }
+    QString reconnectText() const { return _reconnectText; }
+    int unreadTotal() const;
 
     Q_INVOKABLE void go(const QString &target);
     Q_INVOKABLE void dismissNotice();
@@ -39,12 +47,20 @@ public:
 signals:
     void pageChanged();
     void noticeChanged();
+    void reconnectingChanged();
+    void unreadTotalChanged();
+    //新消息：Main.qml 用它弹系统通知；点击通知可打开对应会话
+    void messageArrived(const QString &title, const QString &body,
+                        qint64 threadId, int threadType, int peerUid);
 
 private:
     void showOfflineNotice(const QString &message);
+    void setReconnecting(bool active, const QString &text = {});
 
     QString _page = QStringLiteral("login");
     QString _notice;
+    bool _reconnecting = false;
+    QString _reconnectText;
 };
 
 #endif // SHELLBRIDGE_H

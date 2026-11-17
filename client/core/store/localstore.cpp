@@ -11,7 +11,7 @@
 #include <algorithm>
 
 namespace {
-constexpr int kSchemaVersion = 3;
+constexpr int kSchemaVersion = 4;
 const char *kConnectionName = "xiguchat_local";
 
 //所有消息查询共用一份列清单，保证字段顺序与 readMessage 一一对应
@@ -19,6 +19,7 @@ const char *kMessageColumns =
     "server_id, client_msg_id, thread_id, sender_id, recv_id, msg_type, content, "
     "mentions, created_at, status, is_read, recalled, recalled_text, "
     "resource_name, resource_md5, file_name, file_size, thumb_name";
+constexpr int kMessageColumnCount = 18;
 
 StoredMessage readMessage(const QSqlQuery &query)
 {    StoredMessage message;
@@ -192,6 +193,7 @@ bool LocalStore::migrate()
         case 1: ok = createSchemaV1(); break;
         case 2: ok = upgradeSchemaV2(); break;
         case 3: ok = upgradeSchemaV3(); break;
+        case 4: ok = upgradeSchemaV4(); break;
         default: ok = false; break;
         }
         if (!ok)
@@ -329,6 +331,25 @@ bool LocalStore::upgradeSchemaV3()
     return true;
 }
 
+//v4：会话整理状态。置顶与隐藏属于本机整理，不参与服务端同步；
+//muted 只用于单聊，群免打扰仍以 grp.muted 为准
+bool LocalStore::upgradeSchemaV4()
+{
+    const QStringList statements = {
+        QStringLiteral("ALTER TABLE thread ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"),
+        QStringLiteral("ALTER TABLE thread ADD COLUMN muted INTEGER NOT NULL DEFAULT 0"),
+        QStringLiteral("ALTER TABLE thread ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+    };
+    for (const QString &sql : statements) {
+        QSqlQuery query(_db);
+        if (!query.exec(sql)) {
+            logError(sql);
+            return false;
+        }
+    }
+    return true;
+}
+
 void LocalStore::logError(const QString &sql) const
 {
     qWarning() << "[store]" << (_db.isValid() ? _db.lastError().text() : QString())
@@ -459,6 +480,22 @@ void LocalStore::SaveThreadDraft(qint64 thread_id, const QString &html)
         logError(query);
 }
 
+//三个整理标记一起写：调用方本来就知道完整状态，分开写只会多两次往返
+void LocalStore::SaveThreadFlags(qint64 thread_id, bool pinned, bool muted, bool hidden)
+{
+    if (!IsOpen() || thread_id <= 0)
+        return;
+    QSqlQuery query(_db);
+    query.prepare(QStringLiteral(
+        "UPDATE thread SET pinned = ?, muted = ?, hidden = ? WHERE thread_id = ?"));
+    query.addBindValue(pinned ? 1 : 0);
+    query.addBindValue(muted ? 1 : 0);
+    query.addBindValue(hidden ? 1 : 0);
+    query.addBindValue(thread_id);
+    if (!query.exec())
+        logError(query);
+}
+
 QString LocalStore::LoadDraft(qint64 thread_id) const
 {
     if (!IsOpen() || thread_id <= 0)
@@ -480,8 +517,8 @@ QVector<StoredThread> LocalStore::LoadThreads() const
     QSqlQuery query(_db);
     if (!query.exec(QStringLiteral(
             "SELECT thread_id, thread_type, peer_uid, last_time, last_text, last_type, "
-            "last_sender, last_name, unread, at_me, draft, sync_cursor, last_recalled "
-            "FROM thread"))) {
+            "last_sender, last_name, unread, at_me, draft, sync_cursor, last_recalled, "
+            "pinned, muted, hidden FROM thread"))) {
         logError(query);
         return threads;
     }
@@ -500,6 +537,9 @@ QVector<StoredThread> LocalStore::LoadThreads() const
         thread.draft = query.value(10).toString();
         thread.sync_cursor = query.value(11).toLongLong();
         thread.last_recalled = query.value(12).toBool();
+        thread.pinned = query.value(13).toBool();
+        thread.muted = query.value(14).toBool();
+        thread.hidden = query.value(15).toBool();
         threads.push_back(thread);
     }
     return threads;
@@ -838,6 +878,115 @@ QVector<StoredMessage> LocalStore::LoadBefore(qint64 thread_id, qint64 before_id
     }
     std::reverse(messages.begin(), messages.end());
     return messages;
+}
+
+//以 anchor_id 为中心取前后各一页，跳转搜索结果时用；返回按消息号升序
+QVector<StoredMessage> LocalStore::LoadAround(qint64 thread_id, qint64 anchor_id,
+                                              int before, int after,
+                                              bool *has_before, bool *has_after) const
+{
+    QVector<StoredMessage> messages;
+    if (has_before)
+        *has_before = false;
+    if (has_after)
+        *has_after = false;
+    if (!IsOpen() || thread_id <= 0 || anchor_id <= 0 || before <= 0 || after <= 0)
+        return messages;
+
+    QSqlQuery older(_db);
+    older.prepare(QStringLiteral("SELECT %1 FROM message WHERE thread_id = ? "
+                                 "AND server_id IS NOT NULL AND server_id <= ? "
+                                 "ORDER BY server_id DESC LIMIT ?")
+                      .arg(QString::fromLatin1(kMessageColumns)));
+    older.addBindValue(thread_id);
+    older.addBindValue(anchor_id);
+    older.addBindValue(before + 1);
+    if (!older.exec()) {
+        logError(older);
+        return messages;
+    }
+    QVector<StoredMessage> head;
+    while (older.next())
+        head.push_back(readMessage(older));
+    if (head.size() > before) {
+        head.removeLast();
+        if (has_before)
+            *has_before = true;
+    }
+    std::reverse(head.begin(), head.end());
+    messages = head;
+
+    QSqlQuery newer(_db);
+    newer.prepare(QStringLiteral("SELECT %1 FROM message WHERE thread_id = ? "
+                                 "AND server_id IS NOT NULL AND server_id > ? "
+                                 "ORDER BY server_id ASC LIMIT ?")
+                      .arg(QString::fromLatin1(kMessageColumns)));
+    newer.addBindValue(thread_id);
+    newer.addBindValue(anchor_id);
+    newer.addBindValue(after + 1);
+    if (!newer.exec()) {
+        logError(newer);
+        return messages;
+    }
+    QVector<StoredMessage> tail;
+    while (newer.next())
+        tail.push_back(readMessage(newer));
+    if (tail.size() > after) {
+        tail.removeLast();
+        if (has_after)
+            *has_after = true;
+    }
+    for (const auto &item : tail)
+        messages.push_back(item);
+    return messages;
+}
+
+//本地已缓存文本消息的模糊搜索；只搜正文，不带图片/文件元数据
+QVector<MessageSearchHit> LocalStore::SearchMessages(const QString &keyword, qint64 thread_id,
+                                                     int limit) const
+{
+    QVector<MessageSearchHit> hits;
+    const QString text = keyword.trimmed();
+    if (!IsOpen() || text.isEmpty() || limit <= 0)
+        return hits;
+
+    QString escaped = text;
+    escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    escaped.replace(QLatin1Char('%'), QStringLiteral("\\%"));
+    escaped.replace(QLatin1Char('_'), QStringLiteral("\\_"));
+    const QString pattern = QLatin1Char('%') + escaped + QLatin1Char('%');
+
+    //JOIN 只用于把会话类型与单聊对方带回来；消息字段仍按 readMessage 的顺序取
+    QString cols = QString::fromLatin1(kMessageColumns);
+    cols.replace(QStringLiteral(", "), QStringLiteral(", m."));
+    cols.prepend(QStringLiteral("m."));
+    QString sql = QStringLiteral("SELECT %1, t.thread_type, t.peer_uid "
+                                 "FROM message m JOIN thread t ON t.thread_id = m.thread_id "
+                                 "WHERE m.msg_type = 0 AND m.recalled = 0 "
+                                 "AND m.content <> '' AND m.content LIKE ? ESCAPE '\\'")
+                      .arg(cols);
+    if (thread_id > 0)
+        sql += QStringLiteral(" AND m.thread_id = ?");
+    sql += QStringLiteral(" ORDER BY m.id DESC LIMIT ?");
+
+    QSqlQuery query(_db);
+    query.prepare(sql);
+    query.addBindValue(pattern);
+    if (thread_id > 0)
+        query.addBindValue(thread_id);
+    query.addBindValue(limit);
+    if (!query.exec()) {
+        logError(query);
+        return hits;
+    }
+    while (query.next()) {
+        MessageSearchHit hit;
+        hit.message = readMessage(query);
+        hit.thread_type = query.value(kMessageColumnCount).toInt();
+        hit.peer_uid = query.value(kMessageColumnCount + 1).toInt();
+        hits.push_back(hit);
+    }
+    return hits;
 }
 
 // ---- 好友与群 ----

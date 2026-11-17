@@ -1,3 +1,4 @@
+#include <QApplication>
 #include <QDir>
 #include <QFont>
 #include <QGuiApplication>
@@ -22,7 +23,9 @@
 
 int main(int argc, char *argv[])
 {
-    QGuiApplication app(argc, argv);
+    //QApplication 只为 QSystemTrayIcon 提供 QtWidgets 后端；QML/Quick 仍是唯一 UI 层，
+    //不创建任何 QWidget 页面。QApplication 是 QGuiApplication 的子类，事件循环不变
+    QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("xiguchat"));
     QGuiApplication::setOrganizationName(QStringLiteral("XiguChat"));
     QFont font = app.font();
