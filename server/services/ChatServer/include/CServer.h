@@ -17,9 +17,9 @@ class CServer : public std::enable_shared_from_this<CServer>
 public:
 	CServer(boost::asio::io_context& io_context, short port);
 	~CServer();
-	void ClearSession(std::string); //清除指定uuid的会话
-    bool CheckValid(std::string); //检查指定uuid的会话是否存在
-    std::shared_ptr<CSession> GetSession(std::string); //根据uid获取session
+	void ClearSession(const std::string&); //清除指定uuid的会话
+    bool CheckValid(const std::string&); //检查指定uuid的会话是否存在
+    std::shared_ptr<CSession> GetSession(const std::string&); //根据uuid获取session
 
     void on_timer(const boost::system::error_code& ec); //定时器回调函数, 用于清理无效会话
     void StartTimer(); //启动定时器, 定时清理无效会话

@@ -10,6 +10,7 @@
 #include "CServer.h"
 #include "RequestValidation.h"
 #include <charconv>
+#include <cstdint>
 #include <ctime>
 #include <map>
 
@@ -51,11 +52,14 @@ std::string JoinMentions(const Json::Value& array)
 }
 }
 
-LogicSystem::LogicSystem() :_b_stop(false), _p_server(nullptr)
+LogicSystem::LogicSystem() :_b_stop(false), _p_server(nullptr), _delivery_stop(false)
 {
 	RegisterCallBacks(); //注册消息处理函数
-	//启动逻辑处理线程，执行DealMsg函数，处理消息队列中的消息
-	_worker_thread = std::thread(&LogicSystem::DealMsg, this);
+	//每个分片一个逻辑线程：数据库慢查询只影响落到该分片的会话，
+	//其他分片的心跳、登录与消息照常处理
+	for (std::size_t shard = 0; shard < kLogicShards; ++shard)
+		_workers.emplace_back(&LogicSystem::DealMsg, this, shard);
+	_delivery_thread = std::thread(&LogicSystem::DeliveryLoop, this);
 }
 
 LogicSystem::~LogicSystem()
@@ -65,32 +69,95 @@ LogicSystem::~LogicSystem()
 
 void LogicSystem::Stop()
 {
-    //停止标志和队列由同一把锁保护，避免消费者检查状态后进入等待却错过停止通知
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        _b_stop = true;
-    }
-	_consume.notify_one(); //发送通知信号，唤醒逻辑处理线程
-    if (_worker_thread.joinable()) _worker_thread.join(); //等待剩余消息处理结束，重复Stop时不再join
+    //停服标志是原子的：各分片在各自锁内检查，不会错过 notify
+    _b_stop.store(true);
+	for (auto& consume : _consumes)
+		consume.notify_all(); //唤醒所有分片
+	for (auto& worker : _workers) {
+		if (worker.joinable())
+			worker.join(); //每个分片把队列里剩余消息处理完再退出
+	}
+
+	//业务线程退出后不会再有新任务，再停投递线程。
+	//未投递的任务直接丢弃，消息已经在库里，接收方下次登录会同步补回；
+	//如果在这里排空队列，停服时最多要等"任务数 × RPC 截止时间"
+	{
+		std::lock_guard<std::mutex> lock(_delivery_mutex);
+		_delivery_stop = true;
+		_delivery_queue.clear();
+	}
+	_delivery_cv.notify_one();
+	if (_delivery_thread.joinable()) _delivery_thread.join();
+
     _p_server.reset(); //业务线程退出后释放服务器引用，避免服务器存活时间超过它依赖的主io_context
+}
+
+void LogicSystem::PostDeliveryTask(std::function<void()> task)
+{
+	{
+		std::lock_guard<std::mutex> lock(_delivery_mutex);
+		if (_delivery_stop)
+			return; //停服后不再排队
+		if (_delivery_queue.size() >= kDeliveryQueueMax) {
+			//对端长时间不可达时只丢实时投递，消息仍在库里，登录同步会补回
+			std::cerr << "[delivery] queue full, drop one task" << std::endl;
+			return;
+		}
+		_delivery_queue.push_back(std::move(task));
+	}
+	_delivery_cv.notify_one();
+}
+
+void LogicSystem::DeliveryLoop()
+{
+	for (;;) {
+		std::function<void()> task;
+		{
+			std::unique_lock<std::mutex> lock(_delivery_mutex);
+			_delivery_cv.wait(lock, [this] {
+				return _delivery_stop || !_delivery_queue.empty();
+			});
+			if (_delivery_queue.empty())
+				return; //只有停服且队列已空才退出
+			task = std::move(_delivery_queue.front());
+			_delivery_queue.pop_front();
+		}
+		try {
+			task(); //单条投递失败只记日志，不影响后续任务
+		}
+		catch (const std::exception& error) {
+			std::cerr << "[delivery] task failed: " << error.what() << std::endl;
+		}
+	}
 }
 
 void LogicSystem::PostMsgToQue(std::shared_ptr<LogicNode> msg)
 {
-	std::unique_lock<std::mutex> unique_lk(_mutex); //使用unique_lock保护消息队列，确保线程安全
+	//按会话哈希选分片：同一连接的消息固定落到同一线程，顺序不变；
+	//不同连接可以并行，慢查询不会让所有用户一起排队
+	const std::size_t shard = std::hash<std::string>{}(msg->_session->GetSessionId()) % kLogicShards;
+	std::unique_lock<std::mutex> unique_lk(_mutexes[shard]);
 
-	//停服后不再接收新消息；队列达到上限时丢弃当前消息，避免业务处理过慢造成持续积压
-	if (_b_stop || _msg_que.size() >= MAX_LOGICQUE) {
-		std::cout << "logic system msg que fulled, size is " << MAX_LOGICQUE << std::endl;
+	if (_b_stop.load())
+		return; //停服后不再接收新消息
+
+	//队列满说明业务线程已经跟不上。不能静默丢弃：客户端会一直停在"发送中"，
+	//这里按请求 ID + 1 回一个明确错误，让用户知道这条没被处理
+	if (_msg_ques[shard].size() >= MAX_LOGICQUE) {
+		const auto id = msg->_recvnode->_msg_id;
+		auto session = msg->_session;
+		unique_lk.unlock(); //回包不占队列锁
+		std::cerr << "[logic] queue full, reject msg id=" << id << " shard=" << shard << std::endl;
+		Json::Value response;
+		response["error"] = ErrorCodes::ServiceUnavailable;
+		session->Send(response.toStyledString(), static_cast<std::uint16_t>(id + 1));
 		return;
 	}
 
-	_msg_que.push(msg); //将消息添加到消息队列中
-
-	//如果队列由空变为非空，则发送通知信号
-	if (_msg_que.size() == 1) {
-		unique_lk.unlock(); //释放锁，允许逻辑处理线程访问消息队列
-		_consume.notify_one(); //发送通知信号，唤醒逻辑处理线程
+	_msg_ques[shard].push(msg);
+	if (_msg_ques[shard].size() == 1) {
+		unique_lk.unlock();
+		_consumes[shard].notify_one(); //只有从空变非空才需要唤醒
 	}
 }
 
@@ -99,16 +166,18 @@ void LogicSystem::SetServer(std::shared_ptr<CServer> pserver) {
     _p_server = pserver;
 }
 
-void LogicSystem::DealMsg() {
+void LogicSystem::DealMsg(std::size_t shard) {
     for (;;) {
         std::shared_ptr<LogicNode> node;
         {
-            std::unique_lock<std::mutex> lock(_mutex);
+            std::unique_lock<std::mutex> lock(_mutexes[shard]);
             //条件变量等待时释放队列锁，收到通知后重新检查条件，也能处理没有实际消息的虚假唤醒
-            _consume.wait(lock, [this] { return _b_stop || !_msg_que.empty(); });
-            if (_msg_que.empty()) return; //被唤醒且队列为空，说明正在停服且剩余消息已经处理完
-            node = _msg_que.front(); //保存当前消息的共享指针，出队后仍能访问会话和消息内容
-            _msg_que.pop();
+            _consumes[shard].wait(lock, [this, shard] {
+                return _b_stop.load() || !_msg_ques[shard].empty();
+            });
+            if (_msg_ques[shard].empty()) return; //停服且本分片已空
+            node = _msg_ques[shard].front();
+            _msg_ques[shard].pop();
         }
         //离开作用域后释放队列锁，再执行可能阻塞的数据库或RPC调用，避免IO线程也跟着等待
         auto session = node->_session;
@@ -117,6 +186,16 @@ void LogicSystem::DealMsg() {
         //消息排队期间连接可能断开或被踢下线，不能只依赖接收消息时的连接状态
         if (handler == _fun_callbacks.end() || session->IsClosed() ||
             !_p_server || !_p_server->CheckValid(session->GetSessionId())) continue;
+
+        //刷屏保护只针对三类消息写入请求；心跳、已读、拉取不受限，
+        //超限回 1105 而不是断开连接，客户端可以降速重试
+        if ((id == ID_TEXT_CHAT_MSG_REQ || id == ID_IMG_CHAT_MSG_REQ
+            || id == ID_RESOURCE_CHAT_MSG_REQ) && !session->AllowMessage()) {
+            Json::Value busy;
+            busy["error"] = ErrorCodes::TooManyRequests;
+            session->Send(busy.toStyledString(), static_cast<std::uint16_t>(id + 1));
+            continue;
+        }
         try {
             std::string data(node->_recvnode->_data, node->_recvnode->_cur_len);
             Json::Value root;
@@ -215,7 +294,6 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 
 	auto uid = root["uid"].asInt(); //从解析后的Json对象中获取用户ID
 	auto token = root["token"].asString(); //从解析后的Json对象中获取用户token
-        std::cout << "user uid is " << uid << std::endl;
 
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
 	Defer defer([this, &rtvalue, session]() {
@@ -225,10 +303,10 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 		session->Send(return_str, MSG_CHAT_LOGIN_RSP);
 		});
 
-    //会话锁覆盖登录登记过程，断连清理必须等待登记结束后才能读取uid并删除状态
-    //锁对象声明在回包Defer之后，因此退出时先解锁再回包，发送失败触发清理时不会重复获取自身持有的锁
-    auto lifecycle = session->LockLifecycle();
-    if (session->IsClosed()) return; //等待会话锁期间连接可能已经关闭
+	//会话锁只包住最后的登记动作（见函数末尾）。
+	//令牌校验、资料/好友加载与状态服务的租约申请都不改会话状态，
+	//放进锁里会把 9 点登录高峰整体串行化（6 次查询 + 2 秒 RPC）
+	if (session->IsClosed()) return; //连接在排队期间可能已经关闭
 
 	//从redis获取用户token是否正确
 	std::string uid_str = std::to_string(uid); //将用户ID转换为字符串形式
@@ -266,10 +344,12 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	rtvalue["icon"] = user_info->icon;
 
 	//登录时先带一页会话, 客户端据此建立 uid 与 thread_id 的对应关系;
-	//取不到会话不影响登录本身, 好友列表仍然可用
+	//取不到会话不影响登录本身, 好友列表仍然可用。
+	//首屏只取 50 条：每行有三个相关子查询，100 条会让登录高峰的数据库开销翻倍；
+	//客户端拿到 thread_more 后按游标继续拉
 	std::vector<ChatThreadInfo> chat_threads;
 	bool thread_more = false;
-	if (MysqlMgr::GetInstance()->GetChatThreads(uid, 0, 100, chat_threads, thread_more)) {
+	if (MysqlMgr::GetInstance()->GetChatThreads(uid, 0, 50, chat_threads, thread_more)) {
 		Json::Value thread_array(Json::arrayValue);
 		for (const auto& thread : chat_threads)
 			thread_array.append(BuildThreadItem(thread));
@@ -335,7 +415,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	}
 
 	//令牌已校验通过；这里申请租约，由状态服务决定谁是当前会话并返回单调递增的 epoch。
-	//申请放在资料与好友列表加载之后：新设备登录失败时不能把旧设备踢掉，用户不会两头落空
+	//申请放在资料与好友列表加载之后：新设备登录失败时不能把旧设备踢掉，用户不会两头落空。
+	//同一 uid 的申请与登记串行执行，避免低 epoch 的并发请求事后覆盖 UserMgr 映射
+	std::lock_guard<std::mutex> login_guard(LoginLock(uid));
 	auto server_name = ConfigMgr::Inst().GetValue("SelfServer", "Name");
 	auto lease = StatusGrpcClient::GetInstance()->AllocateSession(
 		uid, token, session->GetSessionId(), server_name);
@@ -344,6 +426,10 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 		rtvalue["error"] = lease.error();
 		return;
 	}
+
+	//登记阶段才拿会话锁：与断连清理互斥，保证 uid 与 epoch 要么一起可见，要么都不写。
+	//锁在函数返回时先于回包 Defer 析构，发送失败触发的清理不会重复获取自身持有的锁
+	auto lifecycle = session->LockLifecycle();
 
 	//申请期间连接可能已经关闭，必须把刚拿到的租约还回去，否则要等 TTL 到期才释放
 	if (session->IsClosed() || !_p_server->CheckValid(session->GetSessionId())) {
@@ -355,6 +441,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	session->SetEpoch(lease.epoch());
 	session->SetUserId(uid); //session绑定用户uid
 	UserMgr::GetInstance()->SetUserSession(uid, session); //本机映射由这里维护，不再写 Redis
+	//本实例的路由缓存可能刚存过一个"离线"结论，登录成功后立刻失效，
+	//否则同实例的发送方在缓存过期前仍会把消息当成离线处理
+	SessionRouter::Inst().Invalidate(uid);
 
 	if (!lease.kicked_instance().empty()) {
 		std::cout << "[login] uid=" << uid << " epoch=" << lease.epoch()
@@ -370,7 +459,6 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session,
 	Json::Value root; //创建Json值对象，用于存储解析后的数据
 	reader.parse(msg_data, root); //解析Json字符串，将结果存储在root对象中
 	auto uid_str = root["uid"].asString(); //从解析后的Json对象中获取用户ID字符串
-	std::cout << "user SearchInfo uid is  " << uid_str << std::endl;
 
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
 	Defer defer([this, &rtvalue, session]() {
@@ -417,7 +505,6 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 	std::vector<std::string> tags;
 	for (const auto& tag : root["tags"])
 		tags.push_back(tag.asString());
-        std::cout << "user uid is " << uid << std::endl;
 
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
 	rtvalue["error"] = ErrorCodes::Success; //默认返回成功状态码
@@ -495,7 +582,6 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	auto uid = root["fromuid"].asInt();
 	auto touid = root["touid"].asInt();
 	auto back_name = root["back"].asString();
-	std::cout << "from " << uid << " auth friend to " << touid << std::endl;
 
 	Json::Value  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
@@ -753,25 +839,8 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	//消息已经提交到数据库；对方不在线时保留离线消息，登录同步会补发
-	std::string to_ip_value;
-	if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
-		return;
-
-	auto& cfg = ConfigMgr::Inst();
-	auto self_name = cfg["SelfServer"]["Name"];
-	//对方在本实例: 直接投递, 不再走一次 gRPC
-	if (to_ip_value == self_name) {
-		auto peer_session = UserMgr::GetInstance()->GetSession(touid);
-		if (peer_session) {
-			std::string return_str = notify.toStyledString();
-			peer_session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
-		}
-
-		return;
-	}
-
-
+	//消息已经提交到数据库；实时投递交给投递线程。
+	//对端实例不可达时 gRPC 会阻塞到截止时间，不能让唯一的业务线程陪着等
 	TextChatMsgReq text_msg_req;
 	text_msg_req.set_fromuid(uid);
 	text_msg_req.set_touid(touid);
@@ -787,17 +856,33 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		text_msg->set_time(message.created_at); //跨实例也按落库时间显示，不用转发时刻
 	}
 
-	auto forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, text_msg_req, rtvalue);
-	if (forwarded.error() == ErrorCodes::UidInvalid) {
-		//缓存的位置过期：对方已经换实例，失效后回源一次再投，不能直接当离线
-		SessionRouter::Inst().Invalidate(touid);
-		std::string retry_ip;
-		if (SessionRouter::Inst().Lookup(touid, retry_ip) && retry_ip != to_ip_value)
-			forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(retry_ip, text_msg_req, rtvalue);
-	}
-	//跨实例实时投递失败只影响"立刻看到", 消息已在库里, 对方下次登录仍能同步
-	if (forwarded.error() != ErrorCodes::Success)
-		rtvalue["delivery_pending"] = true;
+	PostDeliveryTask([req = std::move(text_msg_req), notify = std::move(notify),
+		touid]() mutable {
+		std::string to_ip_value;
+		if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
+			return; //对方不在线：消息已在库里，登录同步会补发
+
+		//对方在本实例: 直接投递, 不再走一次 gRPC
+		if (to_ip_value == ConfigMgr::Inst()["SelfServer"]["Name"]) {
+			auto peer_session = UserMgr::GetInstance()->GetSession(touid);
+			if (peer_session)
+				peer_session->Send(notify.toStyledString(), ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+			return;
+		}
+
+		auto forwarded = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(
+			to_ip_value, req, Json::Value());
+		if (forwarded.error() == ErrorCodes::UidInvalid) {
+			//缓存的位置过期：对方已经换实例，失效后回源一次再投，不能直接当离线
+			SessionRouter::Inst().Invalidate(touid);
+			std::string retry_ip;
+			if (SessionRouter::Inst().Lookup(touid, retry_ip) && retry_ip != to_ip_value) {
+				ChatGrpcClient::GetInstance()->NotifyTextChatMsg(
+					retry_ip, req, Json::Value());
+			}
+		}
+		//投递失败只影响"立刻看到"，接收方下次登录仍会用 1006 同步补回
+	});
 }
 
 void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
@@ -951,12 +1036,15 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
 	Json::Reader reader;
 	reader.parse(msg_data, root);
 	const int uid = root["fromuid"].asInt();
-	//客户端把上一页最后一条 thread_id 发回来当游标, 首次为0
+	//客户端把上一页最后一条的 thread_id 与 time 一起发回来当复合游标；首次都为0。
+	//只带 thread_id 的旧客户端仍走原来的升序游标，服务端保持兼容。
 	const long long last_id = root["thread_id"].asInt64();
+	const long long last_time = root.get("last_time", Json::Int64(0)).asInt64();
 	std::vector<ChatThreadInfo> threads;
 	bool has_more = false;
 	Json::Value response;
-	response["error"] = MysqlMgr::GetInstance()->GetChatThreads(uid, last_id, 100, threads, has_more)
+	response["error"] = MysqlMgr::GetInstance()->GetChatThreads(
+		uid, last_id, 100, threads, has_more, last_time)
 		? ErrorCodes::Success : ErrorCodes::RPCFailed;
 	response["thread_list"] = Json::arrayValue;
 	response["load_more"] = has_more;
@@ -1008,14 +1096,11 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 }
 
 void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session,
-    const short& msg_id, const std::string& msg_data)
+    const short&, const std::string&)
 {
-    Json::Reader reader;
-    Json::Value root;
-    reader.parse(msg_data, root);
-    auto uid = root["fromuid"].asInt();
-    std::cout << "receive heart beat msg, uid is " << uid << std::endl;
-    Json::Value  rtvalue;
+    //心跳的身份与字段已由 ValidateChatRequest 校验；这里不再解析 JSON，
+    //3000 在线、10 秒一次心跳时，每秒 300 次无意义的解析与日志会被省掉
+    Json::Value rtvalue;
     rtvalue["error"] = ErrorCodes::Success;
     session->Send(rtvalue.toStyledString(), ID_HEARTBEAT_RSP);
 }
@@ -1257,6 +1342,18 @@ void LogicSystem::PushChatEvent(int from_uid, int to_uid, long long thread_id,
 {
 	if (from_uid <= 0 || to_uid <= 0 || thread_id <= 0)
 		return;
+	//投递交给独立线程：对端实例不可达时 RPC 会等到截止时间，
+	//已读/撤回通知晚几百毫秒不影响正确性
+	PostDeliveryTask([this, from_uid, to_uid, thread_id, message_id, event]() {
+		PushChatEventNow(from_uid, to_uid, thread_id, message_id, event);
+	});
+}
+
+void LogicSystem::PushChatEventNow(int from_uid, int to_uid, long long thread_id,
+	long long message_id, int event)
+{
+	if (from_uid <= 0 || to_uid <= 0 || thread_id <= 0)
+		return;
 
 	std::string ip;
 	if (!SessionRouter::Inst().Lookup(to_uid, ip))
@@ -1439,6 +1536,18 @@ void LogicSystem::BroadcastGroupEvent(long long thread_id, const std::vector<int
 {
 	if (members.empty())
 		return;
+	//本地直投与跨实例转发整体交给投递线程：群成员里只要有一个实例不可达，
+	//同步 RPC 就会把业务线程按住数秒。payload/members 按值捕获，调用方返回后仍然有效
+	PostDeliveryTask([this, thread_id, members, except_uid, payload, notify_id]() {
+		BroadcastGroupEventNow(thread_id, members, except_uid, payload, notify_id);
+	});
+}
+
+void LogicSystem::BroadcastGroupEventNow(long long thread_id, const std::vector<int>& members,
+	int except_uid, const Json::Value& payload, int notify_id)
+{
+	if (members.empty())
+		return;
 	const std::string text = payload.toStyledString();
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
 	//一次批量查询所有成员的在线位置：群上限 200，避免 200 次单点查询
@@ -1517,10 +1626,8 @@ Json::Value LogicSystem::BuildThreadItem(const ChatThreadInfo& thread) const
 
 int LogicSystem::ThreadTypeOf(long long thread_id)
 {
-	int type = static_cast<int>(ThreadType::Private);
-	//查询失败时按单聊继续，至少不会把一条本可送达的私聊消息吞掉
-	MysqlMgr::GetInstance()->GetThreadType(thread_id, type);
-	return type;
+	//会话类型不会变，走进程内缓存；未命中才查库，失败按单聊继续
+	return MysqlMgr::GetInstance()->GetThreadTypeCached(thread_id);
 }
 
 //一条已落库消息的公共字段：文本、图片、视频文件与系统消息共用同一套键名，
@@ -1553,8 +1660,10 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 
 	Json::Value response;
 	response["error"] = ErrorCodes::Success;
-	Defer defer([&response, session]() {
-		session->Send(response.toStyledString(), ID_CREATE_GROUP_RSP);
+	bool replied = false; //成功路径会先回包再广播，错误路径仍由 Defer 兜底
+	Defer defer([&response, session, &replied]() {
+		if (!replied)
+			session->Send(response.toStyledString(), ID_CREATE_GROUP_RSP);
 	});
 
 	const int uid = session->GetUserId();
@@ -1627,6 +1736,10 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 		item["group_nick"] = member.group_nick;
 		response["members"].append(item);
 	}
+
+	//先回包再广播：创建者如果先收到 1068/1019，客户端还没有这个会话，系统消息会被丢掉
+	session->Send(response.toStyledString(), ID_CREATE_GROUP_RSP);
+	replied = true;
 
 	//其他成员：把群资料与成员一起推过去，客户端据此立刻出现会话
 	std::vector<int> ids;

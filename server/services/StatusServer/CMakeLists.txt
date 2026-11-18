@@ -2,7 +2,7 @@
 #  StatusServer — 用户在线状态与路由聚合（gRPC）
 #  登录时签发 token 写入 Redis，并按各聊天实例的在线连接数挑选目标实例
 #
-#  依赖: xigu_proto（共享 proto 库）+ gRPC/protobuf + Boost
+#  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
 #        + hiredis + jsoncpp + mysql-connector-cpp
 #  产物: 单配置为 bin/StatusServer/，多配置为 bin/StatusServer/<配置名>/
 #        macOS/Linux 预设使用单配置 Ninja，Windows 预设使用多配置 Visual Studio
@@ -22,9 +22,6 @@ set(SERVER_SOURCES
     src/SessionRegistry.cpp     # 会话租约与 epoch
     src/InstanceRegistry.cpp    # 实例注册与选路
     src/ChatControlClient.cpp   # 到聊天实例的控制链路（踢人）
-    src/ConfigMgr.cpp           # 配置文件 config.ini 的读取与单例
-    src/IOContextPool.cpp       # boost::asio io_context 线程池
-    src/RedisMgr.cpp            # Redis 客户端封装（hiredis）
     src/MysqlMgr.cpp            # MySQL 连接池（X DevAPI）
     src/MysqlDao.cpp            # 数据访问层
 )
@@ -36,12 +33,8 @@ set(SERVER_HEADERS
     include/SessionRegistry.h
     include/InstanceRegistry.h
     include/ChatControlClient.h
-    include/ConfigMgr.h
-    include/IOContextPool.h
-    include/RedisMgr.h
     include/MysqlMgr.h
     include/MysqlDao.h
-    include/Singleton.h
     include/const.h
 )
 
@@ -52,7 +45,7 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---------- 链接库 ----------
-# xigu_proto:            共享 proto 生成代码（静态库）
+# xiguchat_proto:            共享 proto 生成代码（静态库）
 # gRPC::grpc++:          gRPC C++ 运行时
 # protobuf::libprotobuf: protobuf 运行时
 # Boost::filesystem:     路径处理
@@ -62,7 +55,8 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # unofficial::mysql-connector-cpp::connector: MySQL 连接器
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
-    xigu_proto
+    xiguchat_common
+    xiguchat_proto
     gRPC::grpc++
     protobuf::libprotobuf
     Boost::filesystem

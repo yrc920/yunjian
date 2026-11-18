@@ -42,6 +42,8 @@ enum ErrorCodes {
 	PasswdUpFailed = 1008, //重置密码时写库失败
 	PasswdInvalid = 1009, //登录时邮箱与密码不匹配
 	VerifyTooFrequent = 1022, //验证码发送过于频繁
+	ServiceUnavailable = 1101, //服务暂时不可用（口令线程池排队已满），客户端可重试
+	TooManyRequests = 1105, //登录失败次数超过上限
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -67,5 +69,20 @@ private:
 #define CODE_EMAIL_HOURLY_LIMIT 5
 #define CODE_IP_HOURLY_LIMIT 20
 #define COOLDOWNPREFIX "code_cd_"
+
+//登录失败限流：同一账号 60 秒 5 次，同一 IP 60 秒 20 次。
+//只统计失败，成功后清零，正常用户偶发输错不会被长期锁住
+#define LOGIN_FAIL_PREFIX "loginfail_"
+#define LOGIN_FAIL_IP_PREFIX "loginfail_ip_"
+#define LOGIN_FAIL_WINDOW_SECONDS 60
+#define LOGIN_ACCOUNT_FAIL_LIMIT 5
+#define LOGIN_IP_FAIL_LIMIT 20
+
+//连接池等待上限：数据库/缓存故障时快速失败，避免 HTTP IO 线程被永久挂住
+constexpr int MYSQL_POOL_WAIT_MS = 2000;
+//口令哈希线程数：每个线程峰值 64 MiB，默认 2 个；
+//队列排满后直接回可重试错误，不让登录请求堆在 IO 线程上
+constexpr int DEFAULT_PASSWORD_THREADS = 2;
+constexpr int DEFAULT_PASSWORD_QUEUE = 128;
 #define RATEEMAILPREFIX "code_hr_"
 #define RATEIPPREFIX "code_ip_"

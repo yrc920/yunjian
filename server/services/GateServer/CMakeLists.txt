@@ -2,7 +2,7 @@
 #  GateServer — HTTP 网关（boost::beast）
 #  对外暴露 HTTP 接口，转发 gRPC 请求到后端服务
 #
-#  依赖: xigu_proto（共享 proto 库）+ gRPC/protobuf + Boost
+#  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
 #        + hiredis + jsoncpp + mysql-connector-cpp
 #  产物: 单配置为 bin/GateServer/，多配置为 bin/GateServer/<配置名>/
 #        macOS/Linux 预设使用单配置 Ninja，Windows 预设使用多配置 Visual Studio
@@ -19,14 +19,12 @@ set(SERVER_SOURCES
     src/CServer.cpp           # HTTP 服务骨架（boost::beast 监听）
     src/HttpConnection.cpp    # 单个 HTTP 连接的处理
     src/LogicSystem.cpp       # 业务分发：URL 路由 -> 具体处理函数
-    src/ConfigMgr.cpp         # 配置文件 config.ini 的读取与单例
-    src/IOContextPool.cpp     # boost::asio io_context 线程池
-    src/RedisMgr.cpp          # Redis 客户端封装（hiredis）
     src/MysqlMgr.cpp          # MySQL 连接池（X DevAPI）
     src/MysqlDao.cpp          # 数据访问层（用户表查询等）
     src/StatusGrpcClient.cpp  # 调用 StatusServer 的 gRPC 客户端
     src/VerifyGrpcClient.cpp  # 调用 VerifyServer 的 gRPC 客户端
     src/PasswordHash.cpp      # 密码哈希与校验（libsodium Argon2id）
+    src/PasswordPool.cpp      # 口令哈希线程池（不占用 HTTP IO 线程）
 )
 
 # ---------- 头文件清单 ----------
@@ -36,15 +34,12 @@ set(SERVER_HEADERS
     include/CServer.h
     include/HttpConnection.h
     include/LogicSystem.h
-    include/ConfigMgr.h
-    include/IOContextPool.h
-    include/RedisMgr.h
     include/MysqlMgr.h
     include/MysqlDao.h
     include/StatusGrpcClient.h
     include/VerifyGrpcClient.h
     include/PasswordHash.h
-    include/Singleton.h
+    include/PasswordPool.h
     include/const.h
 )
 
@@ -56,7 +51,7 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---------- 链接库 ----------
-# xigu_proto:            共享 proto 生成代码（静态库）
+# xiguchat_proto:            共享 proto 生成代码（静态库）
 # gRPC::grpc++:          gRPC C++ 运行时
 # protobuf::libprotobuf: protobuf 运行时
 # Boost::filesystem:     路径处理
@@ -67,7 +62,8 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # unofficial::mysql-connector-cpp::connector: MySQL 连接器
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
-    xigu_proto
+    xiguchat_common
+    xiguchat_proto
     gRPC::grpc++
     protobuf::libprotobuf
     Boost::filesystem

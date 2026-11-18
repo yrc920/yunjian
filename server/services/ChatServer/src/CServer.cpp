@@ -4,6 +4,7 @@
 #include "UserMgr.h"
 #include "ConfigMgr.h"
 #include "StatusGrpcClient.h"
+#include "const.h"
 
 CServer::CServer(boost::asio::io_context& io_context, short port) : _io_context(io_context),
     _port(port), _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
@@ -68,31 +69,26 @@ void CServer::StartAccept()
 		std::bind(&CServer::HandleAccept, this, new_session, std::placeholders::_1)); 
 }
 
-void CServer::ClearSession(std::string session_id)
+void CServer::ClearSession(const std::string& session_id)
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (_sessions.find(session_id) != _sessions.end()) {
-        auto uid = _sessions[session_id]->GetUserId();
+    auto iter = _sessions.find(session_id);
+    if (iter != _sessions.end()) {
+        auto uid = iter->second->GetUserId();
 
         //按uid和session_id一起解绑，只有映射仍指向当前连接时才移除，避免误删同一用户的新连接
         UserMgr::GetInstance()->RmvUserSession(uid, session_id);
+        _sessions.erase(iter); //只移除本地会话登记，socket关闭与租约清理由调用方处理
     }
-
-    _sessions.erase(session_id); //只移除本地会话登记，socket关闭与Redis状态清理由调用方处理
 }
 
-bool CServer::CheckValid(std::string uuid)
+bool CServer::CheckValid(const std::string& uuid)
 {
     std::lock_guard<std::mutex> lock(_mutex); //保护_sessions的互斥锁
-    auto it = _sessions.find(uuid); //查找指定uuid的会话
-    //如果找到了, 说明会话存在, 返回true; 否则返回false
-    if (it != _sessions.end())
-        return true;
-
-    return false;
+    return _sessions.find(uuid) != _sessions.end();
 }
 
-std::shared_ptr<CSession> CServer::GetSession(std::string uuid)
+std::shared_ptr<CSession> CServer::GetSession(const std::string& uuid)
 {
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _sessions.find(uuid);
@@ -162,9 +158,11 @@ void CServer::RenewLeases(const std::vector<std::shared_ptr<CSession>>& sessions
 					continue;
 				auto session = iter->second;
 				if (result.status() == 2) {
-					//已被更高 epoch 顶替：先发下线原因，再延迟断开，保证通知写得出去
+					//已被更高 epoch 顶替：先发下线原因，再延迟断开，保证通知写得出去。
+					//同时立刻摘掉本地 uid 映射：排队中的请求不应再在一条已失效的连接上执行
 					session->NotifyOffline(result.uid(), 1);
 					session->CloseSoon(300);
+					ClearSession(session->GetSessionId());
 					std::cout << "[lease] fenced uid=" << result.uid()
 						<< " local_epoch=" << session->GetEpoch() << std::endl;
 				}

@@ -6,9 +6,9 @@
 
 namespace {
 
-std::chrono::steady_clock::time_point ExpiryFor(bool online)
+std::chrono::steady_clock::time_point ExpiryFor(bool online, int negative_seconds)
 {
-	const int seconds = online ? ROUTE_CACHE_SECONDS : ROUTE_NEGATIVE_CACHE_SECONDS;
+	const int seconds = online ? ROUTE_CACHE_SECONDS : negative_seconds;
 	return std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
 }
 
@@ -20,7 +20,8 @@ SessionRouter& SessionRouter::Inst()
 	return router;
 }
 
-void SessionRouter::Store(int uid, bool online, const std::string& instance)
+void SessionRouter::Store(int uid, bool online, const std::string& instance,
+	int negative_seconds)
 {
 	if (uid <= 0)
 		return;
@@ -29,7 +30,7 @@ void SessionRouter::Store(int uid, bool online, const std::string& instance)
 	CacheEntry entry;
 	entry.online = online;
 	entry.instance = instance;
-	entry.expires = ExpiryFor(online);
+	entry.expires = ExpiryFor(online, negative_seconds);
 	_cache[uid] = entry;
 	TrimIfNeeded();
 }
@@ -86,7 +87,8 @@ bool SessionRouter::Lookup(int uid, std::string& instance)
 		return true;
 	}
 
-	Store(uid, false, "");
+	//单点查询用更短的负缓存：登录后的第一条私聊不会被 5 秒窗口挡掉
+	Store(uid, false, "", ROUTE_SINGLE_NEGATIVE_SECONDS);
 	return false;
 }
 

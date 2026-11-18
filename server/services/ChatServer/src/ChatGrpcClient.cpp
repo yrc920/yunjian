@@ -141,7 +141,7 @@ ChatEventRsp ChatGrpcClient::NotifyChatEvent(std::string server_ip, const ChatEv
 
 	auto& pool = find_iter->second;
 	ClientContext context;
-	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(DELIVERY_RPC_DEADLINE_MS));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyChatEvent(&context, req, &rsp);
 	Defer defercon([&stub, this, &pool]() {
@@ -168,7 +168,7 @@ GroupEventRsp ChatGrpcClient::NotifyGroupEvent(std::string server_ip, const Grou
 
 	auto& pool = find_iter->second;
 	ClientContext context;
-	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(DELIVERY_RPC_DEADLINE_MS));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyGroupEvent(&context, req, &rsp);
 	Defer defercon([&stub, this, &pool]() {
@@ -243,7 +243,7 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip,
 	auto& pool = find_iter->second;
 	ClientContext context;
 	//为同步RPC设置5秒截止时间，避免对端无响应时业务线程一直等待；连接池等待本身仍由池管理
-	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(DELIVERY_RPC_DEADLINE_MS));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyTextChatMsg(&context, req, &rsp);
     //回填本次请求的用户和消息标识，让调用方能关联原消息；这些字段不代表已经送达，结果仍看error

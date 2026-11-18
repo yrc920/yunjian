@@ -30,6 +30,7 @@ enum ErrorCodes {
 	SessionExpired = 1103, //租约过期
 	InstanceUnknown = 1104, //本实例未注册或注册已过期
 	TooManyRequests = 1105, //短时间内的登录次数超过上限
+	ResponseTooLarge = 1106, //响应超过单帧上限，已回错误包而不是断开连接
 };
 
 //Defer类(go语言风格的延迟执行)
@@ -67,6 +68,11 @@ constexpr int RECALL_WINDOW_SECONDS = 120;
 #define MAX_RECVQUE 10000 //最大接收队列长度
 #define MAX_SENDQUE 1000 //最大发送队列长度
 #define MAX_LOGICQUE 10000 //最大逻辑队列长度
+
+//连接池等待上限：数据库/缓存故障时快速失败，避免业务线程被永久挂住
+constexpr int MYSQL_POOL_WAIT_MS = 2000;
+//2 字节长度字段的上限；发送缓冲里还要放 4 字节包头，所以再减 4
+constexpr std::size_t MAX_RESPONSE_LEN = 65535 - 4;
 
 //按 UTF-8 编码统计字符数: 只数首字节, 后续的 10xxxxxx 续字节跳过
 //数据库列宽以字符为单位, 直接比较 std::string 的 size() 会把一个汉字算成 3 个
@@ -146,9 +152,18 @@ constexpr int LEASE_TTL_SECONDS = 90;
 constexpr int LEASE_RENEW_SECONDS = 30;
 //单次续租携带的会话数，避免一个请求体过大
 constexpr int LEASE_RENEW_BATCH = 200;
+//投递线程内的跨实例 RPC 截止时间：失败只影响"立刻看到"，消息已在库里，
+//不必为单次投递等 3–5 秒，否则队列里的后续消息都被拖慢
+constexpr int DELIVERY_RPC_DEADLINE_MS = 800;
+//每连接消息令牌桶：20 条/秒、突发 50。正常输入远低于这个值，只拦刷屏
+constexpr double MESSAGE_RATE_PER_SECOND = 20.0;
+constexpr double MESSAGE_BURST = 50.0;
 //路由缓存：在线位置 30 秒、离线 5 秒，离线缓存短一些，对方刚上线就能看见
 constexpr int ROUTE_CACHE_SECONDS = 30;
 constexpr int ROUTE_NEGATIVE_CACHE_SECONDS = 5;
+//私聊投递的负缓存只有 1 秒：一条私聊往往就是"对方刚登录"的第一个信号，
+//5 秒窗口会让登录后的第一条消息错过实时投递；群广播仍用 5 秒，避免 200 人风暴
+constexpr int ROUTE_SINGLE_NEGATIVE_SECONDS = 1;
 constexpr int ROUTE_CACHE_MAX = 20000;
 
 #define HEART_BEAT_INTERVAL 30 //定时器周期：心跳检测、租约续期与实例上报共用

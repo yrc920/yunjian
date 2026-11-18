@@ -38,7 +38,7 @@ struct ApplyInfo {
 	int _status; //申请状态，0表示未处理，1表示同意，2表示拒绝
 };
 
-//会话类型：chat_thread.thread_type 的取值
+//会话类型：conversation.thread_type 的取值
 enum class ThreadType : int {
 	Private = 1,
 	Group = 2,
@@ -54,7 +54,7 @@ enum class GroupRole : int {
 //会话列表条目: 单聊用 peer_* 描述对方，群聊用 group_* 描述群，
 //两类会话共用 thread_id 游标，登录时按同一份列表下发
 struct ChatThreadInfo {
-	long long thread_id = 0; //会话ID, 由 chat_thread 生成
+	long long thread_id = 0; //会话ID, 由 conversation 生成
 	int thread_type = static_cast<int>(ThreadType::Private); //1 单聊 / 2 群聊
 	int peer_uid = 0; //单聊对方用户ID
 	std::string peer_name; //对方用户名

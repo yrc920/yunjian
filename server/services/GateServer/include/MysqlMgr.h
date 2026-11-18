@@ -16,7 +16,8 @@ public:
 	bool CheckEmail(const std::string& name, const std::string& email); //检查用户名和邮箱是否匹配
 	bool UpdatePwd(const std::string& name, const std::string& pwd); //更新密码
 	//检查邮箱和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
-	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
+	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo,
+		bool& db_error);
 
 private:
 	MysqlMgr();

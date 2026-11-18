@@ -2,7 +2,7 @@
 #  VerifyServer — 验证码服务（gRPC + Redis + SMTP）
 #  生成验证码、写入 Redis 并通过邮件发送给用户
 #
-#  依赖: xigu_proto（共享 proto 库）+ gRPC/protobuf + Boost
+#  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
 #        + hiredis + Poco Net/NetSSL
 #  产物: 单配置为 bin/VerifyServer/，多配置为 bin/VerifyServer/<配置名>/
 #        macOS/Linux 预设使用单配置 Ninja，Windows 预设使用多配置 Visual Studio
@@ -16,8 +16,6 @@ set(SERVER_SOURCES
     src/VerifyServer.cpp      # 主入口：启动 gRPC 服务，注册信号处理
     src/VerifyServiceImpl.cpp # gRPC 服务实现：验证码生成、Redis 读写、发信调度
     src/EmailSender.cpp       # SMTP 客户端封装（POCO）
-    src/RedisMgr.cpp          # Redis 客户端封装（hiredis）
-    src/ConfigMgr.cpp         # 配置文件 config.ini 的读取与单例
 )
 
 # ---------- 头文件清单 ----------
@@ -25,9 +23,6 @@ set(SERVER_SOURCES
 set(SERVER_HEADERS
     include/VerifyServiceImpl.h
     include/EmailSender.h
-    include/RedisMgr.h
-    include/ConfigMgr.h
-    include/Singleton.h
     include/const.h
 )
 
@@ -38,7 +33,7 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---------- 链接库 ----------
-# xigu_proto:            共享 proto 生成代码（静态库）
+# xiguchat_proto:            共享 proto 生成代码（静态库）
 # gRPC::grpc++:          gRPC C++ 运行时
 # protobuf::libprotobuf: protobuf 运行时
 # Boost::filesystem:     路径处理
@@ -48,7 +43,8 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # Poco::Net:             SMTP/MailMessage 与 Socket 基础（Poco::Foundation 由其传递引入）
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
-    xigu_proto
+    xiguchat_common
+    xiguchat_proto
     gRPC::grpc++
     protobuf::libprotobuf
     Boost::filesystem

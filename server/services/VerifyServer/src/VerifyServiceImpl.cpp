@@ -22,7 +22,7 @@ grpc::Status VerifyServiceImpl::GetVerifyCode(grpc::ServerContext* /*context*/,
 		if (!RedisMgr::GetInstance()->Get(key, code)) {
 			code = GenerateCode();
 			//写入失败（Redis 不可用）时无法保证后续校验，直接返回 Redis 错误
-			if (!RedisMgr::GetInstance()->SetExpire(key, code, CODE_EXPIRE_SECONDS)) {
+			if (!RedisMgr::GetInstance()->SetEx(key, code, CODE_EXPIRE_SECONDS)) {
 				response->set_error(VerifyCodes::RedisErr);
 				return grpc::Status::OK;
 			}

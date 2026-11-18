@@ -13,6 +13,12 @@ public:
 	void Start(); //开始处理连接
 	tcp::socket& GetSocket() { return _socket; } //返回连接套接字, 以便服务器在接受连接时将套接字绑定到连接对象上
 
+	//处理函数把回包推迟到哈希线程结果回来之后再发：
+	//HandleReq 看到这个标记就不自动写响应
+	void DeferResponse();
+	//在连接所属的 IO 线程调用：写入包体并发送
+	void SendDeferred(const std::string& body);
+
 private:
 	void CheckDeadline(); //检查连接是否超时, 超时则关闭连接
 	void WriteResponse(); //发送响应
@@ -29,4 +35,5 @@ private:
 	};
 	std::string _get_url; //GET请求的URL路径, 不包含查询字符串
 	std::unordered_map<std::string, std::string> _get_params; //GET请求的参数映射, 键为参数名, 值为参数值
+	bool _deferred = false; //回包由处理函数自己发（口令哈希在线程池里完成）
 };

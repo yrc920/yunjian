@@ -1,76 +1,97 @@
-/*
- Navicat Premium Dump SQL
+-- MySQL dump 10.13  Distrib 9.7.4, for Linux (aarch64)
+--
+-- Host: localhost    Database: xigu
+-- ------------------------------------------------------
+-- Server version	9.7.4
 
- Source Server         : mysql
- Source Server Type    : MySQL
- Source Server Version : 90704 (9.7.4)
- Source Host           : localhost:3306
- Source Schema         : xigu
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
- Target Server Type    : MySQL
- Target Server Version : 90704 (9.7.4)
- File Encoding         : 65001
+--
+-- Table structure for table `chat_message`
+--
 
- Date: 09/11/2026 09:38:09
-*/
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ----------------------------
--- Table structure for chat_message
--- ----------------------------
 DROP TABLE IF EXISTS `chat_message`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `chat_message` (
   `message_id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `thread_id` bigint unsigned NOT NULL,
   `sender_id` int NOT NULL,
   `recv_id` int NOT NULL,
-  `client_msg_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `client_msg_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `content` text COLLATE utf8mb4_unicode_ci NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `status` tinyint unsigned NOT NULL DEFAULT '0',
+  `state` tinyint unsigned NOT NULL DEFAULT '0',
+  `upload_state` tinyint unsigned NOT NULL DEFAULT '1',
   `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
-  `is_read` tinyint unsigned NOT NULL DEFAULT '0',
-  `recalled` tinyint unsigned NOT NULL DEFAULT '0',
-  `mentions` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `mentions` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
-  KEY `idx_chat_message_thread_id` (`thread_id`,`message_id`),
-  KEY `idx_chat_message_thread_time` (`thread_id`,`created_at`,`message_id`),
-  CONSTRAINT `fk_chat_message_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  KEY `idx_chat_message_thread` (`thread_id`,`message_id`),
+  CONSTRAINT `fk_message_conversation` FOREIGN KEY (`thread_id`) REFERENCES `conversation` (`thread_id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=283 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ----------------------------
--- Records of chat_message
--- ----------------------------
-BEGIN;
-COMMIT;
+--
+-- Table structure for table `conversation`
+--
 
--- ----------------------------
--- Table structure for chat_thread
--- ----------------------------
-DROP TABLE IF EXISTS `chat_thread`;
-CREATE TABLE `chat_thread` (
+DROP TABLE IF EXISTS `conversation`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `conversation` (
   `thread_id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `thread_type` tinyint unsigned NOT NULL DEFAULT '1',
+  `dm_key` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `owner_id` int NOT NULL DEFAULT '0',
+  `notice` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `last_message_id` bigint unsigned NOT NULL DEFAULT '0',
+  `last_message_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`),
-  KEY `idx_chat_thread_updated` (`updated_at`,`thread_id`)
+  UNIQUE KEY `uk_conversation_dm` (`dm_key`),
+  KEY `idx_conversation_last` (`last_message_at`,`thread_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `conversation_member`
+--
+
+DROP TABLE IF EXISTS `conversation_member`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `conversation_member` (
+  `thread_id` bigint unsigned NOT NULL,
+  `uid` int NOT NULL,
+  `role` tinyint unsigned NOT NULL DEFAULT '0',
+  `nickname` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `muted` tinyint unsigned NOT NULL DEFAULT '0',
+  `last_read_message_id` bigint unsigned NOT NULL DEFAULT '0',
+  `joined_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`thread_id`,`uid`),
+  KEY `idx_member_uid` (`uid`,`thread_id`),
+  CONSTRAINT `fk_member_conversation` FOREIGN KEY (`thread_id`) REFERENCES `conversation` (`thread_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ----------------------------
--- Records of chat_thread
--- ----------------------------
-BEGIN;
-COMMIT;
+--
+-- Table structure for table `friend`
+--
 
--- ----------------------------
--- Table structure for friend
--- ----------------------------
 DROP TABLE IF EXISTS `friend`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `friend` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `self_id` int NOT NULL,
@@ -79,18 +100,16 @@ CREATE TABLE `friend` (
   `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `self_friend` (`self_id`,`friend_id`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ----------------------------
--- Records of friend
--- ----------------------------
-BEGIN;
-COMMIT;
+--
+-- Table structure for table `friend_apply`
+--
 
--- ----------------------------
--- Table structure for friend_apply
--- ----------------------------
 DROP TABLE IF EXISTS `friend_apply`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `friend_apply` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `from_uid` int NOT NULL,
@@ -101,169 +120,75 @@ CREATE TABLE `friend_apply` (
   `tags` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '[]',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `from_to_uid` (`from_uid`,`to_uid`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ----------------------------
--- Records of friend_apply
--- ----------------------------
-BEGIN;
-COMMIT;
+--
+-- Table structure for table `user`
+--
 
--- ----------------------------
--- Table structure for group_chat
--- ----------------------------
-DROP TABLE IF EXISTS `group_chat`;
-CREATE TABLE `group_chat` (
-  `thread_id` bigint unsigned NOT NULL,
-  `group_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `owner_id` int NOT NULL DEFAULT '0',
-  `notice` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`thread_id`),
-  CONSTRAINT `fk_group_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ----------------------------
--- Records of group_chat
--- ----------------------------
-BEGIN;
-COMMIT;
-
--- ----------------------------
--- Table structure for group_chat_member
--- ----------------------------
-DROP TABLE IF EXISTS `group_chat_member`;
-CREATE TABLE `group_chat_member` (
-  `thread_id` bigint unsigned NOT NULL,
-  `user_id` int NOT NULL,
-  `role` tinyint unsigned NOT NULL DEFAULT '0',
-  `nickname` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `last_read_message_id` bigint unsigned NOT NULL DEFAULT '0',
-  `muted` tinyint unsigned NOT NULL DEFAULT '0',
-  `joined_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`thread_id`,`user_id`),
-  KEY `idx_group_member_user` (`user_id`,`thread_id`),
-  CONSTRAINT `fk_group_member_thread` FOREIGN KEY (`thread_id`) REFERENCES `group_chat` (`thread_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ----------------------------
--- Records of group_chat_member
--- ----------------------------
-BEGIN;
-COMMIT;
-
--- ----------------------------
--- Table structure for private_chat
--- ----------------------------
-DROP TABLE IF EXISTS `private_chat`;
-CREATE TABLE `private_chat` (
-  `thread_id` bigint unsigned NOT NULL,
-  `user1_id` int NOT NULL,
-  `user2_id` int NOT NULL,
-  PRIMARY KEY (`thread_id`),
-  UNIQUE KEY `uk_private_users` (`user1_id`,`user2_id`),
-  KEY `idx_private_user1` (`user1_id`,`thread_id`),
-  KEY `idx_private_user2` (`user2_id`,`thread_id`),
-  CONSTRAINT `fk_private_thread` FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`thread_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ----------------------------
--- Records of private_chat
--- ----------------------------
-BEGIN;
-COMMIT;
-
--- ----------------------------
--- Table structure for user
--- ----------------------------
 DROP TABLE IF EXISTS `user`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `uid` int NOT NULL DEFAULT '0',
-  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `email` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `pwd` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `nick` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `desc` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `uid` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `pwd` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `nick` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `desc` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `sex` int NOT NULL DEFAULT '0',
-  `icon` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE KEY `uid` (`uid`) USING BTREE,
-  UNIQUE KEY `email` (`email`) USING BTREE,
-  KEY `name` (`name`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+  `icon` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  PRIMARY KEY (`uid`),
+  UNIQUE KEY `uk_user_name` (`name`),
+  UNIQUE KEY `uk_user_email` (`email`)
+) ENGINE=InnoDB AUTO_INCREMENT=1010 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
--- ----------------------------
--- Records of user
--- ----------------------------
-BEGIN;
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (1, 1001, '西故', '3099154616@qq.com', '$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8', 'xigu', '', 0, '');
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (2, 1002, '霄宫', 'xigu920@163.com', '$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870', '烟花', '', 1, '');
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (3, 1003, 'test1', '123@123.com', '$argon2id$v=19$m=262144,t=3,p=1$UhGmcWrXNJq/tMMW6g0gAQ$3SzQ/AyU/+Y7Vb+byrI9At5yXz9imXbNcrmZ7W4HNCU', '', '', 0, '');
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (4, 1004, 'test2', '456@456.com', '$argon2id$v=19$m=262144,t=3,p=1$9plVfbgTD5bk1C99b6hlXA$jCdqshgcsz52get45glPtwwXX5zPjxEgbRs8rwcRAwk', '', '', 0, '');
-INSERT INTO `user` (`id`, `uid`, `name`, `email`, `pwd`, `nick`, `desc`, `sex`, `icon`) VALUES (5, 1005, 'test3', '789@789.com', '$argon2id$v=19$m=262144,t=3,p=1$a+JGv9GlxLHO9ZOZbK0Nmw$kU0hSeyL/bAy8YielfzDMq3nYs+pKfeeCUqRXRvaN7A', '', '', 0, '');
-COMMIT;
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- ----------------------------
--- Table structure for user_id
--- ----------------------------
-DROP TABLE IF EXISTS `user_id`;
-CREATE TABLE `user_id` (
-  `id` int NOT NULL,
-  PRIMARY KEY (`id`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+-- Dump completed on 2026-11-18 12:23:38
+-- MySQL dump 10.13  Distrib 9.7.4, for Linux (aarch64)
+--
+-- Host: localhost    Database: xigu
+-- ------------------------------------------------------
+-- Server version	9.7.4
 
--- ----------------------------
--- Records of user_id
--- ----------------------------
-BEGIN;
-INSERT INTO `user_id` (`id`) VALUES (1005);
-COMMIT;
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
--- ----------------------------
--- Procedure structure for reg_user
--- ----------------------------
-DROP PROCEDURE IF EXISTS `reg_user`;
-delimiter ;;
-CREATE PROCEDURE `reg_user`(IN `new_name` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-                            IN `new_email` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-                            IN `new_pwd` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-                            OUT `result` INT)
-BEGIN
-    -- 如果在执行过程中遇到任何错误，则回滚事务
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-BEGIN
-        -- 回滚事务
-ROLLBACK;
--- 设置返回值为-1，表示错误
-SET result = -1;
-END;
-    -- 开始事务
-    START TRANSACTION;
--- 检查用户名是否已存在
-IF EXISTS (SELECT 1 FROM `user` WHERE `name` = new_name) THEN
-        SET result = 0; -- 用户名已存在
-COMMIT;
-ELSE
-        -- 用户名不存在，检查email是否已存在
-        IF EXISTS (SELECT 1 FROM `user` WHERE `email` = new_email) THEN
-            SET result = 0; -- email已存在
-COMMIT;
-ELSE
-            -- email也不存在，更新user_id表
-UPDATE `user_id` SET `id` = `id` + 1;
--- 获取更新后的id
-SELECT `id` INTO @new_id FROM `user_id`;
--- 在user表中插入新记录
-INSERT INTO `user` (`uid`, `name`, `email`, `pwd`) VALUES (@new_id, new_name, new_email, new_pwd);
--- 设置result为新插入的uid
-SET result = @new_id; -- 插入成功，返回新的uid
-COMMIT;
-END IF;
-END IF;
-END
-;;
-delimiter ;
+--
+-- Dumping data for table `user`
+--
 
-SET FOREIGN_KEY_CHECKS = 1;
+LOCK TABLES `user` WRITE;
+/*!40000 ALTER TABLE `user` DISABLE KEYS */;
+INSERT INTO `user` VALUES (1001,'西故','3099154616@qq.com','$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8','xigu','',0,''),(1002,'霄宫','xigu920@163.com','$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870','烟花','',1,''),(1003,'test1','123@123.com','$argon2id$v=19$m=65536,t=2,p=1$tXdYqduAQZKxtsyo3ac+rQ$voCSwFb/G2QfrcmexfKS8KLxyTaDS3TWC3bmVmzy6WU','','',0,''),(1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$i/YGk9wHcPEZqaMz6tPvnw$wS9HqxYhRExuUD+8sOPsVM3okGX1WKic5aJS3HhefJQ','','',0,''),(1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');
+/*!40000 ALTER TABLE `user` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2026-11-18 12:23:38

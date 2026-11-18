@@ -4,6 +4,10 @@
 
 #include "MysqlDao.h"
 #include "Singleton.h"
+#include <cstddef>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
 class MysqlMgr : public Singleton<MysqlMgr>
 {
@@ -12,11 +16,6 @@ public:
 	~MysqlMgr(); //使基类析构时可以访问派生类的析构函数
 
 	//注册用户, 返回用户ID, 如果注册失败则返回-1
-	int RegUser(const std::string& name, const std::string& email, const std::string& pwd);
-	bool CheckEmail(const std::string& name, const std::string& email); //检查用户名和邮箱是否匹配
-	bool UpdatePwd(const std::string& name, const std::string& pwd); //更新密码
-	//检查邮箱和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
-	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
 		const std::string& back_name, const std::vector<std::string>& tags); //好友申请、留言、备注与标签
 	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签
@@ -52,7 +51,7 @@ public:
 	long long GetOrCreatePrivateChat(int user1, int user2); //取单聊会话, 没有则创建
 	//分页读取会话列表与消息, 具体语义见 MysqlDao 中同名方法
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,
-		std::vector<ChatThreadInfo>& threads, bool& has_more);
+		std::vector<ChatThreadInfo>& threads, bool& has_more, long long last_time = 0);
 	bool GetChatMessages(int uid, long long thread_id, long long last_message_id, int limit,
 		std::vector<ChatMessageInfo>& messages, bool& has_more);
 	bool SaveChatMessages(int sender_id, int recv_id, long long thread_id,
@@ -68,6 +67,9 @@ public:
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
 	//会话类型: 1 单聊 / 2 群聊
 	bool GetThreadType(long long thread_id, int& thread_type);
+	//会话类型只读且不会变(thread_id 自增不复用), 进程内缓存避免每条消息一次查库;
+	//查询失败或会话不存在时按单聊返回
+	int GetThreadTypeCached(long long thread_id);
 	//群聊的建群、资料、成员与消息, 具体语义见 MysqlDao 中同名方法
 	long long CreateGroup(int owner_id, const std::string& group_name,
 		const std::vector<int>& members, GroupInfo& info,
@@ -100,4 +102,11 @@ private:
 	MysqlMgr();
 
 	MysqlDao _dao; //数据库访问对象
+
+	//会话类型缓存：业务线程与 gRPC 线程都会读，用互斥锁保护；
+	//超过上限按插入顺序淘汰最旧的一条，避免长期运行后无限增长
+	static constexpr std::size_t kThreadTypeCacheMax = 20000;
+	std::mutex _type_mutex;
+	std::unordered_map<long long, int> _type_cache;
+	std::deque<long long> _type_order;
 };

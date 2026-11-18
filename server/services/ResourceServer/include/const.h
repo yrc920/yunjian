@@ -5,6 +5,19 @@
 #include <functional>
 #include <cstdint>
 
+//连接池等待上限：数据库/缓存故障时快速失败，避免文件线程被永久挂住
+constexpr int MYSQL_POOL_WAIT_MS = 2000;
+
+//上传中的临时后缀：最后一片落盘并改名后才成为正式资源，
+//清理线程只动这个后缀，绝不会碰已经完成的文件
+constexpr const char* UPLOAD_PART_SUFFIX = ".part";
+//每用户默认配额（MB），0 表示不限制；可用 [Storage] QuotaMB 覆盖
+constexpr int DEFAULT_QUOTA_MB = 1024;
+//残留 .part 的保留时长：超过这个时间没有新分片写入就视为放弃
+constexpr int DEFAULT_STALE_HOURS = 24;
+//清理线程的巡检间隔（分钟）
+constexpr int DEFAULT_SWEEP_MINUTES = 60;
+
 enum ErrorCodes {
 	Success = 0,
 	Error_Json = 1001, //Json解析错误
@@ -19,6 +32,7 @@ enum ErrorCodes {
 	FileSeqInvalid = 1018, //分片序号不连续
 	FileReadPermissionFailed = 1019, //源文件无法打开或读取
 	FileOffsetInvalid = 1020, //请求的偏移已超出文件范围
+	FileQuotaExceeded = 1021, //用户已用空间加上本次上传会超过配额
 };
 
 //go语言风格的延迟执行
@@ -37,10 +51,12 @@ private:
 #define HEAD_ID_LEN 2
 #define HEAD_DATA_LEN 4
 
-//每片原始文件字节数，客户端与服务器必须一致
-#define MAX_FILE_LEN (1024 * 2)
-//单帧包体上限：2KB原始数据经Base64和JSON包装后仍留出充足余量
-#define MAX_MESSAGE_LEN (16 * 1024)
+//每片原始文件字节数，客户端与服务器必须一致。
+//64KB 是按单帧上限反推的结果：Base64 后约 87KB，仍在 128KB 包体以内，
+//10MB 图片从 5120 次往返降到 160 次
+#define MAX_FILE_LEN (64 * 1024)
+//单帧包体上限：64KB 原始数据的 Base64 + JSON 包装约 88KB，留出余量
+#define MAX_MESSAGE_LEN (128 * 1024)
 //单个文件上限，与客户端断点续传的4GB约束一致
 #define MAX_FILE_SIZE (4LL * 1024 * 1024 * 1024)
 

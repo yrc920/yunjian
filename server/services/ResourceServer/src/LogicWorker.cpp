@@ -1,6 +1,7 @@
 #include "LogicWorker.h"
 #include "ResourceHandler.h"
 #include <iostream>
+#include "const.h"
 
 LogicWorker::LogicWorker()
 {

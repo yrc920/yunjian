@@ -3,6 +3,7 @@
 // 缓存只是加速，权威始终在租约表；消息投递失败时会失效并重试一次
 //
 
+#include "const.h"
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -33,7 +34,8 @@ private:
 		bool online = false;
 	};
 
-	void Store(int uid, bool online, const std::string& instance);
+	void Store(int uid, bool online, const std::string& instance,
+		int negative_seconds = ROUTE_NEGATIVE_CACHE_SECONDS);
 	void TrimIfNeeded();
 
 	std::mutex _mutex;

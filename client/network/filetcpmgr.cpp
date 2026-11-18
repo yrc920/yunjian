@@ -14,8 +14,8 @@
 
 namespace {
 constexpr int FileHeadLen = 6; //2字节消息ID + 4字节包体长度
-constexpr int MaxFileLen = 2048; //与ResourceServer的MAX_FILE_LEN一致，两端切片必须同尺寸
-constexpr int MaxFileFrame = 16 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致
+constexpr int MaxFileLen = 64 * 1024; //与ResourceServer的MAX_FILE_LEN一致，两端切片必须同尺寸
+constexpr int MaxFileFrame = 128 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致（64KB 数据的 Base64）
 constexpr int MaxCwnd = 8; //拥塞窗口：聊天图片最多8片在途，头像固定1片
 constexpr int ResourceFileNotExists = 1012; //服务器没有这次上传的进度，需要从第一片重来
 
@@ -60,7 +60,7 @@ FileTcpMgr::FileTcpMgr()
                 stream >> _message_id >> _message_len; //2字节ID + 4字节长度
                 _buffer.remove(0, FileHeadLen); //原地摘掉头部，避免 mid 重新分配整块缓冲
 
-                //资源帧允许2KB分片，长度字段是4字节；超过上限说明流已经错位，直接断开
+                //资源帧允许64KB分片，长度字段是4字节；超过上限说明流已经错位，直接断开
                 if (_message_len == 0 || _message_len > MaxFileFrame) {
                     qWarning() << "[file-tcp] invalid frame length" << _message_len;
                     slot_close_connection();
@@ -267,7 +267,7 @@ void FileTcpMgr::sendWindow(const QString &md5)
             break;
         }
 
-        //服务器按 (seq-1)*2048 + 本片长度 校验偏移，last 只在最后一片置 1
+        //服务器按 (seq-1)*MaxFileLen + 本片长度 校验偏移，last 只在最后一片置 1
         const qint64 trans_size = offset + buffer.size();
         const bool last = trans_size >= info->_total_size;
 

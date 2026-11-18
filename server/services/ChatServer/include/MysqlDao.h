@@ -20,12 +20,7 @@ class MysqlDao
 public:
 	MysqlDao(); //初始化MySQL连接池
 	~MysqlDao();
-	//注册用户, 返回用户ID, 如果注册失败则返回-1
-	int RegUser(const std::string& name, const std::string& email, const std::string& pwd);
-	bool UpdatePwd(const std::string& name, const std::string& newpwd); //更新密码
-	bool CheckEmail(const std::string& name, const std::string& email); //检查用户名和邮箱是否匹配
 	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
-	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
 		const std::string& back_name, const std::vector<std::string>& tags); //添加好友申请、留言、备注与标签
 	//建立双向好友关系并置申请为已通过; 输出申请方当初给通过方设的备注与标签。
@@ -41,7 +36,6 @@ public:
 		const std::vector<std::string>& tags);
 	//好友表与申请表各有一个 tags 列: 启动时幂等补列, 不需要部署环境手工建表
 	//启动时补齐后加的列（好友标签、消息已读/撤回），已存在则跳过
-	bool EnsureSchema();
 
 	std::shared_ptr<UserInfo> GetUser(int uid); //根据用户ID获取用户信息
 	std::shared_ptr<UserInfo> GetUser(const std::string& name); //根据用户名获取用户信息
@@ -67,11 +61,12 @@ public:
 	bool IsMutualFriend(int uid, int touid);
 	//删除好友：只删自己这一行，对方仍保留关系
 	bool DeleteFriend(int uid, int touid);
-	//取单聊会话, 没有则创建; 非好友返回0. 依赖 private_chat 的 (user1_id,user2_id) 唯一键去重
+	//取单聊会话, 没有则创建; 非好友返回0. 依赖 conversation.dm_key 唯一键去重
 	long long GetOrCreatePrivateChat(int user1, int user2);
-	//按会话ID升序分页取会话列表, has_more 表示还有下一页
+	//按活跃时间倒序分页取会话列表; last_time 为上一页最后一条的 updated_at（UNIX 秒），
+	//旧客户端只传 thread_id 时退回按 thread_id 升序，保证兼容
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,
-		std::vector<ChatThreadInfo>& threads, bool& has_more);
+		std::vector<ChatThreadInfo>& threads, bool& has_more, long long last_time = 0);
 	//按消息ID升序分页取会话内消息, 只允许会话成员读取
 	bool GetChatMessages(int uid, long long thread_id, long long last_message_id, int limit,
 		std::vector<ChatMessageInfo>& messages, bool& has_more);
@@ -90,7 +85,7 @@ public:
 	//会话类型: 1 单聊 / 2 群聊; 不存在返回 false
 	bool GetThreadType(long long thread_id, int& thread_type);
 
-	//建群: 群主 + 勾选的好友(必须是群主的好友), 同时写 chat_thread/group_chat/成员与首条系统消息。
+	//建群: 群主 + 勾选的好友(必须是群主的好友), 同时写 conversation/成员与首条系统消息。
 	//返回 thread_id, 0 表示失败; error 带回具体原因
 	long long CreateGroup(int owner_id, const std::string& group_name,
 		const std::vector<int>& members, GroupInfo& info,
@@ -98,7 +93,7 @@ public:
 	//群资料与成员: 只允许群成员读取, 同时带回我的角色、群昵称与免打扰设置
 	bool GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 		std::vector<GroupMemberInfo>& members);
-	//群设置字段: 与 group_chat / group_chat_member 的列一一对应
+	//群设置字段: 与 conversation / conversation_member 的列一一对应
 	enum class GroupField { Name = 1, Notice = 2, MyNickname = 3, Muted = 4 };
 	//修改群设置: 群名与公告需要管理员及以上, 群昵称与免打扰改自己那一行。
 	//返回 ErrorCodes; 成功时 value 回填生效后的值
@@ -114,7 +109,7 @@ public:
 	int SetGroupAdmin(long long thread_id, int operator_uid, int target_uid, bool admin);
 	//退群: 群主不能直接退群(需先解散); dismissed 恒为 false, 保留字段供上层扩展
 	int LeaveGroup(long long thread_id, int uid, bool& dismissed);
-	//解散: 只有群主可以操作; 删 chat_thread 时消息与成员按外键级联清理
+	//解散: 只有群主可以操作; 删 conversation 时消息与成员按外键级联清理
 	int DismissGroup(long long thread_id, int uid);
 	//写入一条群系统消息(msg_type=4), 用于建群、邀请、移除、退群、改名等提示
 	bool AddGroupSystemMessage(long long thread_id, int actor, const std::string& content,

@@ -48,7 +48,7 @@ bool StatusServiceImpl::IssueToken(int uid, std::string& token)
 	token = GenerateToken();
 	//令牌带有效期，泄露后不会永久可用；每次登录刷新，长期不登录的会话自然失效
 	return RedisMgr::GetInstance()->SetEx(USERTOKENPREFIX + std::to_string(uid),
-		TOKEN_TTL_SECONDS, token);
+		token, TOKEN_TTL_SECONDS);
 }
 
 //登录选路：实例必须存活、未下线、地址完整，负载按 sessions/capacity 计算

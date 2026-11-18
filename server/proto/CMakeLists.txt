@@ -1,11 +1,11 @@
 # ============================================================
-#  xigu_proto — message.proto 构建期生成 + 编译为静态库
+#  xiguchat_proto — message.proto 构建期生成 + 编译为静态库
 #
 #  作用:
 #    1. 用 protoc（protobuf 编译器）把 proto/message.proto
 #       生成 C++ 代码 message.pb.*（消息结构体）
 #    2. 用 grpc_cpp_plugin 生成 message.grpc.pb.*（gRPC 服务骨架）
-#    3. 打包成静态库 xigu_proto，供 4 个服务链接复用
+#    3. 打包成静态库 xiguchat_proto，供 4 个服务链接复用
 #
 #  protoc 与 grpc_cpp_plugin 均由 vcpkg 安装，
 #  位于 installed/<triplet>/tools/ 下，版本由 vcpkg 锁定
@@ -58,18 +58,18 @@ add_custom_command(
     COMMENT "Generate gRPC code (message.grpc.pb.*)")
 
 # ---------- 静态库 ----------
-# 编译两个生成的 .cc 文件并打包为 xigu_proto，两个 .h 文件供生成代码和各服务包含
-add_library(xigu_proto STATIC
+# 编译两个生成的 .cc 文件并打包为 xiguchat_proto，两个 .h 文件供生成代码和各服务包含
+add_library(xiguchat_proto STATIC
     "${_gen_dir}/message.pb.cc"
     "${_gen_dir}/message.grpc.pb.cc")
 
 # PUBLIC：generated/ 与 proto 目录暴露给链接方，
 # 服务代码只需 #include "message.pb.h" 即可引用
-target_include_directories(xigu_proto PUBLIC
+target_include_directories(xiguchat_proto PUBLIC
     "${_gen_dir}"
     "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # 链接 gRPC 与 protobuf 运行时库（PUBLIC 传递给下游服务）
-target_link_libraries(xigu_proto PUBLIC
+target_link_libraries(xiguchat_proto PUBLIC
     gRPC::grpc++
     protobuf::libprotobuf)

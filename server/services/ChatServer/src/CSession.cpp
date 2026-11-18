@@ -8,8 +8,10 @@
 #include "LogicSystem.h"
 #include "RedisMgr.h"
 #include "StatusGrpcClient.h"
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 CSession::CSession(boost::asio::io_context& io_context, CServer* server) :
 	_socket(io_context), _user_uid(0), _server(server), _b_close(false)
@@ -21,7 +23,6 @@ CSession::CSession(boost::asio::io_context& io_context, CServer* server) :
 }
 
 CSession::~CSession() {
-	std::cout << "~CSession destruct" << std::endl;
 }
 
 tcp::socket& CSession::GetSocket() {
@@ -91,14 +92,19 @@ void CSession::Start() {
     });
 }
 
-void CSession::Send(std::string msg, short msgid)
+void CSession::Send(std::string msg, std::uint16_t msgid)
 {
     if (IsClosed()) return; //已关闭的连接不再接受发送任务
-    //MsgNode用short保存总长度，消息体加上包头后也不能溢出，必须在长度转换前完成检查
-    //否则较大的字符串长度被截断后，分配的内存与实际复制长度可能不一致
-    if (msg.empty() || msg.size() > std::numeric_limits<short>::max() - HEAD_TOTAL_LEN) {
-        Close();
-        DealExceptionSession();
+    if (msg.empty()) return; //空响应没有意义，直接丢弃，不能因此断开连接
+    //长度字段是 2 字节；超过上限说明调用方拼了一个过大的响应。
+    //此时回一个最小错误包让客户端结束等待，而不是关连接——关连接会连带影响该用户的其他会话。
+    if (msg.size() > MAX_RESPONSE_LEN) {
+        std::cerr << "response too large, size=" << msg.size()
+            << " msgid=" << msgid << std::endl;
+        static const std::string fallback =
+            "{\"error\":" + std::to_string(static_cast<int>(ErrorCodes::ResponseTooLarge))
+            + ",\"message\":\"response too large\"}";
+        Send(fallback, msgid); //fallback 很小，不会再次进入本分支
         return;
     }
     //pending_sends同时统计等待进入IO线程和已经进入发送队列的消息，不能只检查_send_que
@@ -116,13 +122,13 @@ void CSession::Send(std::string msg, short msgid)
     });
 }
 
-void CSession::Send(char* msg, short max_length, short msgid)
+void CSession::Send(const char* msg, std::size_t max_length, std::uint16_t msgid)
 {
-    if (!msg || max_length <= 0) return;
-    Send(std::string(msg, static_cast<std::size_t>(max_length)), msgid); //复制指定字节数，复用统一的长度检查和投递流程
+    if (!msg || max_length == 0) return;
+    Send(std::string(msg, max_length), msgid); //复制指定字节数，复用统一的长度检查和投递流程
 }
 
-void CSession::SendOnIO(std::string msg, short msgid)
+void CSession::SendOnIO(std::string msg, std::uint16_t msgid)
 {
     //发送任务排队后连接仍可能被关闭，这种消息尚未进入_send_que，只归还自身占用的计数
     if (IsClosed()) {
@@ -130,7 +136,7 @@ void CSession::SendOnIO(std::string msg, short msgid)
         return;
     }
     const bool writing = !_send_que.empty(); //非空表示已有一条异步写负责推进队列
-    _send_que.push(std::make_shared<SendNode>(msg.data(), static_cast<short>(msg.size()), msgid));
+    _send_que.push(std::make_shared<SendNode>(msg.data(), msg.size(), msgid));
     //已有写操作时只入队，后续由HandleWrite续写，避免同时对同一个socket发起多次async_write
     if (writing) return;
     auto& node = _send_que.front();
@@ -181,7 +187,10 @@ void CSession::AsyncReadBody(int total_len)
 			try {
 				//如果发生错误，关闭连接并清除会话
 				if (ec) {
-					std::cout << "handle read failed, error is " << ec.what() << std::endl;
+					//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
+					if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
+						std::cerr << "handle read failed: " << ec.message()
+							<< " (" << ec.value() << ")" << std::endl;
 					Close(); //关闭连接
 					DealExceptionSession(); //处理异常连接
 					return;
@@ -231,7 +240,10 @@ void CSession::AsyncReadHead(int /*total_len*/)
 		try {
 			//如果发生错误，关闭连接并清除会话
 			if (ec) {
-				std::cout << "handle read failed, error is " << ec.what() << std::endl;
+				//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
+				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
+					std::cerr << "handle read failed: " << ec.message()
+						<< " (" << ec.value() << ")" << std::endl;
 				Close(); //关闭连接
 				DealExceptionSession(); //处理异常连接
 				return;
@@ -261,7 +273,6 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN); //从头部数据中提取消息ID
 			//网络字节序转化为本地字节序
 			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
-			std::cout << "msg_id is " << msg_id << std::endl;
             //这里先限制消息ID的数值范围，具体ID是否注册了处理函数由LogicSystem判断
 			if (msg_id == 0 || msg_id > MAX_LENGTH) {
 				std::cout << "invalid msg_id is " << msg_id << std::endl;
@@ -276,7 +287,6 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			memcpy(&msg_len, _recv_head_node->_data + HEAD_ID_LEN, HEAD_DATA_LEN);
 			//网络字节序转化为本地字节序
 			msg_len = boost::asio::detail::socket_ops::network_to_host_short(msg_len);
-			std::cout << "msg_len is " << msg_len << std::endl;
             //用无符号数读取包长，避免高位为1时被当成负数而绕过上限检查
             //拒绝空包和超过接收缓冲区的消息体，检查通过后才分配RecvNode并启动读取
 			if (msg_len == 0 || msg_len > MAX_LENGTH) {
@@ -366,7 +376,10 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 			const boost::system::error_code& ec, std::size_t  bytesTransfered) {
 			//如果发生错误
 			if (ec) {
-				std::cout << "handle read failed, error is " << ec.what() << std::endl;
+				//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
+				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
+					std::cerr << "handle read failed: " << ec.message()
+						<< " (" << ec.value() << ")" << std::endl;
 				handler(ec, read_len + bytesTransfered); //调用回调函数，传入错误码和实际读取的长度
 				return;
 			}
@@ -395,6 +408,21 @@ void CSession::UpdateHeartbeat()
 {
     time_t now = std::time(nullptr);
     _last_heartbeat = now;
+}
+
+bool CSession::AllowMessage()
+{
+    //令牌桶按单调时钟补充：20 条/秒、突发 50。
+    //超限只拒绝这一条并回 1105，不断连接——刷屏的客户端不该影响同账号的其他窗口
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(_bucket_mutex);
+    const double elapsed = std::chrono::duration<double>(now - _bucket_time).count();
+    _bucket_tokens = std::min(MESSAGE_BURST, _bucket_tokens + elapsed * MESSAGE_RATE_PER_SECOND);
+    _bucket_time = now;
+    if (_bucket_tokens < 1.0)
+        return false;
+    _bucket_tokens -= 1.0;
+    return true;
 }
 
 void CSession::DealExceptionSession()

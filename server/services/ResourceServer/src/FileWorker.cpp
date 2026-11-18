@@ -123,13 +123,36 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		return;
 	}
 
+	//最后一片落盘后去掉 .part：正式资源名只会指向完整文件，
+	//中断的上传留在后缀里，由清理线程按时间回收
+	if (task->_last == 1) {
+		boost::system::error_code ec;
+		const boost::filesystem::path final_path =
+			boost::filesystem::path(task->_path).parent_path() / task->_name;
+		if (boost::filesystem::exists(final_path, ec))
+			boost::filesystem::remove(final_path, ec); //同名重传覆盖旧文件
+		boost::filesystem::rename(task->_path, final_path, ec);
+		if (ec) {
+			std::cerr << "rename upload failed: " << task->_path << " -> "
+				<< final_path.string() << " (" << ec.message() << ")" << std::endl;
+			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
+			return;
+		}
+	}
+
 	//写盘成功后再推进进度，同步接口返回的就是已经落盘的字节数；
-	//窗口发送可能让多个分片同时在途，进度只能向前，不能被较早的分片回退
+	//窗口发送可能让多个分片同时在途，进度只能向前，不能被较早的分片回退。
+	//Redis 只在每 16 片或每 1 MB 落一次，最后一片必落：2KB 分片下每片写一次 Redis
+	//会让 10MB 文件产生 5120 次 SET，远比文件本体传输贵
 	auto file_info = LogicSystem::GetInstance()->GetFileInfo(task->_md5);
 	if (file_info && task->_seq > file_info->_seq) {
+		const long long previous = file_info->_trans_size;
 		file_info->_seq = task->_seq; //最后落盘的分片序号
 		file_info->_trans_size = task->_trans_size; //已落盘字节数
-		LogicSystem::GetInstance()->SaveFileInfo(file_info); //同步到Redis
+		const bool need_save = task->_last || (task->_seq % 16 == 0)
+			|| (file_info->_trans_size - previous >= 1024 * 1024);
+		if (need_save)
+			LogicSystem::GetInstance()->SaveFileInfo(file_info); //同步到Redis
 	}
 
 	if (task->_last && task->_avatar) { //最后一片且是头像

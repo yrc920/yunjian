@@ -7,6 +7,11 @@
 #include "data.h"
 #include "const.h"
 #include <queue>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <deque>
+#include <functional>
 #include <thread>
 #include <json/json.h>
 #include <json/value.h>
@@ -36,7 +41,8 @@ public:
 
 private:
 	LogicSystem();
-	void DealMsg(); //逻辑处理线程执行的函数，负责从消息队列中取出消息并调用对应的处理函数进行处理
+	//每个分片一个消费线程：按会话哈希分片，同一连接的消息仍然严格串行
+	void DealMsg(std::size_t shard);
 	void RegisterCallBacks(); //注册消息处理函数
 	//登录处理函数, 处理用户登录请求，验证用户身份并返回登录结果
 	void LoginHandler(std::shared_ptr<CSession>, const short& msg_id, const std::string& msg_data);
@@ -72,6 +78,11 @@ private:
 	void RecallMessage(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//会话事件分发：event 1 已读 / 2 撤回；本实例直投，跨实例走 gRPC
 	void PushChatEvent(int from_uid, int to_uid, long long thread_id, long long message_id, int event);
+	//两个事件的实际投递实现，只在投递线程中执行
+	void PushChatEventNow(int from_uid, int to_uid, long long thread_id,
+		long long message_id, int event);
+	void BroadcastGroupEventNow(long long thread_id, const std::vector<int>& members,
+		int except_uid, const Json::Value& payload, int notify_id);
 	//删除好友：双向删关系，不通知对方，会话与历史保留
 	void DeleteFriend(std::shared_ptr<CSession> session, const short& msg_id, const std::string& msg_data);
 	//创建群聊：群名 + 勾选的好友，创建者成为群主
@@ -105,11 +116,31 @@ private:
 	bool GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>>& list);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>>& user_list);
 
-	std::thread _worker_thread; //逻辑处理线程
-	std::queue<std::shared_ptr<LogicNode>> _msg_que; //逻辑消息队列
-	std::mutex _mutex; //保护消息队列的互斥锁
-	std::condition_variable _consume; //条件变量，用于通知逻辑处理线程有新消息到来
-	bool _b_stop; //标志逻辑系统是否停止，控制逻辑处理线程的退出
+	//逻辑线程数：4 个分片足以覆盖几千并发，又不至于让会话热点行争用过度。
+	//分片键是会话ID，保证同一连接的消息按到达顺序处理
+	static constexpr std::size_t kLogicShards = 4;
+	std::vector<std::thread> _workers;
+	std::array<std::queue<std::shared_ptr<LogicNode>>, kLogicShards> _msg_ques;
+	std::array<std::mutex, kLogicShards> _mutexes;
+	std::array<std::condition_variable, kLogicShards> _consumes;
+	std::atomic<bool> _b_stop; //停服标志，所有分片共享
+
+	//同一 uid 的登录必须串行：分片后两个并发登录可能各自拿到租约，
+	//低 epoch 的请求如果后写 UserMgr，会把新会话的映射覆盖掉。
+	//按 uid 取 64 条互斥锁，不同用户之间没有竞争
+	std::array<std::mutex, 64> _login_locks;
+	std::mutex& LoginLock(int uid) { return _login_locks[static_cast<std::size_t>(uid) % _login_locks.size()]; }
+
+	//跨实例投递线程：对端实例不可达时 gRPC 要等到截止时间，
+	//消息已落库，不能让它占住唯一的业务线程
+	void PostDeliveryTask(std::function<void()> task);
+	void DeliveryLoop();
+	static constexpr std::size_t kDeliveryQueueMax = 5000; //积压上限，超出只丢实时投递
+	std::thread _delivery_thread;
+	std::deque<std::function<void()>> _delivery_queue;
+	std::mutex _delivery_mutex;
+	std::condition_variable _delivery_cv;
+	bool _delivery_stop;
 
 	//消息ID到处理函数的映射表，用于根据消息ID分发消息到对应的处理函数
 	std::map<short, FunCallBack> _fun_callbacks;

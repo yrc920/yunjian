@@ -6,8 +6,9 @@
 #include "usermgr.h"
 
 namespace {
-//服务端 CSession::Send 用 short 保存包头+包体总长，超过这个值的响应会被服务端拒绝
-constexpr quint16 MaxChatFrame = std::numeric_limits<short>::max() - 4;
+//服务端 CSession::Send 用 2 字节长度字段，包体上限 65531；
+//两端都按 uint16 处理，超过这个值的响应会被服务端拒绝并回错误包
+constexpr quint16 MaxChatFrame = std::numeric_limits<quint16>::max() - 4;
 }
 
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0)

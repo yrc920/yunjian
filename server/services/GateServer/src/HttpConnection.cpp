@@ -15,7 +15,9 @@ void HttpConnection::Start() {
 		std::size_t bytes_transferred) {
 			try {
 				if (ec) {
-					std::cout << "http read err is " << ec.what() << std::endl;
+					//客户端正常关闭（curl/短连接）会报 end_of_stream，不是服务端错误
+					if (ec != http::error::end_of_stream)
+						std::cerr << "http read err: " << ec.message() << " (" << ec.value() << ")" << std::endl;
 					return;
 				}
 				//处理读到的数据
@@ -177,11 +179,32 @@ void HttpConnection::HandleReq() {
 			return;
 		}
 
+		//口令哈希在线程池里执行，处理函数稍后自己调 SendDeferred 发响应
+		if (_deferred)
+			return;
+
 		_response.result(http::status::ok); //设置响应状态码为200 OK
 		_response.set(http::field::server, "GateServer"); //设置响应头中的服务器信息
 		WriteResponse(); //发送响应
 		return;
 	}
+
+	//GET/POST 之外的方法不能挂着不返回，否则客户端只能等到截止时间
+	_response.result(http::status::method_not_allowed);
+	_response.set(http::field::content_type, "text/plain");
+	beast::ostream(_response.body()) << "method not allowed\r\n";
+	WriteResponse();
+}
+
+void HttpConnection::DeferResponse() {
+	_deferred = true;
+	_response.result(http::status::ok);
+	_response.set(http::field::server, "GateServer");
+}
+
+void HttpConnection::SendDeferred(const std::string& body) {
+	beast::ostream(_response.body()) << body;
+	WriteResponse();
 }
 
 void HttpConnection::WriteResponse() {

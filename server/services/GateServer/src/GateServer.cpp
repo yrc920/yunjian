@@ -1,5 +1,6 @@
 #include "CServer.h"
 #include "ConfigMgr.h"
+#include "PasswordPool.h"
 #include "RedisMgr.h"
 
 int main()
@@ -28,6 +29,10 @@ int main()
         std::make_shared<CServer>(ioc, port)->Start();
 		std::cout << "Server is listening on port " << port << std::endl;
 		ioc.run(); //运行io_context, 处理异步事件
+
+		//ioc 已停止，未回投的响应不会再发；这里只负责 join 工作线程，
+		//避免进程退出时还有哈希在跑（每个占用 64 MiB）
+		PasswordPool::Instance().Stop();
     }
     catch (std::exception const& e)
     {

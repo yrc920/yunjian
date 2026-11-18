@@ -6,6 +6,12 @@ Port = 9090
 # 上传文件根目录，相对当前工作目录；头像保存在 <Path>/<uid>/<文件名>
 [Storage]
 Path = storage
+# 每用户存储上限（MB），0 表示不限制；上传首片时按用户目录已用空间校验
+QuotaMB = 1024
+# 上传中断留下的 .part 多久算放弃（小时），超过即被清理线程删除
+StaleUploadHours = 24
+# 清理线程的巡检间隔（分钟）
+SweepMinutes = 60
 
 [Mysql]
 Host = 127.0.0.1

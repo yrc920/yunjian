@@ -66,8 +66,8 @@ private:
 
     // 拉会话历史；lastMessageId 为 0 表示第一页，否则从这个游标往后取
     void requestMessages(qint64 threadId, qint64 lastMessageId = 0);
-    // thread_id 游标翻页：上一页最后一条作为下一页起点
-    void loadMoreThreads(qint64 lastThreadId);
+    // thread_id + time 复合游标翻页：上一页最后一条的 thread_id 与活跃时间作为下一页起点
+    void loadMoreThreads(qint64 lastThreadId, qint64 lastTime);
     //会话列表全部页到齐：用差集找出服务端已经没有的群（解散/被移出）
     void finishThreadList();
 

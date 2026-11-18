@@ -15,6 +15,8 @@ public:
 	bool UpdateUserIcon(int uid, const std::string& icon); //头像最后一片落盘后写user.icon
 	//聊天图片最后一片落盘后把 chat_message.status 改成已上传（gRPC失败时的兜底）
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
+	//下载前校验请求者与资源归属者的关系
+	bool CanAccessResource(int requester, int owner, const std::string& name);
 
 private:
 	MysqlMgr();

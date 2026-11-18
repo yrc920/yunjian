@@ -42,6 +42,10 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
         if (!positiveId("fromuid") || root["fromuid"].asInt() != session_uid
             || !root["thread_id"].isInt64() || root["thread_id"].asInt64() < 0)
             return Error_Json;
+        //会话列表可带复合游标的活跃时间；缺省表示旧客户端只按 thread_id 翻页
+        if (root.isMember("last_time")
+            && (!root["last_time"].isInt64() || root["last_time"].asInt64() < 0))
+            return Error_Json;
         if (id == ID_LOAD_CHAT_MSG_REQ
             && (!root["message_id"].isInt64() || root["message_id"].asInt64() < 0))
             return Error_Json;

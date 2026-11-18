@@ -6,10 +6,11 @@
 #include <sodium.h>
 
 namespace {
-//Argon2id 的运算开销，取 libsodium 的"中等"档常量：
-//兼顾口令破解成本与单次登录耗时，统一使用下面的计算量和内存开销参数
-constexpr unsigned long long kOpsLimit = crypto_pwhash_OPSLIMIT_MODERATE;
-constexpr std::size_t kMemLimit = crypto_pwhash_MEMLIMIT_MODERATE;
+//Argon2id 的运算开销，取 libsodium 的"交互式"档：
+//2 次迭代、64 MiB 内存。内网企业聊天不需要 256 MiB 的离线破解成本，
+//而 256 MiB × 并发登录会在早高峰直接把 GateServer 的内存和 CPU 打满
+constexpr unsigned long long kOpsLimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
+constexpr std::size_t kMemLimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
 
 //libsodium 要求使用前先初始化，用 once_flag 保证只做一次且不依赖静态初始化顺序
 void EnsureSodiumReady()
@@ -42,4 +43,11 @@ bool PasswordHash::Verify(const std::string& plain, const std::string& stored)
 
     //校验失败（含存储串格式不合法）返回非 0；比较内部为常量时间实现
     return crypto_pwhash_str_verify(stored.c_str(), plain.data(), plain.size()) == 0;
+}
+
+bool PasswordHash::NeedsRehash(const std::string& stored)
+{
+    EnsureSodiumReady();
+    //参数已经与当前目标一致时返回 0；旧账号的 256 MiB 哈希会在这里被识别出来
+    return crypto_pwhash_str_needs_rehash(stored.c_str(), kOpsLimit, kMemLimit) != 0;
 }

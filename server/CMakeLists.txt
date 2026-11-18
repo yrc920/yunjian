@@ -91,10 +91,14 @@ endif()
 include(XiguChatCommon)
 
 # ---------- proto 共享库 ----------
-# proto/CMakeLists.txt 定义 xigu_proto 静态库：
+# proto/CMakeLists.txt 定义 xiguchat_proto 静态库：
 # 构建期用 protoc 从 proto/message.proto 生成 C++ 代码，
 # 各服务共用同一份生成代码，避免各服务重复维护 proto
 add_subdirectory(proto)
+
+# ---------- 公共基础设施 ----------
+# 配置、事件循环线程池、Redis 连接池只保留一份实现，五个服务链接同一个静态库
+add_subdirectory(common)
 
 # ---------- 微服务 ----------
 # 每个服务目录有独立的 CMakeLists.txt，声明各自的源码、

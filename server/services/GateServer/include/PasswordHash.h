@@ -13,4 +13,6 @@ public:
     static std::string Hash(const std::string& plain);
     //校验明文密码是否与该存储串匹配
     static bool Verify(const std::string& plain, const std::string& stored);
+    //库里是较早的高开销参数时返回 true，登录成功后可就地升级为当前参数
+    static bool NeedsRehash(const std::string& stored);
 };

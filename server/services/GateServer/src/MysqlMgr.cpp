@@ -22,7 +22,8 @@ bool MysqlMgr::UpdatePwd(const std::string& name, const std::string& pwd)
 	return _dao.UpdatePwd(name, pwd);
 }
 
-bool MysqlMgr::CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo) {
+bool MysqlMgr::CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo,
+	bool& db_error) {
 	//调用数据库访问对象的CheckPwd方法, 将检查邮箱和密码是否匹配的请求转发给数据库访问对象处理
-	return _dao.CheckPwd(email, pwd, userInfo);
+	return _dao.CheckPwd(email, pwd, userInfo, db_error);
 }

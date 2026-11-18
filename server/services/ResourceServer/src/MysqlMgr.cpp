@@ -17,3 +17,8 @@ bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int sta
 {
 	return _dao.UpdateChatMessageStatus(message_id, sender, status); //图片资源完成后回写消息状态
 }
+
+bool MysqlMgr::CanAccessResource(int requester, int owner, const std::string& name)
+{
+	return _dao.CanAccessResource(requester, owner, name);
+}

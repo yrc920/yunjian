@@ -2,12 +2,17 @@
 #include "ConfigMgr.h"
 #include "FileSystem.h"
 #include "LogicSystem.h"
+#include "MysqlMgr.h"
 #include "RedisMgr.h"
 #include "const.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <mutex>
+#include <unordered_map>
 
 namespace {
 
@@ -69,6 +74,88 @@ int EnsureSessionUser(const std::shared_ptr<CSession>& session, int uid, const s
 	if (error != ErrorCodes::Success)
 		return error;
 	return session->BindUser(uid) ? ErrorCodes::Success : ErrorCodes::TokenInvalid;
+}
+
+//用户已用存储：统计该用户目录下的所有文件（含上传中的 .part）。
+//只在首片调用一次，文件数上千时也只是一次目录遍历
+long long StorageUsage(int uid)
+{
+	boost::system::error_code ec;
+	auto dir = ConfigMgr::Inst().GetStoragePath() / std::to_string(uid);
+	if (!boost::filesystem::exists(dir, ec))
+		return 0;
+
+	long long total = 0;
+	boost::filesystem::recursive_directory_iterator it(dir, ec), end;
+	while (it != end && !ec) {
+		if (boost::filesystem::is_regular_file(it->path(), ec))
+			total += static_cast<long long>(boost::filesystem::file_size(it->path(), ec));
+		it.increment(ec);
+	}
+	return total;
+}
+
+//上传前检查配额：0 表示不限制；配置缺失时用默认值
+bool CheckQuota(int uid, const std::string& name, long long incoming)
+{
+	const std::string configured = ConfigMgr::Inst().GetValue("Storage", "QuotaMB");
+	const long long quota_mb = configured.empty()
+		? DEFAULT_QUOTA_MB : std::atoll(configured.c_str());
+	if (quota_mb <= 0)
+		return true;
+
+	const long long limit = quota_mb * 1024 * 1024;
+	long long used = StorageUsage(uid);
+
+	//同名文件会被覆盖，重传前先把它已占的空间扣掉，否则重发同一张大图会被配额挡住
+	boost::system::error_code ec;
+	auto dir = ConfigMgr::Inst().GetStoragePath() / std::to_string(uid);
+	for (const std::string& candidate : { name, name + UPLOAD_PART_SUFFIX }) {
+		const auto path = dir / candidate;
+		if (boost::filesystem::is_regular_file(path, ec))
+			used -= static_cast<long long>(boost::filesystem::file_size(path, ec));
+	}
+	if (used < 0)
+		used = 0;
+
+	if (used + incoming <= limit)
+		return true;
+
+	std::cerr << "[resource] quota exceeded uid=" << uid << " used=" << used
+		<< " incoming=" << incoming << " limit=" << limit << std::endl;
+	return false;
+}
+
+//下载鉴权结果缓存：10 MB 文件会分 160 片，每片都查库代价太高。
+//按 (请求者, 归属, 文件名) 缓存 60 秒，成员或头像变更最多滞后一分钟
+bool AccessAllowed(int requester, int owner, const std::string& name)
+{
+	using Clock = std::chrono::steady_clock;
+	struct Entry {
+		Clock::time_point expires;
+		bool allowed;
+	};
+
+	static std::mutex mutex;
+	static std::unordered_map<std::string, Entry> cache;
+
+	const std::string key = std::to_string(requester) + ":" + std::to_string(owner) + ":" + name;
+	const auto now = Clock::now();
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		auto iter = cache.find(key);
+		if (iter != cache.end() && iter->second.expires > now)
+			return iter->second.allowed;
+	}
+
+	const bool allowed = MysqlMgr::GetInstance()->CanAccessResource(requester, owner, name);
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (cache.size() > 4096)
+			cache.clear(); //条目按"人+文件"增长，整体清空比逐条淘汰更省事
+		cache[key] = Entry{ now + std::chrono::seconds(60), allowed };
+	}
+	return allowed;
 }
 
 void SendUploadResponse(const std::shared_ptr<CSession>& session, bool avatar, int error,
@@ -159,9 +246,18 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		return;
 	}
 
-	//头像与通用文件都按用户分目录：下载时拿 owner_uid 就能拼出同一路径
+	//头像与通用文件都按用户分目录：下载时拿 owner_uid 就能拼出同一路径。
+	//上传期间先写 .part，最后一片落盘后由文件线程改名，中断的上传不会变成正式资源
 	auto storage = ConfigMgr::Inst().GetStoragePath();
-	boost::filesystem::path file_path = storage / std::to_string(uid) / name;
+	boost::filesystem::path file_path =
+		storage / std::to_string(uid) / (name + UPLOAD_PART_SUFFIX);
+
+	//配额只在首片检查：按用户目录已用空间判断，避免传完才发现放不下
+	if (seq == 1 && !CheckQuota(uid, name, total_size)) {
+		SendUploadResponse(session, avatar, ErrorCodes::FileQuotaExceeded, md5, name, seq,
+			total_size, trans_size, last, uid);
+		return;
+	}
 
 	//第一片建立进度记录：路径、总大小、是否头像都在此时固定下来
 	std::shared_ptr<FileInfo> file_info;
@@ -179,6 +275,20 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	else {
 		//内存没有就查Redis；换连接续传依赖这份记录
 		if (!LogicSystem::GetInstance()->LoadFileInfo(md5, file_info)) {
+			//末片回包丢失后客户端会重发：文件已按同名同大小就位时按成功返回，
+			//不让一次丢包把整个上传判成失败（完成时进度记录已删除，这里必须兜底）
+			boost::system::error_code ec;
+			const auto final_path = storage / std::to_string(uid) / name;
+			const bool already_done = last == 1 && trans_size == total_size
+				&& boost::filesystem::exists(final_path, ec)
+				&& boost::filesystem::file_size(final_path, ec)
+					== static_cast<boost::uintmax_t>(total_size);
+			if (already_done) {
+				SendUploadResponse(session, avatar, ErrorCodes::Success, md5, name, seq,
+					total_size, trans_size, last, uid);
+				return;
+			}
+
 			SendUploadResponse(session, avatar, ErrorCodes::FileNotExists, md5, name, seq,
 				total_size, trans_size, last, uid);
 			return;
@@ -216,9 +326,12 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		session->Send(response.toStyledString(),
 			avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
 
-		//成功收尾才清内存进度；失败保留记录，客户端重试仍可续传
-		if (result["error"].asInt() == ErrorCodes::Success && last == 1)
+		//成功收尾才清进度；失败保留记录，客户端重试仍可续传
+		if (result["error"].asInt() == ErrorCodes::Success && last == 1) {
 			LogicSystem::GetInstance()->RemoveFileInfo(md5);
+			//传输已结束，续传记录不再需要；留着只会让后续同名上传误判为"可续传"
+			RedisMgr::GetInstance()->Del(FILE_INFO_PREFIX + md5);
+		}
 	};
 
 	auto task = std::make_shared<FileTask>(
@@ -305,6 +418,16 @@ void resource::HandleDownload(std::shared_ptr<CSession> session, const std::stri
 	const int auth_error = EnsureSessionUser(session, uid, token);
 	if (auth_error != ErrorCodes::Success) {
 		rtvalue["error"] = auth_error; //未认证、uid无效或换了uid
+		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
+		return;
+	}
+
+	//只有本人、共用会话的成员，或对方当前头像可以下载
+	if (!AccessAllowed(uid, owner_uid, name)) {
+		std::cerr << "[resource] download denied requester=" << uid
+			<< " owner=" << owner_uid << " name=" << name << std::endl;
+		//对外与"文件不存在"一致，不向非成员暴露该文件是否存在
+		rtvalue["error"] = ErrorCodes::FileNotExists;
 		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
 		return;
 	}

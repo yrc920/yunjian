@@ -7,8 +7,11 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <queue>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <memory>
+#include <cstddef>
+#include <cstdint>
 #include "const.h"
 #include "MsgNode.h"
 
@@ -30,8 +33,8 @@ public:
 	long long GetEpoch() const;
 
 	void Start(); //启动会话, 开始处理连接
-	void Send(char* msg, short max_length, short msgid); //发送消息
-	void Send(std::string msg, short msgid); //发送消息
+	void Send(std::string msg, std::uint16_t msgid); //发送消息
+	void Send(const char* msg, std::size_t max_length, std::uint16_t msgid); //发送指定长度的消息
 	void Close(); //关闭会话
 	void CloseSoon(int delay_ms); //延迟关闭：先让下线通知写出去，再断开 socket
     bool IsClosed() const { return _b_close.load(); } //查询是否已请求关闭，不代表底层socket已经完成关闭
@@ -52,10 +55,12 @@ public:
         int msg_type, const std::string& content, long long created_at);
     bool IsHeartbeatExpired(std::time_t& now); //判断心跳是否过期
     void UpdateHeartbeat(); //更新心跳
+    //每连接消息令牌桶：防止单个客户端刷屏把逻辑队列打满
+    bool AllowMessage();
     void DealExceptionSession(); //处理异常连接
 
 private:
-    void SendOnIO(std::string msg, short msgid); //只在 socket 所属 IO 线程中执行
+    void SendOnIO(std::string msg, std::uint16_t msgid); //只在 socket 所属 IO 线程中执行
 	//读取完整长度
 	void asyncReadFull(std::size_t maxLength,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
@@ -79,6 +84,11 @@ private:
     std::atomic<time_t> _last_heartbeat; //最近收到完整消息的时间，供服务器定时器判断连接是否超时
     std::mutex _lifecycle_mutex; //登录登记与断连清理互斥
     std::atomic<bool> _cleanup_started{false}; //断连清理只执行一次
+    //消息令牌桶状态：只在逻辑处理线程访问，用互斥锁把边界固定下来，
+    //将来业务线程按会话分片时也不需要再改这里
+    std::mutex _bucket_mutex;
+    std::chrono::steady_clock::time_point _bucket_time{std::chrono::steady_clock::now()};
+    double _bucket_tokens{50.0};
 };
 
 class LogicNode {

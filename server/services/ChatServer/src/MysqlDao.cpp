@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <algorithm>
+#include <chrono>
+#include <iostream>
+#include <unordered_map>
 #include <json/json.h>
 #include <json/writer.h>
 
@@ -22,10 +25,8 @@ MysqlDao::MysqlDao()
 			xport_num = static_cast<unsigned>(v);
 		}
 	}
-	//初始化MySQL连接池对象, 连接池大小为5
-	pool_.reset(new MySqlPool(host, xport_num, user, pwd, schema, 5));
-	//标签存在关系表的列里, 首次启动补齐; 失败只记日志, 不影响登录与聊天
-	EnsureSchema();
+	//初始化MySQL连接池对象, 连接池大小为8: 业务线程、gRPC 线程与资料推送共用
+	pool_.reset(new MySqlPool(host, xport_num, user, pwd, schema, 8));
 }
 
 namespace {
@@ -63,259 +64,24 @@ std::vector<std::string> JsonToTags(const std::string& text)
 	}
 	return tags;
 }
+
+//所有池内会话统一带建连超时：MySQL 不可达时不能无限等待，
+//连接失败后由巡检线程按周期补池，业务线程拿到空连接直接向上返回错误
+mysqlx::SessionSettings MakeSessionSettings(const std::string& host, unsigned port,
+	const std::string& user, const std::string& pass, const std::string& schema)
+{
+	mysqlx::SessionSettings settings(host, port, user, pass, schema);
+	//只设置建连超时。X DevAPI 的 READ/WRITE_TIMEOUT 在 MySQL 被暂停/黑洞时
+	//并不保证中断阻塞读，查询级超时要靠 Phase 1 的 DB 工作线程/看门狗
+	settings.set(mysqlx::SessionOption::CONNECT_TIMEOUT, std::chrono::milliseconds(2000));
+	return settings;
+}
 }
 
 //启动补列：先查 information_schema，缺列才 ALTER，重复启动不会报错。
 //好友标签、消息的已读/撤回标记与群聊设置都属于"后加字段"，统一在这里补齐
-bool MysqlDao::EnsureSchema()
-{
-	auto con = pool_->getConnection();
-	if (con == nullptr)
-		return false;
-
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	try {
-		//表名与列定义都是固定字面量, 不来自外部输入
-		auto has_column = [&con](const std::string& table, const std::string& column) {
-			auto res = con->_session->sql(
-				"SELECT COUNT(*) FROM information_schema.columns "
-				"WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?")
-				.bind(table).bind(column).execute().fetchOne();
-			return !res.isNull() && res[0].get<int>() > 0;
-		};
-		auto has_table = [&con](const std::string& table) {
-			auto res = con->_session->sql(
-				"SELECT COUNT(*) FROM information_schema.tables "
-				"WHERE table_schema = DATABASE() AND table_name = ?")
-				.bind(table).execute().fetchOne();
-			return !res.isNull() && res[0].get<int>() > 0;
-		};
-
-		//512 字节够 10 个 12 字的中文标签再加 JSON 符号
-		for (const char* table : {"friend", "friend_apply"}) {
-			if (!has_column(table, "tags")) {
-				con->_session->sql("ALTER TABLE " + std::string(table) +
-					" ADD COLUMN tags VARCHAR(512) NOT NULL DEFAULT '[]'").execute();
-			}
-		}
-
-		//已读只对接收方有意义；撤回是双方可见的状态，正文会被清空
-		if (!has_column("chat_message", "is_read")) {
-			con->_session->sql("ALTER TABLE chat_message "
-				"ADD COLUMN is_read TINYINT UNSIGNED NOT NULL DEFAULT 0").execute();
-		}
-		if (!has_column("chat_message", "recalled")) {
-			con->_session->sql("ALTER TABLE chat_message "
-				"ADD COLUMN recalled TINYINT UNSIGNED NOT NULL DEFAULT 0").execute();
-		}
-		//群消息的 @ 名单：逗号分隔的 uid，未读查询用 FIND_IN_SET 判断"有没有 @我"
-		if (!has_column("chat_message", "mentions")) {
-			con->_session->sql("ALTER TABLE chat_message "
-				"ADD COLUMN mentions VARCHAR(255) NOT NULL DEFAULT ''").execute();
-		}
-
-		//群聊表在课程设计里已经存在，这里兜住新建环境：缺表时按同一套结构补建
-		if (!has_table("group_chat")) {
-			con->_session->sql(
-				"CREATE TABLE IF NOT EXISTS group_chat ("
-				"thread_id BIGINT UNSIGNED NOT NULL,"
-				"group_name VARCHAR(255) NOT NULL DEFAULT '',"
-				"owner_id INT NOT NULL DEFAULT 0,"
-				"notice VARCHAR(500) NOT NULL DEFAULT '',"
-				"created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-				"updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
-				"PRIMARY KEY (thread_id),"
-				"CONSTRAINT fk_group_thread FOREIGN KEY (thread_id) "
-				"REFERENCES chat_thread (thread_id) ON DELETE CASCADE"
-				") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci").execute();
-		}
-		if (!has_table("group_chat_member")) {
-			con->_session->sql(
-				"CREATE TABLE IF NOT EXISTS group_chat_member ("
-				"thread_id BIGINT UNSIGNED NOT NULL,"
-				"user_id INT NOT NULL,"
-				"role TINYINT UNSIGNED NOT NULL DEFAULT 0,"
-				"nickname VARCHAR(32) NOT NULL DEFAULT '',"
-				"last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,"
-				"muted TINYINT UNSIGNED NOT NULL DEFAULT 0,"
-				"joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-				"PRIMARY KEY (thread_id, user_id),"
-				"KEY idx_group_member_user (user_id, thread_id),"
-				"CONSTRAINT fk_group_member_thread FOREIGN KEY (thread_id) "
-				"REFERENCES group_chat (thread_id) ON DELETE CASCADE"
-				") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci").execute();
-		}
-
-		//群名与公告要能改，更新时间用于后续排查；成员表补群昵称、已读游标与免打扰
-		if (!has_column("group_chat", "notice")) {
-			con->_session->sql("ALTER TABLE group_chat "
-				"ADD COLUMN notice VARCHAR(500) NOT NULL DEFAULT ''").execute();
-		}
-		if (!has_column("group_chat", "updated_at")) {
-			con->_session->sql("ALTER TABLE group_chat ADD COLUMN updated_at TIMESTAMP "
-				"NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP").execute();
-		}
-		if (!has_column("group_chat_member", "nickname")) {
-			con->_session->sql("ALTER TABLE group_chat_member "
-				"ADD COLUMN nickname VARCHAR(32) NOT NULL DEFAULT ''").execute();
-		}
-		if (!has_column("group_chat_member", "last_read_message_id")) {
-			con->_session->sql("ALTER TABLE group_chat_member ADD COLUMN "
-				"last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0").execute();
-		}
-		if (!has_column("group_chat_member", "muted")) {
-			con->_session->sql("ALTER TABLE group_chat_member "
-				"ADD COLUMN muted TINYINT UNSIGNED NOT NULL DEFAULT 0").execute();
-		}
-		return true;
-	}
-	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false;
-		std::cerr << "ensure schema failed: " << e.what() << std::endl;
-		return false;
-	}
-}
-
 MysqlDao::~MysqlDao() {
 	pool_->Close(); //关闭连接池, 释放资源
-}
-
-int MysqlDao::RegUser(const std::string& name, const std::string& email, const std::string& pwd)
-{
-	auto con = pool_->getConnection(); //从连接池中获取一个可用的MySQL会话对象
-	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回-1
-		if (con == nullptr)
-			return -1;
-
-		//调用存储过程, 通过会话变量@result返回结果(与JDBC API时代逻辑一致)
-		con->_session->sql("CALL reg_user(?,?,?,@result)")
-			.bind(name).bind(email).bind(pwd).execute();
-
-		//查询会话变量获取输出参数的值(X DevAPI不直接支持注册输出参数)
-		auto res = con->_session->sql("SELECT @result AS result").execute();
-
-		//解析结果, 如果查询成功且有结果, 则获取result值并返回, 否则返回-1表示失败
-		auto row = res.fetchOne();
-		if (!row.isNull()) {
-			int result = row[0].get<int>();
-			std::cout << "Result: " << result << std::endl;
-			pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-			return result;
-		}
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		return -1;
-	}catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
-		return -1;
-	}
-}
-
-bool MysqlDao::CheckEmail(const std::string& name, const std::string& email) {
-	auto con = pool_->getConnection(); //从连接池中获取一个可用的MySQL会话对象
-	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
-		if (con == nullptr)
-			return false;
-
-		//执行查询语句(查询指定用户名的邮箱地址)
-		auto res = con->_session->sql("SELECT email FROM user WHERE name = ?")
-			.bind(name).execute();
-
-		auto row = res.fetchOne();
-		//遍历结果集
-		while (!row.isNull()) {
-			auto email_in_db = row[0].get<std::string>();
-			std::cout << "Check Email: " << email_in_db << std::endl;
-			//如果查询结果中的email与输入的email不匹配, 则说明用户名和邮箱不匹配, 返回false
-			if (email != email_in_db) {
-				pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-				return false;
-			}
-			pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-			return true;
-			row = res.fetchOne();
-		}
-		//保持原行为: 用户名不存在时同样返回true
-		pool_->returnConnection(std::move(con));
-		return true;
-	}
-	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
-		return false;
-	}
-}
-
-bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
-	auto con = pool_->getConnection(); //从连接池中获取一个可用的MySQL会话对象
-	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
-		if (con == nullptr)
-			return false;
-
-		//执行更新语句(更新指定用户名的密码)
-		auto res = con->_session->sql("UPDATE user SET pwd = ? WHERE name = ?")
-			.bind(newpwd).bind(name).execute();
-
-		std::cout << "Updated rows: " << res.getAffectedItemsCount() << std::endl;
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		return true;
-	}
-	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
-		return false;
-	}
-}
-
-bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo) {
-	auto con = pool_->getConnection(); //从连接池中获取一个可用的MySQL会话对象
-	
-	//使用RAII机制确保无论函数如何退出, 都能正确归还MySQL会话对象给连接池, 避免资源泄漏
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con)); //将使用完的会话对象归还给连接池
-		});
-
-	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
-		if (con == nullptr)
-			return false;
-
-		//执行查询语句(查询指定邮箱的用户信息, 显式列出列以便按索引取值)
-		auto res = con->_session->sql("SELECT uid, name, pwd, email FROM user WHERE email = ?")
-			.bind(email).execute();
-
-		std::string origin_pwd = "";
-		auto row = res.fetchOne();
-		//遍历结果集
-		if (!row.isNull()) {
-			origin_pwd = row[2].get<std::string>(); //第2列为pwd
-		}
-
-		//如果查询结果中的密码与输入的密码不匹配, 则说明邮箱和密码不匹配, 返回false
-		if (pwd != origin_pwd)
-			return false;
-
-		//如果邮箱和密码匹配, 则将查询结果中的用户信息存储在userInfo中, 返回true
-		userInfo.name = row[1].get<std::string>();
-		userInfo.email = email;
-		userInfo.uid = row[0].get<int>();
-		userInfo.pwd = origin_pwd;
-		return true;
-	}
-	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
-		std::cerr << "Mysqlx Error: " << e.what() << std::endl;
-		return false;
-	}
 }
 
 bool MysqlDao::AddFriendApply(const int& from, const int& to, const std::string& desc,
@@ -401,20 +167,26 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 		const std::string& lower_tags = from_is_lower ? my_tags : peer_tags;
 		const std::string& higher_tags = from_is_lower ? peer_tags : my_tags;
 
-		//第一条: uid 较小的一方作为 self_id
-		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, `back`, tags) "
-			"VALUES (?, ?, ?, ?) ")
+		//第一条: uid 较小的一方作为 self_id。
+		//重新同意申请时不能用 INSERT IGNORE（新备注会被静默丢弃），也不能无条件覆盖：
+		//本次没填备注/标签时保留原值，避免一次空提交把用户之前设置的数据清掉
+		con->_session->sql("INSERT INTO friend(self_id, friend_id, `back`, tags) "
+			"VALUES (?, ?, ?, ?) "
+			"ON DUPLICATE KEY UPDATE "
+			"`back` = IF(VALUES(`back`) = '', `back`, VALUES(`back`)), "
+			"tags = IF(VALUES(tags) = '[]', tags, VALUES(tags))")
 			.bind(lower_self).bind(lower_friend).bind(lower_back).bind(lower_tags).execute();
 
 		//第二条: uid 较大的一方作为 self_id, 备注与标签跟随各自的方向
-		con->_session->sql("INSERT IGNORE INTO friend(self_id, friend_id, `back`, tags) "
-			"VALUES (?, ?, ?, ?) ")
+		con->_session->sql("INSERT INTO friend(self_id, friend_id, `back`, tags) "
+			"VALUES (?, ?, ?, ?) "
+			"ON DUPLICATE KEY UPDATE "
+			"`back` = IF(VALUES(`back`) = '', `back`, VALUES(`back`)), "
+			"tags = IF(VALUES(tags) = '[]', tags, VALUES(tags))")
 			.bind(higher_self).bind(higher_friend).bind(higher_back).bind(higher_tags).execute();
 
 		//提交事务
 		con->_session->commit();
-		std::cout << "addfriend insert friends success" << std::endl;
-
 		return true;
 	}
 	catch (mysqlx::Error& e) {
@@ -750,16 +522,17 @@ bool MysqlDao::DeleteFriend(int uid, int touid)
 			.bind(uid).bind(touid).execute();
 
 		//双向关系都断了，云端不必再留这份私聊记录：两边客户端各自有本地缓存。
-		//只删消息、保留 private_chat 与 chat_thread —— thread_id 不变，
+		//只删消息、保留 conversation 与成员行 —— thread_id 不变，
 		//以后重新加好友时新消息沿用同一游标，客户端本地那份历史也还能对上会话。
 		auto reverse = con->_session->sql(
 			"SELECT COUNT(*) FROM friend WHERE self_id = ? AND friend_id = ?")
 			.bind(touid).bind(uid).execute().fetchOne();
 		if (!reverse.isNull() && reverse[0].get<int64_t>() == 0) {
+			const std::string dm_key = std::to_string(std::min(uid, touid)) + ":"
+				+ std::to_string(std::max(uid, touid));
 			auto thread = con->_session->sql(
-				"SELECT thread_id FROM private_chat "
-				"WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)")
-				.bind(uid).bind(touid).bind(touid).bind(uid).execute().fetchOne();
+				"SELECT thread_id FROM conversation WHERE dm_key = ?")
+				.bind(dm_key).execute().fetchOne();
 			if (!thread.isNull()) {
 				con->_session->sql("DELETE FROM chat_message WHERE thread_id = ?")
 					.bind(thread[0].get<int64_t>()).execute();
@@ -770,8 +543,9 @@ bool MysqlDao::DeleteFriend(int uid, int touid)
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			//回滚成功说明连接仍然可用；只有回滚也失败才丢弃，避免死锁后重建整条连接
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error deleting friend: " << e.what() << std::endl;
 		return false;
@@ -851,19 +625,22 @@ bool MysqlDao::MarkChatMessagesRead(int uid, long long thread_id, long long last
 		});
 
 	try {
-		//先确认请求者在这个会话里，不能拿别人的 thread_id 改已读；顺手取对方 uid 用于通知
+		//单聊才有"对端已读"回执；成员行同时完成归属校验
 		auto member = con->_session->sql(
-			"SELECT CASE WHEN user1_id = ? THEN user2_id ELSE user1_id END "
-			"FROM private_chat WHERE thread_id = ? AND (user1_id = ? OR user2_id = ?)")
-			.bind(uid).bind(thread_id).bind(uid).bind(uid).execute().fetchOne();
+			"SELECT cm2.uid FROM conversation_member cm2 "
+			"JOIN conversation c ON c.thread_id = cm2.thread_id "
+			"WHERE cm2.thread_id = ? AND cm2.uid <> ? AND c.thread_type = 1 LIMIT 1")
+			.bind(thread_id).bind(uid).execute().fetchOne();
 		if (member.isNull())
 			return false;
 		peer_uid = member[0].get<int>();
 
+		//已读位置只前进不后退：重复上报或乱序上报都不会把游标改小
 		auto result = con->_session->sql(
-			"UPDATE chat_message SET is_read = 1 "
-			"WHERE thread_id = ? AND recv_id = ? AND message_id <= ? AND is_read = 0")
-			.bind(thread_id).bind(uid).bind(static_cast<int64_t>(last_message_id)).execute();
+			"UPDATE conversation_member SET last_read_message_id = ? "
+			"WHERE thread_id = ? AND uid = ? AND last_read_message_id < ?")
+			.bind(static_cast<int64_t>(last_message_id)).bind(thread_id).bind(uid)
+			.bind(static_cast<int64_t>(last_message_id)).execute();
 		changed = result.getAffectedItemsCount() > 0;
 		return true;
 	}
@@ -875,7 +652,7 @@ bool MysqlDao::MarkChatMessagesRead(int uid, long long thread_id, long long last
 }
 
 //撤回自己发的消息：只允许发送者本人、2 分钟内、未撤回。
-//撤回不物理删除，改为 recalled=1 并清空正文，双方拉历史时都只能看到提示
+//撤回不物理删除，改为 state=1 并清空正文，双方拉历史时都只能看到提示
 int MysqlDao::RecallChatMessage(int uid, long long message_id, ChatMessageInfo& message)
 {
 	if (uid <= 0 || message_id <= 0)
@@ -891,13 +668,12 @@ int MysqlDao::RecallChatMessage(int uid, long long message_id, ChatMessageInfo& 
 
 	try {
 		auto row = con->_session->sql(
-			"SELECT thread_id, sender_id, recv_id, client_msg_id, UNIX_TIMESTAMP(created_at), "
-			"is_read, recalled "
+			"SELECT thread_id, sender_id, recv_id, client_msg_id, UNIX_TIMESTAMP(created_at), state "
 			"FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
 		if (row.isNull() || row[1].get<int>() != uid)
 			return ErrorCodes::RecallDenied;
-		if (row[6].get<int>() != 0)
+		if (row[5].get<int>() != 0)
 			return ErrorCodes::RecallDenied;
 
 		const long long created_at = row[4].get<int64_t>();
@@ -905,8 +681,8 @@ int MysqlDao::RecallChatMessage(int uid, long long message_id, ChatMessageInfo& 
 			return ErrorCodes::RecallExpired;
 
 		con->_session->sql(
-			"UPDATE chat_message SET recalled = 1, content = '', msg_type = 0 "
-			"WHERE message_id = ? AND recalled = 0")
+			"UPDATE chat_message SET state = 1, content = '', msg_type = 0 "
+			"WHERE message_id = ? AND state = 0")
 			.bind(static_cast<int64_t>(message_id)).execute();
 
 		message.message_id = message_id;
@@ -917,7 +693,7 @@ int MysqlDao::RecallChatMessage(int uid, long long message_id, ChatMessageInfo& 
 		message.content.clear();
 		message.msg_type = 0;
 		message.created_at = created_at;
-		message.is_read = row[5].get<int>() != 0;
+		message.is_read = false; //已读状态改由成员游标表示，撤回通知不需要它
 		message.recalled = true;
 		return ErrorCodes::Success;
 	}
@@ -939,25 +715,27 @@ bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> 
 		});
 
 	try {
-		//备注与标签都在关系行里, 一次查回来, 不再逐好友查第二张表
-		auto res = con->_session->sql("select friend_id, `back`, tags from friend where self_id = ? ")
+		//备注、标签和用户资料一次 JOIN 取回：原实现每个好友再查一次 user 表，
+		//500 个好友就是 501 次查询，登录高峰会把单逻辑线程和 5 条连接全部占满
+		auto res = con->_session->sql(
+			"SELECT f.friend_id, f.`back`, f.tags, u.name, u.nick, u.icon, u.sex, u.`desc` "
+			"FROM friend f JOIN user u ON u.uid = f.friend_id "
+			"WHERE f.self_id = ? ORDER BY f.friend_id")
 			.bind(self_id).execute();
 
 		auto row = res.fetchOne();
 		//遍历结果集
 		while (!row.isNull()) {
-			auto friend_id = row[0].get<int>();
+			auto user_info = std::make_shared<UserInfo>();
+			user_info->uid = row[0].get<int>();
 			//备注是本人给好友起的名字, 允许为空; 空串表示没设, 由客户端回落到昵称或用户名
-			const std::string back = row[1].isNull() ? std::string() : row[1].get<std::string>();
-			//再一次查询friend_id对应的信息
-			auto user_info = GetUser(friend_id);
-			if (user_info == nullptr) {
-				row = res.fetchOne();
-				continue;
-			}
-
-			user_info->back = back;
+			user_info->back = row[1].isNull() ? std::string() : row[1].get<std::string>();
 			user_info->tags = JsonToTags(row[2].isNull() ? std::string() : row[2].get<std::string>());
+			user_info->name = row[3].get<std::string>();
+			user_info->nick = row[4].get<std::string>();
+			user_info->icon = row[5].get<std::string>();
+			user_info->sex = row[6].get<int>();
+			user_info->desc = row[7].get<std::string>();
 			user_info_list.push_back(user_info);
 			row = res.fetchOne();
 		}
@@ -975,9 +753,9 @@ long long MysqlDao::GetOrCreatePrivateChat(int user1, int user2)
 	//会话只对好友开放; 自己和自己不建会话
 	if (user1 <= 0 || user2 <= 0 || user1 == user2)
 		return 0;
-	//private_chat 的唯一键要求两人按固定顺序存放, 避免 (A,B) 和 (B,A) 建出两条会话
-	const int low = std::min(user1, user2);
-	const int high = std::max(user1, user2);
+	//单聊用 dm_key 去重：两人按固定顺序拼成一个键，天然避免 (A,B)/(B,A) 两条会话
+	const std::string dm_key = std::to_string(std::min(user1, user2)) + ":"
+		+ std::to_string(std::max(user1, user2));
 
 	//会话通常已经存在: 先用普通查询取一次, 不开事务, 也不会给不存在的行加锁
 	{
@@ -993,77 +771,64 @@ long long MysqlDao::GetOrCreatePrivateChat(int user1, int user2)
 				return 0;
 
 			auto existing = con->_session->sql(
-				"SELECT thread_id FROM private_chat WHERE user1_id = ? AND user2_id = ?")
-				.bind(low).bind(high).execute().fetchOne();
+				"SELECT thread_id FROM conversation WHERE dm_key = ?")
+				.bind(dm_key).execute().fetchOne();
 			if (!existing.isNull())
-				return existing[0].get<int64_t>(); //X DevAPI 只对 int64_t 实例化 get
+				return existing[0].get<int64_t>();
 		}
 		catch (mysqlx::Error& e) {
-			con->_healthy = false; //标记为不可复用, 归还时丢弃
+			con->_healthy = false;
 			std::cerr << "Mysqlx Error reading private chat: " << e.what() << std::endl;
 			return 0;
 		}
 	}
 
-	//没有会话时直接插入, 由 uk_private_users 唯一键决定谁创建成功:
-	//不要先 SELECT ... FOR UPDATE 占位。查不到记录时它锁的是索引间隙, 而随后的 INSERT
-	//需要插入意向锁, 两个并发请求会各自持有间隙锁再等对方释放, 形成死锁(1213)。
-	//这里被唯一键挡住的一方回滚后能读到对方已提交的 thread_id, 直接复用即可。
+	//没有会话时直接插入，由 uk_conversation_dm 唯一键决定谁创建成功：
+	//不要先 SELECT ... FOR UPDATE 占位，查不到时的间隙锁会和 INSERT 形成死锁
 	for (int attempt = 0; attempt < 3; ++attempt) {
 		auto con = pool_->getConnection();
 		if (con == nullptr)
 			return 0;
+		Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 		try {
 			con->_session->startTransaction();
-			//先建公共会话行, 再挂上两人的单聊关系; 唯一键冲突时整笔回滚, 不会留下空会话
-			con->_session->sql("INSERT INTO chat_thread (thread_type) VALUES (1)").execute();
+			con->_session->sql(
+				"INSERT INTO conversation (thread_type, dm_key) VALUES (1, ?)")
+				.bind(dm_key).execute();
 			auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
 			if (id_row.isNull()) {
 				con->_session->rollback();
-				pool_->returnConnection(std::move(con));
 				return 0;
 			}
 			const long long thread_id = id_row[0].get<int64_t>();
-			con->_session->sql("INSERT INTO private_chat (thread_id, user1_id, user2_id) VALUES (?, ?, ?)")
-				.bind(thread_id).bind(low).bind(high).execute();
+			//单聊两人各占一行成员记录，未读与已读游标都由这张表承载
+			con->_session->sql(
+				"INSERT INTO conversation_member (thread_id, uid) VALUES (?, ?), (?, ?)")
+				.bind(thread_id).bind(std::min(user1, user2))
+				.bind(thread_id).bind(std::max(user1, user2)).execute();
 			con->_session->commit();
-			pool_->returnConnection(std::move(con));
 			return thread_id;
 		}
 		catch (mysqlx::Error& e) {
-			//事务可能还停在中间, 先回滚; 连接已断时回滚本身会抛异常, 不能让它逃出本函数
-			bool connection_ok = true;
-			try { con->_session->rollback(); } catch (...) { connection_ok = false; }
-
-			//回滚后查一次: 查到会话说明另一方已经建好, 本次失败属于正常竞态;
-			//查不到才是真的失败, 换下一轮重试
-			long long thread_id = 0;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
+			//并发下另一个请求先建成功：回滚后读它的 thread_id 直接复用
 			try {
-				auto existing = con->_session->sql(
-					"SELECT thread_id FROM private_chat WHERE user1_id = ? AND user2_id = ?")
-					.bind(low).bind(high).execute().fetchOne();
-				if (!existing.isNull())
-					thread_id = existing[0].get<int64_t>();
+				auto again = con->_session->sql(
+					"SELECT thread_id FROM conversation WHERE dm_key = ?")
+					.bind(dm_key).execute().fetchOne();
+				if (!again.isNull())
+					return again[0].get<int64_t>();
 			}
-			catch (mysqlx::Error& read_error) {
-				connection_ok = false; //连查询都失败, 这条连接不能再用
-				if (attempt == 2)
-					std::cerr << "Mysqlx Error re-reading private chat: " << read_error.what() << std::endl;
-			}
-			if (!connection_ok)
-				con->_healthy = false;
-			pool_->returnConnection(std::move(con));
-			if (thread_id > 0)
-				return thread_id;
-			if (attempt == 2)
-				std::cerr << "Mysqlx Error creating private chat: " << e.what() << std::endl;
+			catch (...) {}
+			std::cerr << "Mysqlx Error creating private chat: " << e.what() << std::endl;
 		}
 	}
 	return 0;
 }
 
 bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
-	std::vector<ChatThreadInfo>& threads, bool& has_more)
+	std::vector<ChatThreadInfo>& threads, bool& has_more, long long last_time)
 {
 	threads.clear();
 	has_more = false;
@@ -1074,69 +839,99 @@ bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		//单聊与群聊共用 chat_thread 的 thread_id 游标, 一次查出两类会话。
-		//单聊用 CASE 翻成"对方"视角; 群聊取群名、成员数、我的角色与免打扰;
-		//未读数按会话类型分别算: 单聊看 is_read, 群聊看我的已读游标之后的消息。
-		//"有人@我"只在群聊里判断, 且只看游标之后的未读消息。
-		auto res = con->_session->sql(
-			"SELECT t.thread_id, t.thread_type, UNIX_TIMESTAMP(t.updated_at), "
-			"(pc.thread_id IS NOT NULL), "
-			"CASE WHEN pc.user1_id = ? THEN pc.user2_id ELSE pc.user1_id END, "
+		//成员表同时完成"我在这个会话里"的过滤；单聊对端、未读数、@我 都按
+		//conversation_member.last_read_message_id 计算，不再逐条统计 is_read
+		const std::string base_sql =
+			"SELECT c.thread_id, c.thread_type, UNIX_TIMESTAMP(c.last_message_at), "
+			"(c.thread_type = 1), "
+			"CASE WHEN c.thread_type = 1 THEN "
+			"  (SELECT p.uid FROM conversation_member p "
+			"    WHERE p.thread_id = c.thread_id AND p.uid <> ? LIMIT 1) ELSE 0 END, "
 			"u.name, u.nick, u.icon, u.sex, "
-			"gc.group_name, gc.owner_id, gm.role, gm.nickname, gm.muted, "
-			"(SELECT COUNT(*) FROM group_chat_member g WHERE g.thread_id = t.thread_id), "
-			"(SELECT COUNT(*) FROM chat_message m "
-			" WHERE m.thread_id = t.thread_id AND m.sender_id <> ? "
-			" AND ((t.thread_type <> 2 AND m.recv_id = ? AND m.is_read = 0) "
-			"   OR (t.thread_type = 2 AND m.message_id > gm.last_read_message_id))), "
-			"(t.thread_type = 2 AND EXISTS (SELECT 1 FROM chat_message m2 "
-			" WHERE m2.thread_id = t.thread_id AND m2.message_id > gm.last_read_message_id "
-			" AND m2.sender_id <> ? AND FIND_IN_SET(?, m2.mentions))) "
-			"FROM chat_thread t "
-			"LEFT JOIN private_chat pc ON pc.thread_id = t.thread_id "
-			"LEFT JOIN group_chat gc ON gc.thread_id = t.thread_id "
-			"LEFT JOIN group_chat_member gm ON gm.thread_id = t.thread_id AND gm.user_id = ? "
-			"LEFT JOIN user u ON u.uid = CASE WHEN pc.user1_id = ? THEN pc.user2_id ELSE pc.user1_id END "
-			"WHERE t.thread_id > ? AND ((pc.thread_id IS NOT NULL AND (pc.user1_id = ? OR pc.user2_id = ?)) "
-			" OR gm.thread_id IS NOT NULL) "
-			"ORDER BY t.thread_id ASC LIMIT ?")
-			.bind(uid).bind(uid).bind(uid).bind(uid).bind(std::to_string(uid))
-			.bind(uid).bind(uid).bind(last_thread_id).bind(uid).bind(uid).bind(limit + 1).execute();
-		auto row = res.fetchOne();
-		while (!row.isNull()) {
-			if (static_cast<int>(threads.size()) == limit) {
-				has_more = true;
-				break;
+			"c.name, c.owner_id, cm.role, cm.nickname, cm.muted, "
+			"(SELECT COUNT(*) FROM conversation_member g WHERE g.thread_id = c.thread_id), "
+			"(SELECT COUNT(*) FROM chat_message m WHERE m.thread_id = c.thread_id "
+			"   AND m.message_id > cm.last_read_message_id AND m.sender_id <> ?), "
+			"(c.thread_type = 2 AND EXISTS (SELECT 1 FROM chat_message m2 "
+			"   WHERE m2.thread_id = c.thread_id AND m2.message_id > cm.last_read_message_id "
+			"   AND m2.sender_id <> ? AND FIND_IN_SET(?, m2.mentions))) "
+			"FROM conversation c "
+			"JOIN conversation_member cm ON cm.thread_id = c.thread_id AND cm.uid = ? "
+			"LEFT JOIN user u ON u.uid = CASE WHEN c.thread_type = 1 THEN "
+			"  (SELECT p2.uid FROM conversation_member p2 "
+			"    WHERE p2.thread_id = c.thread_id AND p2.uid <> ? LIMIT 1) ELSE 0 END";
+
+		//前 6 个参数是 SELECT / JOIN / 成员过滤里的 uid，三种游标分支共用
+		auto bind_common = [&](mysqlx::SqlStatement& stmt) {
+			stmt.bind(uid).bind(uid).bind(uid).bind(std::to_string(uid)).bind(uid).bind(uid);
+		};
+		auto parse_rows = [&](mysqlx::SqlResult& res) {
+			auto row = res.fetchOne();
+			while (!row.isNull()) {
+				if (static_cast<int>(threads.size()) == limit) {
+					has_more = true;
+					break;
+				}
+				ChatThreadInfo info;
+				info.thread_id = row[0].get<int64_t>();
+				info.thread_type = row[1].get<int>();
+				info.updated_at = row[2].isNull() ? 0 : row[2].get<int64_t>();
+				if (row[3].get<int>() != 0) {
+					info.thread_type = static_cast<int>(ThreadType::Private);
+					info.peer_uid = row[4].isNull() ? 0 : row[4].get<int>();
+					info.peer_name = row[5].isNull() ? "" : row[5].get<std::string>();
+					info.peer_nick = row[6].isNull() ? "" : row[6].get<std::string>();
+					info.peer_icon = row[7].isNull() ? "" : row[7].get<std::string>();
+					info.peer_sex = row[8].isNull() ? 0 : row[8].get<int>();
+				}
+				else {
+					info.thread_type = static_cast<int>(ThreadType::Group);
+					info.group_name = row[9].isNull() ? "" : row[9].get<std::string>();
+					info.group_owner = row[10].isNull() ? 0 : row[10].get<int>();
+					info.my_role = row[11].isNull() ? 0 : row[11].get<int>();
+					info.muted = !row[13].isNull() && row[13].get<int>() != 0;
+					info.group_member_count = row[14].isNull() ? 0 : row[14].get<int>();
+				}
+				info.unread = row[15].isNull() ? 0 : row[15].get<int>();
+				info.at_me = !row[16].isNull() && row[16].get<int>() != 0;
+				threads.push_back(std::move(info));
+				row = res.fetchOne();
 			}
-			ChatThreadInfo info;
-			info.thread_id = row[0].get<int64_t>();
-			info.thread_type = row[1].get<int>();
-			info.updated_at = row[2].isNull() ? 0 : row[2].get<int64_t>();
-			if (row[3].get<int>() != 0) {
-				info.thread_type = static_cast<int>(ThreadType::Private);
-				info.peer_uid = row[4].isNull() ? 0 : row[4].get<int>();
-				info.peer_name = row[5].isNull() ? "" : row[5].get<std::string>();
-				info.peer_nick = row[6].isNull() ? "" : row[6].get<std::string>();
-				info.peer_icon = row[7].isNull() ? "" : row[7].get<std::string>();
-				info.peer_sex = row[8].isNull() ? 0 : row[8].get<int>();
-			}
-			else {
-				info.thread_type = static_cast<int>(ThreadType::Group);
-				info.group_name = row[9].isNull() ? "" : row[9].get<std::string>();
-				info.group_owner = row[10].isNull() ? 0 : row[10].get<int>();
-				info.my_role = row[11].isNull() ? 0 : row[11].get<int>();
-				info.muted = !row[13].isNull() && row[13].get<int>() != 0;
-				info.group_member_count = row[14].isNull() ? 0 : row[14].get<int>();
-			}
-			info.unread = row[15].isNull() ? 0 : row[15].get<int>();
-			info.at_me = !row[16].isNull() && row[16].get<int>() != 0;
-			threads.push_back(std::move(info));
-			row = res.fetchOne();
+		};
+
+		if (last_time > 0) {
+			//复合游标：同一秒内按 thread_id 继续向前，避免 ordering tie 造成重复或漏项
+			const std::string sql = base_sql +
+				" WHERE (c.last_message_at < FROM_UNIXTIME(?) "
+				" OR (c.last_message_at = FROM_UNIXTIME(?) AND c.thread_id < ?)) "
+				"ORDER BY c.last_message_at DESC, c.thread_id DESC LIMIT ?";
+			auto stmt = con->_session->sql(sql);
+			bind_common(stmt);
+			auto res = stmt.bind(last_time).bind(last_time).bind(last_thread_id)
+				.bind(limit + 1).execute();
+			parse_rows(res);
+		}
+		else if (last_thread_id > 0) {
+			//旧客户端的 thread_id 游标：保持原来的升序语义
+			const std::string sql = base_sql +
+				" WHERE c.thread_id > ? ORDER BY c.thread_id ASC LIMIT ?";
+			auto stmt = con->_session->sql(sql);
+			bind_common(stmt);
+			auto res = stmt.bind(last_thread_id).bind(limit + 1).execute();
+			parse_rows(res);
+		}
+		else {
+			const std::string sql = base_sql +
+				" ORDER BY c.last_message_at DESC, c.thread_id DESC LIMIT ?";
+			auto stmt = con->_session->sql(sql);
+			bind_common(stmt);
+			auto res = stmt.bind(limit + 1).execute();
+			parse_rows(res);
 		}
 		return true;
 	}
 	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
+		if (con) con->_healthy = false;
 		std::cerr << "Mysqlx Error loading chat threads: " << e.what() << std::endl;
 		return false;
 	}
@@ -1153,21 +948,26 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		//先确认请求者属于这个会话(单聊的两人之一或群成员), 不能靠猜 thread_id 读别人的聊天记录
+		//成员校验：不是会话成员拿不到任何历史，也防止用别人的 thread_id 翻记录
 		auto member = con->_session->sql(
-			"SELECT thread_id FROM private_chat WHERE thread_id = ? AND (user1_id = ? OR user2_id = ?) "
-			"UNION SELECT thread_id FROM group_chat_member WHERE thread_id = ? AND user_id = ?")
-			.bind(thread_id).bind(uid).bind(uid).bind(thread_id).bind(uid).execute().fetchOne();
+			"SELECT 1 FROM conversation_member WHERE thread_id = ? AND uid = ?")
+			.bind(thread_id).bind(uid).execute().fetchOne();
 		if (member.isNull())
 			return false;
-		//按消息ID升序增量读取; 多取一条判断下一页
-		//时间取 UNIX 时间戳: 库里是 TIMESTAMP, 直接读字符串还要处理会话时区
+
+		//单聊带出对端的已读游标，客户端据此把单勾改成双勾；群聊不逐条回执
 		auto res = con->_session->sql(
-			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type, "
-			"UNIX_TIMESTAMP(created_at), is_read, recalled, mentions "
-			"FROM chat_message WHERE thread_id = ? AND message_id > ? "
-			"ORDER BY message_id ASC LIMIT ?")
-			.bind(thread_id).bind(last_message_id).bind(limit + 1).execute();
+			"SELECT m.message_id, m.sender_id, m.recv_id, m.client_msg_id, m.content, "
+			"UNIX_TIMESTAMP(m.created_at), m.msg_type, m.state, m.upload_state, m.mentions, "
+			"(peer.last_read_message_id >= m.message_id) "
+			"FROM chat_message m "
+			"JOIN conversation c ON c.thread_id = m.thread_id "
+			"LEFT JOIN conversation_member peer ON peer.thread_id = m.thread_id "
+			"  AND peer.uid <> ? AND c.thread_type = 1 "
+			"WHERE m.thread_id = ? AND m.message_id > ? "
+			"ORDER BY m.message_id ASC LIMIT ?")
+			.bind(uid).bind(thread_id).bind(static_cast<int64_t>(last_message_id))
+			.bind(limit + 1).execute();
 		auto row = res.fetchOne();
 		while (!row.isNull()) {
 			if (static_cast<int>(messages.size()) == limit) {
@@ -1176,55 +976,36 @@ bool MysqlDao::GetChatMessages(int uid, long long thread_id, long long last_mess
 			}
 			ChatMessageInfo info;
 			info.message_id = row[0].get<int64_t>();
-			info.thread_id = row[1].get<int64_t>();
-			info.sender_id = row[2].get<int>();
-			info.recv_id = row[3].get<int>();
-			info.client_msg_id = row[4].get<std::string>();
-			info.content = row[5].get<std::string>();
-			info.status = row[6].get<int>();
-			info.msg_type = row[7].get<int>();
-			info.created_at = row[8].get<int64_t>();
-			info.is_read = row[9].get<int>() != 0;
-			info.recalled = row[10].get<int>() != 0;
-			info.mentions = row[11].isNull() ? "" : row[11].get<std::string>();
+			info.thread_id = thread_id;
+			info.sender_id = row[1].get<int>();
+			info.recv_id = row[2].get<int>();
+			info.client_msg_id = row[3].get<std::string>();
+			info.content = row[4].get<std::string>();
+			info.created_at = row[5].isNull() ? 0 : row[5].get<int64_t>();
+			info.msg_type = row[6].get<int>();
+			info.recalled = row[7].get<int>() != 0;
+			info.status = row[8].get<int>();
+			info.mentions = row[9].get<std::string>();
+			info.is_read = row[10].get<int>() != 0;
 			messages.push_back(std::move(info));
 			row = res.fetchOne();
 		}
 		return true;
 	}
 	catch (mysqlx::Error& e) {
-		if (con) con->_healthy = false; //标记为不可复用, 归还时丢弃
+		if (con) con->_healthy = false;
 		std::cerr << "Mysqlx Error loading chat messages: " << e.what() << std::endl;
 		return false;
 	}
 }
 
-//单聊会话解析: thread_id 为0时先确认好友关系再补建; 返回0表示不是好友或数据库不可用
 long long MysqlDao::EnsureChatThread(int sender_id, int recv_id, long long thread_id)
 {
-	auto con = pool_->getConnection();
-	if (con == nullptr)
-		return 0;
-	//不管有没有会话，先确认双向关系都还在：任何一方删了好友，旧的 thread_id 都不能继续发消息
-	try {
-		auto friendship = con->_session->sql(
-			"SELECT COUNT(*) FROM friend WHERE (self_id = ? AND friend_id = ?) "
-			"OR (self_id = ? AND friend_id = ?)")
-			.bind(sender_id).bind(recv_id).bind(recv_id).bind(sender_id).execute().fetchOne();
-		if (friendship.isNull() || friendship[0].get<int>() != 2) {
-			pool_->returnConnection(std::move(con));
-			return 0;
-		}
-	} catch (mysqlx::Error& e) {
-		con->_healthy = false;
-		pool_->returnConnection(std::move(con));
-		std::cerr << "Mysqlx Error checking chat friendship: " << e.what() << std::endl;
-		return 0;
-	}
-	pool_->returnConnection(std::move(con));
+	//已有会话直接返回，归属与好友关系由调用方在写库事务前一次校验；
+	//只有客户端还没拿到 thread_id 时才建会话
 	if (thread_id > 0)
 		return thread_id;
-	return GetOrCreatePrivateChat(sender_id, recv_id); //内部会再借一次连接
+	return GetOrCreatePrivateChat(sender_id, recv_id);
 }
 
 bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
@@ -1234,60 +1015,121 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 	messages.clear();
 	if (contents.empty())
 		return true;
-	//客户端还没拿到会话ID时, 先确认两人仍是好友, 再由这里补建会话
-	thread_id = EnsureChatThread(sender_id, recv_id, thread_id);
-	if (thread_id <= 0)
-		return false;
+	//客户端还没拿到会话ID时才走创建路径；正常聊天都带 thread_id
+	if (thread_id <= 0) {
+		thread_id = EnsureChatThread(sender_id, recv_id, 0);
+		if (thread_id <= 0)
+			return false;
+	}
 	auto con = pool_->getConnection();
 	if (con == nullptr)
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		//写入前再校验一次会话归属, 防止客户端传一个别人的 thread_id
+		//一次查询同时确认两件事：会话属于这两个人、双向好友关系都还在。
+		//原实现先查好友、再查归属，要借两次连接、多两次往返
+		const int low = std::min(sender_id, recv_id);
+		const int high = std::max(sender_id, recv_id);
 		auto member = con->_session->sql(
-			"SELECT thread_id FROM private_chat WHERE thread_id = ? AND ((user1_id = ? AND user2_id = ?) "
-			"OR (user1_id = ? AND user2_id = ?))")
-			.bind(thread_id).bind(sender_id).bind(recv_id).bind(recv_id).bind(sender_id).execute().fetchOne();
+			"SELECT 1 FROM conversation_member cm "
+			"JOIN conversation c ON c.thread_id = cm.thread_id "
+			"WHERE cm.thread_id = ? AND cm.uid = ? AND c.thread_type = 1 "
+			"AND EXISTS (SELECT 1 FROM friend f1 WHERE f1.self_id = ? AND f1.friend_id = ?) "
+			"AND EXISTS (SELECT 1 FROM friend f2 WHERE f2.self_id = ? AND f2.friend_id = ?)")
+			.bind(thread_id).bind(sender_id).bind(low).bind(high)
+			.bind(high).bind(low)
+			.execute().fetchOne();
 		if (member.isNull())
 			return false;
 
-		//整批消息一个事务: 要么全部拿到 message_id, 要么一条都不落库
+		//整批消息一个事务：要么全部拿到 message_id, 要么一条都不落库
 		con->_session->startTransaction();
-		for (const auto& [client_id, content] : contents) {
-			//(thread_id, sender_id, client_msg_id) 唯一; 断线重发同一条时沿用库里原来的 message_id
-			con->_session->sql(
-				"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content) "
-				"VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
-				.bind(thread_id).bind(sender_id).bind(recv_id).bind(client_id).bind(content).execute();
-			auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
-			if (id_row.isNull()) {
+
+		//一条语句写入整批；同一条重发时保留库里原来的 message_id
+		std::string insert_sql =
+			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content) VALUES ";
+		for (std::size_t i = 0; i < contents.size(); ++i) {
+			if (i > 0) insert_sql += ',';
+			insert_sql += "(?, ?, ?, ?, ?)";
+		}
+		insert_sql += " ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)";
+		auto insert = con->_session->sql(insert_sql);
+		for (const auto& item : contents)
+			insert.bind(thread_id).bind(sender_id).bind(recv_id)
+				.bind(item.first).bind(item.second);
+		insert.execute();
+
+		//批量插入不能用 LAST_INSERT_ID 推断 id（自增只保证单条语句内连续），
+		//按客户端消息ID一次取回 message_id 与落库时间；重发时拿到的也是原值
+		std::string select_sql =
+			"SELECT client_msg_id, message_id, UNIX_TIMESTAMP(created_at) FROM chat_message "
+			"WHERE thread_id = ? AND sender_id = ? AND client_msg_id IN (";
+		for (std::size_t i = 0; i < contents.size(); ++i) {
+			if (i > 0) select_sql += ',';
+			select_sql += '?';
+		}
+		select_sql += ')';
+		auto select = con->_session->sql(select_sql);
+		select.bind(thread_id).bind(sender_id);
+		for (const auto& item : contents)
+			select.bind(item.first);
+		auto res = select.execute();
+
+		std::unordered_map<std::string, std::pair<long long, long long>> saved;
+		auto row = res.fetchOne();
+		while (!row.isNull()) {
+			saved.emplace(row[0].get<std::string>(),
+				std::make_pair(row[1].get<int64_t>(),
+					row[2].isNull() ? 0 : row[2].get<int64_t>()));
+			row = res.fetchOne();
+		}
+		for (const auto& item : contents) {
+			auto iter = saved.find(item.first);
+			if (iter == saved.end()) { //写入被忽略或读取失败，整批回滚
 				con->_session->rollback();
 				return false;
 			}
 			ChatMessageInfo info;
-			info.message_id = id_row[0].get<int64_t>();
+			info.message_id = iter->second.first;
 			info.thread_id = thread_id;
 			info.sender_id = sender_id;
 			info.recv_id = recv_id;
-			info.client_msg_id = client_id;
-			info.content = content;
-			//重发同一条时库里保留原始时间, 客户端展示与排序都按这个值
-			auto time_row = con->_session->sql(
-				"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
-				.bind(static_cast<int64_t>(info.message_id)).execute().fetchOne();
-			info.created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+			info.client_msg_id = item.first;
+			info.content = item.second;
+			info.created_at = iter->second.second;
 			messages.push_back(std::move(info));
 		}
-		//会话列表按更新时间排序时需要这个时间戳, 消息写入和会话刷新放在同一事务
-		con->_session->sql("UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
+
 		con->_session->commit();
+
+		//会话的最后消息只影响列表排序，放在事务外：不让同一会话的发送者在会话行上排队，
+		//也避免"插入消息 + 更新会话行"的锁顺序在并发发送时形成死锁。
+		//只有更新的消息才覆盖，乱序提交不会把游标退回去
+		long long newest_id = 0;
+		long long newest_time = 0;
+		for (const auto& message : messages) {
+			if (message.message_id > newest_id) {
+				newest_id = message.message_id;
+				newest_time = message.created_at;
+			}
+		}
+		try {
+			con->_session->sql(
+				"UPDATE conversation SET last_message_id = ?, last_message_at = FROM_UNIXTIME(?) "
+				"WHERE thread_id = ? AND last_message_id < ?")
+				.bind(static_cast<int64_t>(newest_id)).bind(newest_time)
+				.bind(thread_id).bind(static_cast<int64_t>(newest_id)).execute();
+		}
+		catch (mysqlx::Error& e) {
+			std::cerr << "Mysqlx Error updating conversation time: " << e.what() << std::endl;
+		}
 		return true;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			//回滚成功说明连接仍然可用；只有回滚也失败才丢弃，避免死锁后重建整条连接
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error saving chat messages: " << e.what() << std::endl;
 		return false;
@@ -1298,11 +1140,14 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 	const std::string& client_msg_id, int msg_type, const std::string& content,
 	ChatMessageInfo& message)
 {
-	thread_id = EnsureChatThread(sender_id, recv_id, thread_id);
-	if (thread_id <= 0)
-		return false;
 	if (msg_type < 1 || msg_type > 3)
 		return false;
+	//没有会话时先建；正常聊天都带 thread_id
+	if (thread_id <= 0) {
+		thread_id = EnsureChatThread(sender_id, recv_id, 0);
+		if (thread_id <= 0)
+			return false;
+	}
 
 	auto con = pool_->getConnection();
 	if (con == nullptr)
@@ -1310,19 +1155,26 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 
 	try {
-		//与文本消息一样校验会话归属, 防止用别人的 thread_id 写消息
+		//与文本消息一样，一次查询同时校验会话归属与双向好友关系
+		const int low = std::min(sender_id, recv_id);
+		const int high = std::max(sender_id, recv_id);
 		auto member = con->_session->sql(
-			"SELECT thread_id FROM private_chat WHERE thread_id = ? AND ((user1_id = ? AND user2_id = ?) "
-			"OR (user1_id = ? AND user2_id = ?))")
-			.bind(thread_id).bind(sender_id).bind(recv_id).bind(recv_id).bind(sender_id).execute().fetchOne();
+			"SELECT 1 FROM conversation_member cm "
+			"JOIN conversation c ON c.thread_id = cm.thread_id "
+			"WHERE cm.thread_id = ? AND cm.uid = ? AND c.thread_type = 1 "
+			"AND EXISTS (SELECT 1 FROM friend f1 WHERE f1.self_id = ? AND f1.friend_id = ?) "
+			"AND EXISTS (SELECT 1 FROM friend f2 WHERE f2.self_id = ? AND f2.friend_id = ?)")
+			.bind(thread_id).bind(sender_id).bind(low).bind(high)
+			.bind(high).bind(low)
+			.execute().fetchOne();
 		if (member.isNull())
 			return false;
 
 		con->_session->startTransaction();
-		//status=0 表示资源还没上传完成, 由后续资源回调改成已发送；
+		//upload_state=0 表示资源还没上传完成, 由后续资源回调改成已就绪；
 		//content 对图片是资源名, 对视频/文件是文件名、大小、资源名与预览资源的 JSON
 		con->_session->sql(
-			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, msg_type, status) "
+			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, msg_type, upload_state) "
 			"VALUES (?, ?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
 			.bind(thread_id).bind(sender_id).bind(recv_id).bind(client_msg_id).bind(content)
 			.bind(msg_type).execute();
@@ -1337,9 +1189,19 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 			"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
 		const long long created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
-		con->_session->sql("UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
+
+		//会话时间放在事务外，避免与并发文本消息在会话行上形成锁顺序问题
+		try {
+			con->_session->sql(
+				"UPDATE conversation SET last_message_id = ?, last_message_at = FROM_UNIXTIME(?) "
+				"WHERE thread_id = ? AND last_message_id < ?")
+				.bind(static_cast<int64_t>(message_id)).bind(created_at)
+				.bind(thread_id).bind(static_cast<int64_t>(message_id)).execute();
+		}
+		catch (mysqlx::Error& e) {
+			std::cerr << "Mysqlx Error updating conversation time: " << e.what() << std::endl;
+		}
 
 		message.message_id = message_id;
 		message.thread_id = thread_id;
@@ -1354,15 +1216,14 @@ bool MysqlDao::SaveResourceMessage(int sender_id, int recv_id, long long thread_
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error saving resource message: " << e.what() << std::endl;
 		return false;
 	}
 }
 
-//资源服务器只带回 message_id 和资源名，类型、原始文件名与预览信息统一以库里的记录为准
 bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
 {
 	if (message_id <= 0)
@@ -1375,8 +1236,8 @@ bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
 
 	try {
 		auto row = con->_session->sql(
-			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, status, msg_type, "
-			"UNIX_TIMESTAMP(created_at), is_read, recalled "
+			"SELECT message_id, thread_id, sender_id, recv_id, client_msg_id, content, "
+			"upload_state, msg_type, UNIX_TIMESTAMP(created_at), state "
 			"FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
 		if (row.isNull())
@@ -1390,8 +1251,8 @@ bool MysqlDao::GetChatMessage(long long message_id, ChatMessageInfo& message)
 		message.status = row[6].get<int>();
 		message.msg_type = row[7].get<int>();
 		message.created_at = row[8].get<int64_t>();
-		message.is_read = row[9].get<int>() != 0;
-		message.recalled = row[10].get<int>() != 0;
+		message.is_read = false; //逐条已读已被成员游标取代，通知路径不依赖它
+		message.recalled = row[9].get<int>() != 0;
 		return true;
 	}
 	catch (mysqlx::Error& e) {
@@ -1411,7 +1272,7 @@ bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int sta
 
 	try {
 		//带上 sender 限定，避免拿别人的 message_id 改状态；重复回调affected rows为0仍按成功
-		con->_session->sql("UPDATE chat_message SET status = ? WHERE message_id = ? AND sender_id = ?")
+		con->_session->sql("UPDATE chat_message SET upload_state = ? WHERE message_id = ? AND sender_id = ?")
 			.bind(status).bind(static_cast<int64_t>(message_id)).bind(sender).execute();
 		return true;
 	}
@@ -1438,10 +1299,10 @@ bool LoadGroupMembers(mysqlx::Session& session, long long thread_id,
 {
 	members.clear();
 	auto res = session.sql(
-		"SELECT gm.user_id, u.name, u.nick, u.icon, u.sex, gm.role, gm.nickname, "
-		"UNIX_TIMESTAMP(gm.joined_at) "
-		"FROM group_chat_member gm JOIN user u ON u.uid = gm.user_id "
-		"WHERE gm.thread_id = ? ORDER BY gm.role DESC, gm.joined_at ASC")
+		"SELECT cm.uid, u.name, u.nick, u.icon, u.sex, cm.role, cm.nickname, "
+		"UNIX_TIMESTAMP(cm.joined_at) "
+		"FROM conversation_member cm JOIN user u ON u.uid = cm.uid "
+		"WHERE cm.thread_id = ? ORDER BY cm.role DESC, cm.joined_at ASC")
 		.bind(thread_id).execute();
 	auto row = res.fetchOne();
 	while (!row.isNull()) {
@@ -1469,7 +1330,7 @@ bool MysqlDao::GetThreadType(long long thread_id, int& thread_type)
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		auto row = con->_session->sql("SELECT thread_type FROM chat_thread WHERE thread_id = ?")
+		auto row = con->_session->sql("SELECT thread_type FROM conversation WHERE thread_id = ?")
 			.bind(thread_id).execute().fetchOne();
 		if (row.isNull())
 			return false;
@@ -1528,7 +1389,9 @@ long long MysqlDao::CreateGroup(int owner_id, const std::string& group_name,
 		}
 
 		con->_session->startTransaction();
-		con->_session->sql("INSERT INTO chat_thread (thread_type) VALUES (2)").execute();
+		con->_session->sql(
+			"INSERT INTO conversation (thread_type, name, owner_id) VALUES (2, ?, ?)")
+			.bind(group_name).bind(owner_id).execute();
 		auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
 		if (id_row.isNull()) {
 			con->_session->rollback();
@@ -1536,20 +1399,15 @@ long long MysqlDao::CreateGroup(int owner_id, const std::string& group_name,
 			return 0;
 		}
 		const long long thread_id = id_row[0].get<int64_t>();
+		//群主与成员都写在成员表里，角色 2 表示群主
 		con->_session->sql(
-			"INSERT INTO group_chat (thread_id, group_name, owner_id) VALUES (?, ?, ?)")
-			.bind(thread_id).bind(group_name).bind(owner_id).execute();
-		con->_session->sql(
-			"INSERT INTO group_chat_member (thread_id, user_id, role) VALUES (?, ?, 2)")
+			"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 2)")
 			.bind(thread_id).bind(owner_id).execute();
 		for (int uid : invite) {
 			con->_session->sql(
-				"INSERT INTO group_chat_member (thread_id, user_id, role) VALUES (?, ?, 0)")
+				"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 0)")
 				.bind(thread_id).bind(uid).execute();
 		}
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
 
 		info.thread_id = thread_id;
@@ -1563,8 +1421,8 @@ long long MysqlDao::CreateGroup(int owner_id, const std::string& group_name,
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error creating group: " << e.what() << std::endl;
 		error = ErrorCodes::RPCFailed;
@@ -1583,12 +1441,12 @@ bool MysqlDao::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 	try {
 		//JOIN 成员行同时完成"是不是群成员"的校验，非成员查不到任何行
 		auto row = con->_session->sql(
-			"SELECT gc.group_name, gc.notice, gc.owner_id, UNIX_TIMESTAMP(gc.created_at), "
-			"(SELECT COUNT(*) FROM group_chat_member g WHERE g.thread_id = gc.thread_id), "
-			"gm.role, gm.muted, gm.nickname, gm.last_read_message_id "
-			"FROM group_chat gc JOIN group_chat_member gm "
-			"ON gm.thread_id = gc.thread_id AND gm.user_id = ? "
-			"WHERE gc.thread_id = ?")
+			"SELECT c.name, c.notice, c.owner_id, UNIX_TIMESTAMP(c.created_at), "
+			"(SELECT COUNT(*) FROM conversation_member g WHERE g.thread_id = c.thread_id), "
+			"cm.role, cm.muted, cm.nickname, cm.last_read_message_id "
+			"FROM conversation c JOIN conversation_member cm "
+			"ON cm.thread_id = c.thread_id AND cm.uid = ? "
+			"WHERE c.thread_id = ? AND c.thread_type = 2")
 			.bind(uid).bind(thread_id).execute().fetchOne();
 		if (row.isNull())
 			return false;
@@ -1614,7 +1472,7 @@ bool MysqlDao::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 }
 
 //群设置更新：群名与公告需要管理员及以上；群昵称与免打扰只改自己那一行。
-//群昵称走 member 表，不碰 user 表，避免"改个群备注把账号昵称也改了"
+//群昵称走成员表，不碰 user 表，避免"改个群备注把账号昵称也改了"
 int MysqlDao::UpdateGroupField(long long thread_id, int uid, GroupField field,
 	const std::string& value, std::string& applied)
 {
@@ -1636,13 +1494,13 @@ int MysqlDao::UpdateGroupField(long long thread_id, int uid, GroupField field,
 			if (role < static_cast<int>(GroupRole::Admin))
 				return ErrorCodes::GroupDenied;
 			if (field == GroupField::Name) {
-				con->_session->sql("UPDATE group_chat SET group_name = ?, "
-					"updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
+				con->_session->sql("UPDATE conversation SET name = ? "
+					"WHERE thread_id = ? AND thread_type = 2")
 					.bind(value).bind(thread_id).execute();
 			}
 			else {
-				con->_session->sql("UPDATE group_chat SET notice = ?, "
-					"updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
+				con->_session->sql("UPDATE conversation SET notice = ? "
+					"WHERE thread_id = ? AND thread_type = 2")
 					.bind(value).bind(thread_id).execute();
 			}
 			return ErrorCodes::Success;
@@ -1650,14 +1508,14 @@ int MysqlDao::UpdateGroupField(long long thread_id, int uid, GroupField field,
 
 		if (field == GroupField::MyNickname) {
 			con->_session->sql(
-				"UPDATE group_chat_member SET nickname = ? WHERE thread_id = ? AND user_id = ?")
+				"UPDATE conversation_member SET nickname = ? WHERE thread_id = ? AND uid = ?")
 				.bind(value).bind(thread_id).bind(uid).execute();
 			return ErrorCodes::Success;
 		}
 
 		const bool target = value == "1";
 		con->_session->sql(
-			"UPDATE group_chat_member SET muted = ? WHERE thread_id = ? AND user_id = ?")
+			"UPDATE conversation_member SET muted = ? WHERE thread_id = ? AND uid = ?")
 			.bind(target ? 1 : 0).bind(thread_id).bind(uid).execute();
 		applied = target ? "1" : "0";
 		return ErrorCodes::Success;
@@ -1688,7 +1546,7 @@ int MysqlDao::InviteGroupMembers(long long thread_id, int operator_uid,
 			return ErrorCodes::GroupNotFound;
 
 		auto count_row = con->_session->sql(
-			"SELECT COUNT(*) FROM group_chat_member WHERE thread_id = ?")
+			"SELECT COUNT(*) FROM conversation_member WHERE thread_id = ?")
 			.bind(thread_id).execute().fetchOne();
 		member_count = count_row.isNull() ? 0 : count_row[0].get<int>();
 		if (member_count >= MAX_GROUP_MEMBER)
@@ -1702,7 +1560,7 @@ int MysqlDao::InviteGroupMembers(long long thread_id, int operator_uid,
 			if (std::find(candidates.begin(), candidates.end(), uid) != candidates.end())
 				continue;
 			auto exists = con->_session->sql(
-				"SELECT COUNT(*) FROM group_chat_member WHERE thread_id = ? AND user_id = ?")
+				"SELECT COUNT(*) FROM conversation_member WHERE thread_id = ? AND uid = ?")
 				.bind(thread_id).bind(uid).execute().fetchOne();
 			if (!exists.isNull() && exists[0].get<int>() > 0)
 				continue;
@@ -1722,7 +1580,7 @@ int MysqlDao::InviteGroupMembers(long long thread_id, int operator_uid,
 			if (member_count >= MAX_GROUP_MEMBER)
 				break;
 			con->_session->sql(
-				"INSERT INTO group_chat_member (thread_id, user_id, role) VALUES (?, ?, 0)")
+				"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 0)")
 				.bind(thread_id).bind(uid).execute();
 			added.push_back(uid);
 			++member_count;
@@ -1731,16 +1589,13 @@ int MysqlDao::InviteGroupMembers(long long thread_id, int operator_uid,
 			con->_session->rollback();
 			return ErrorCodes::NotFriend;
 		}
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
 		return ErrorCodes::Success;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error inviting group members: " << e.what() << std::endl;
 		return ErrorCodes::RPCFailed;
@@ -1775,22 +1630,19 @@ int MysqlDao::RemoveGroupMember(long long thread_id, int operator_uid, int targe
 
 		con->_session->startTransaction();
 		con->_session->sql(
-			"DELETE FROM group_chat_member WHERE thread_id = ? AND user_id = ?")
+			"DELETE FROM conversation_member WHERE thread_id = ? AND uid = ?")
 			.bind(thread_id).bind(target_uid).execute();
 		auto count_row = con->_session->sql(
-			"SELECT COUNT(*) FROM group_chat_member WHERE thread_id = ?")
+			"SELECT COUNT(*) FROM conversation_member WHERE thread_id = ?")
 			.bind(thread_id).execute().fetchOne();
 		member_count = count_row.isNull() ? 0 : count_row[0].get<int>();
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
 		return ErrorCodes::Success;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error removing group member: " << e.what() << std::endl;
 		return ErrorCodes::RPCFailed;
@@ -1821,7 +1673,7 @@ int MysqlDao::SetGroupAdmin(long long thread_id, int operator_uid, int target_ui
 		const int role = admin ? static_cast<int>(GroupRole::Admin)
 			: static_cast<int>(GroupRole::Member);
 		con->_session->sql(
-			"UPDATE group_chat_member SET role = ? WHERE thread_id = ? AND user_id = ?")
+			"UPDATE conversation_member SET role = ? WHERE thread_id = ? AND uid = ?")
 			.bind(role).bind(thread_id).bind(target_uid).execute();
 		return ErrorCodes::Success;
 	}
@@ -1850,25 +1702,22 @@ int MysqlDao::LeaveGroup(long long thread_id, int uid, bool& dismissed)
 			return ErrorCodes::GroupDenied;
 
 		con->_session->startTransaction();
-		con->_session->sql("DELETE FROM group_chat_member WHERE thread_id = ? AND user_id = ?")
+		con->_session->sql("DELETE FROM conversation_member WHERE thread_id = ? AND uid = ?")
 			.bind(thread_id).bind(uid).execute();
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
 		return ErrorCodes::Success;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error leaving group: " << e.what() << std::endl;
 		return ErrorCodes::RPCFailed;
 	}
 }
 
-//解散：删 chat_thread，group_chat / group_chat_member / chat_message 按外键级联清理
+//解散：删 conversation，成员与消息按外键级联清理
 int MysqlDao::DismissGroup(long long thread_id, int uid)
 {
 	auto con = pool_->getConnection();
@@ -1877,14 +1726,14 @@ int MysqlDao::DismissGroup(long long thread_id, int uid)
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
 		auto row = con->_session->sql(
-			"SELECT owner_id FROM group_chat WHERE thread_id = ?")
+			"SELECT owner_id FROM conversation WHERE thread_id = ? AND thread_type = 2")
 			.bind(thread_id).execute().fetchOne();
 		if (row.isNull())
 			return ErrorCodes::GroupNotFound;
 		if (row[0].get<int>() != uid)
 			return ErrorCodes::GroupDenied;
 
-		con->_session->sql("DELETE FROM chat_thread WHERE thread_id = ?")
+		con->_session->sql("DELETE FROM conversation WHERE thread_id = ?")
 			.bind(thread_id).execute();
 		return ErrorCodes::Success;
 	}
@@ -1906,7 +1755,7 @@ bool MysqlDao::AddGroupSystemMessage(long long thread_id, int actor,
 		con->_session->startTransaction();
 		con->_session->sql(
 			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, "
-			"msg_type, status, is_read, mentions) VALUES (?, ?, 0, ?, ?, 4, 1, 1, '')")
+			"msg_type, state, upload_state, mentions) VALUES (?, ?, 0, ?, ?, 4, 0, 1, '')")
 			.bind(thread_id).bind(actor).bind(NextSystemMsgId(thread_id)).bind(content).execute();
 		auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
 		if (id_row.isNull()) {
@@ -1917,10 +1766,20 @@ bool MysqlDao::AddGroupSystemMessage(long long thread_id, int actor,
 		auto time_row = con->_session->sql(
 			"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
+
+		//系统消息同样推进会话排序；失败只记日志，不影响已经写入的消息
+		const long long created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+		try {
+			con->_session->sql(
+				"UPDATE conversation SET last_message_id = ?, last_message_at = FROM_UNIXTIME(?) "
+				"WHERE thread_id = ? AND last_message_id < ?")
+				.bind(static_cast<int64_t>(message_id)).bind(created_at)
+				.bind(thread_id).bind(static_cast<int64_t>(message_id)).execute();
+		}
+		catch (mysqlx::Error& e) {
+			std::cerr << "Mysqlx Error updating conversation time: " << e.what() << std::endl;
+		}
 
 		message.message_id = message_id;
 		message.thread_id = thread_id;
@@ -1928,15 +1787,13 @@ bool MysqlDao::AddGroupSystemMessage(long long thread_id, int actor,
 		message.recv_id = 0;
 		message.content = content;
 		message.msg_type = 4;
-		message.status = 1;
-		message.is_read = true;
-		message.created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+		message.created_at = created_at;
 		return true;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error adding group system message: " << e.what() << std::endl;
 		return false;
@@ -1952,7 +1809,7 @@ bool MysqlDao::GetGroupMemberIds(long long thread_id, std::vector<int>& members)
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
 		auto res = con->_session->sql(
-			"SELECT user_id FROM group_chat_member WHERE thread_id = ? ORDER BY joined_at ASC")
+			"SELECT uid FROM conversation_member WHERE thread_id = ?")
 			.bind(thread_id).execute();
 		auto row = res.fetchOne();
 		while (!row.isNull()) {
@@ -1980,52 +1837,103 @@ bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		GroupMemberInfo self;
-		bool muted = false;
-		long long last_read = 0;
-		if (!GetGroupMemberOn(con->_session.get(), thread_id, sender_id, self, muted, last_read))
+		//成员 + 群类型一次校验，非成员或单聊 thread 都拿不到行
+		auto member = con->_session->sql(
+			"SELECT 1 FROM conversation_member cm JOIN conversation c "
+			"ON c.thread_id = cm.thread_id AND c.thread_type = 2 "
+			"WHERE cm.thread_id = ? AND cm.uid = ?")
+			.bind(thread_id).bind(sender_id).execute().fetchOne();
+		if (member.isNull())
 			return false;
 
 		//整批消息一个事务：幂等键与单聊一致，(thread_id, sender_id, client_msg_id) 唯一
 		con->_session->startTransaction();
-		for (const auto& [client_id, content] : contents) {
-			con->_session->sql(
-				"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, "
-				"msg_type, status, mentions) VALUES (?, ?, 0, ?, ?, 0, 1, ?) "
-				"ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
-				.bind(thread_id).bind(sender_id).bind(client_id).bind(content)
-				.bind(mentions).execute();
-			auto id_row = con->_session->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
-			if (id_row.isNull()) {
+
+		//state/upload_state 用默认值 0/1，文本消息没有资源上传状态
+		std::string insert_sql =
+			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, "
+			"msg_type, mentions) VALUES ";
+		for (std::size_t i = 0; i < contents.size(); ++i) {
+			if (i > 0) insert_sql += ',';
+			insert_sql += "(?, ?, 0, ?, ?, 0, ?)";
+		}
+		insert_sql += " ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)";
+		auto insert = con->_session->sql(insert_sql);
+		for (const auto& item : contents)
+			insert.bind(thread_id).bind(sender_id).bind(item.first)
+				.bind(item.second).bind(mentions);
+		insert.execute();
+
+		//与单聊一致：按客户端消息ID一次取回 id 与落库时间
+		std::string select_sql =
+			"SELECT client_msg_id, message_id, UNIX_TIMESTAMP(created_at) FROM chat_message "
+			"WHERE thread_id = ? AND sender_id = ? AND client_msg_id IN (";
+		for (std::size_t i = 0; i < contents.size(); ++i) {
+			if (i > 0) select_sql += ',';
+			select_sql += '?';
+		}
+		select_sql += ')';
+		auto select = con->_session->sql(select_sql);
+		select.bind(thread_id).bind(sender_id);
+		for (const auto& item : contents)
+			select.bind(item.first);
+		auto res = select.execute();
+
+		std::unordered_map<std::string, std::pair<long long, long long>> saved;
+		auto row = res.fetchOne();
+		while (!row.isNull()) {
+			saved.emplace(row[0].get<std::string>(),
+				std::make_pair(row[1].get<int64_t>(),
+					row[2].isNull() ? 0 : row[2].get<int64_t>()));
+			row = res.fetchOne();
+		}
+		for (const auto& item : contents) {
+			auto iter = saved.find(item.first);
+			if (iter == saved.end()) {
 				con->_session->rollback();
 				return false;
 			}
 			ChatMessageInfo info;
-			info.message_id = id_row[0].get<int64_t>();
+			info.message_id = iter->second.first;
 			info.thread_id = thread_id;
 			info.sender_id = sender_id;
 			info.recv_id = 0;
-			info.client_msg_id = client_id;
-			info.content = content;
+			info.client_msg_id = item.first;
+			info.content = item.second;
 			info.msg_type = 0;
 			info.status = 1;
 			info.mentions = mentions;
-			auto time_row = con->_session->sql(
-				"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
-				.bind(static_cast<int64_t>(info.message_id)).execute().fetchOne();
-			info.created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+			info.created_at = iter->second.second;
 			messages.push_back(std::move(info));
 		}
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
+
 		con->_session->commit();
+
+		//与会话列表排序解耦，避免并发发送时在会话行上形成锁顺序问题
+		long long newest_id = 0;
+		long long newest_time = 0;
+		for (const auto& message : messages) {
+			if (message.message_id > newest_id) {
+				newest_id = message.message_id;
+				newest_time = message.created_at;
+			}
+		}
+		try {
+			con->_session->sql(
+				"UPDATE conversation SET last_message_id = ?, last_message_at = FROM_UNIXTIME(?) "
+				"WHERE thread_id = ? AND last_message_id < ?")
+				.bind(static_cast<int64_t>(newest_id)).bind(newest_time)
+				.bind(thread_id).bind(static_cast<int64_t>(newest_id)).execute();
+		}
+		catch (mysqlx::Error& e) {
+			std::cerr << "Mysqlx Error updating conversation time: " << e.what() << std::endl;
+		}
 		return true;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error saving group messages: " << e.what() << std::endl;
 		return false;
@@ -2043,16 +1951,18 @@ bool MysqlDao::SaveGroupResourceMessage(int sender_id, long long thread_id,
 		return false;
 	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	try {
-		GroupMemberInfo self;
-		bool muted = false;
-		long long last_read = 0;
-		if (!GetGroupMemberOn(con->_session.get(), thread_id, sender_id, self, muted, last_read))
+		auto member = con->_session->sql(
+			"SELECT 1 FROM conversation_member cm JOIN conversation c "
+			"ON c.thread_id = cm.thread_id AND c.thread_type = 2 "
+			"WHERE cm.thread_id = ? AND cm.uid = ?")
+			.bind(thread_id).bind(sender_id).execute().fetchOne();
+		if (member.isNull())
 			return false;
 
 		con->_session->startTransaction();
 		con->_session->sql(
 			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, "
-			"msg_type, status, mentions) VALUES (?, ?, 0, ?, ?, ?, 0, ?) "
+			"msg_type, upload_state, mentions) VALUES (?, ?, 0, ?, ?, ?, 0, ?) "
 			"ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)")
 			.bind(thread_id).bind(sender_id).bind(client_msg_id).bind(content)
 			.bind(msg_type).bind(mentions).execute();
@@ -2065,10 +1975,19 @@ bool MysqlDao::SaveGroupResourceMessage(int sender_id, long long thread_id,
 		auto time_row = con->_session->sql(
 			"SELECT UNIX_TIMESTAMP(created_at) FROM chat_message WHERE message_id = ?")
 			.bind(static_cast<int64_t>(message_id)).execute().fetchOne();
-		con->_session->sql(
-			"UPDATE chat_thread SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = ?")
-			.bind(thread_id).execute();
 		con->_session->commit();
+
+		const long long created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+		try {
+			con->_session->sql(
+				"UPDATE conversation SET last_message_id = ?, last_message_at = FROM_UNIXTIME(?) "
+				"WHERE thread_id = ? AND last_message_id < ?")
+				.bind(static_cast<int64_t>(message_id)).bind(created_at)
+				.bind(thread_id).bind(static_cast<int64_t>(message_id)).execute();
+		}
+		catch (mysqlx::Error& e) {
+			std::cerr << "Mysqlx Error updating conversation time: " << e.what() << std::endl;
+		}
 
 		message.message_id = message_id;
 		message.thread_id = thread_id;
@@ -2078,14 +1997,14 @@ bool MysqlDao::SaveGroupResourceMessage(int sender_id, long long thread_id,
 		message.content = content;
 		message.msg_type = msg_type;
 		message.status = 0;
-		message.created_at = time_row.isNull() ? 0 : time_row[0].get<int64_t>();
+		message.created_at = created_at;
 		message.mentions = mentions;
 		return true;
 	}
 	catch (mysqlx::Error& e) {
 		if (con) {
-			try { con->_session->rollback(); } catch (...) {}
-			con->_healthy = false;
+			try { con->_session->rollback(); }
+			catch (...) { con->_healthy = false; }
 		}
 		std::cerr << "Mysqlx Error saving group resource message: " << e.what() << std::endl;
 		return false;
@@ -2103,8 +2022,8 @@ bool MysqlDao::MarkGroupRead(int uid, long long thread_id, long long last_messag
 	try {
 		//GREATEST 保证游标只前进：乱序到达的旧"已读"不会把未读数又拉回来
 		auto result = con->_session->sql(
-			"UPDATE group_chat_member SET last_read_message_id = "
-			"GREATEST(last_read_message_id, ?) WHERE thread_id = ? AND user_id = ?")
+			"UPDATE conversation_member SET last_read_message_id = "
+			"GREATEST(last_read_message_id, ?) WHERE thread_id = ? AND uid = ?")
 			.bind(static_cast<int64_t>(last_message_id)).bind(thread_id).bind(uid).execute();
 		if (result.getAffectedItemsCount() > 0)
 			return true;
@@ -2146,10 +2065,12 @@ bool MysqlDao::GetGroupMemberOn(mysqlx::Session* session, long long thread_id, i
 	muted = false;
 	last_read_message_id = 0;
 	auto row = session->sql(
-		"SELECT gm.user_id, u.name, u.nick, u.icon, u.sex, gm.role, gm.nickname, "
-		"gm.muted, gm.last_read_message_id, UNIX_TIMESTAMP(gm.joined_at) "
-		"FROM group_chat_member gm JOIN user u ON u.uid = gm.user_id "
-		"WHERE gm.thread_id = ? AND gm.user_id = ?")
+		"SELECT cm.uid, u.name, u.nick, u.icon, u.sex, cm.role, cm.nickname, "
+		"cm.muted, cm.last_read_message_id, UNIX_TIMESTAMP(cm.joined_at) "
+		"FROM conversation_member cm "
+		"JOIN conversation c ON c.thread_id = cm.thread_id AND c.thread_type = 2 "
+		"JOIN user u ON u.uid = cm.uid "
+		"WHERE cm.thread_id = ? AND cm.uid = ?")
 		.bind(thread_id).bind(uid).execute().fetchOne();
 	if (row.isNull())
 		return false;
@@ -2173,7 +2094,7 @@ MySqlPool::MySqlPool(const std::string& host, unsigned port, const std::string& 
 	//逐条建立连接, 单条失败不影响其余连接; 数量缺口由检测线程首轮补足
 	for (int i = 0; i < poolSize_; ++i) {
 		try {
-			mysqlx::SessionSettings settings(host_, port_, user_, pass_, schema_);
+			auto settings = MakeSessionSettings(host_, port_, user_, pass_, schema_);
 			auto session = std::make_unique<mysqlx::Session>(settings);
 			auto currentTime = std::chrono::system_clock::now().time_since_epoch();
 			long long timestamp = std::chrono::duration_cast<std::chrono::seconds>(currentTime).count();
@@ -2298,17 +2219,20 @@ bool MySqlPool::reconnect(long long timestamp) {
 std::unique_ptr<SqlConnection> MySqlPool::getConnection()
 {
 	std::unique_lock<std::mutex> lock(mutex_); //加锁保护连接池的状态
-	//使用条件变量等待连接池中有可用的连接或者连接池被标记为停止
-	cond_.wait(lock, [this] {
-		//如果连接池被标记为停止, 则直接返回true, 保持锁定状态并继续执行
-		if (b_stop_) {
-			return true;
-		}
-		//如果没有可用的连接, 返回false, 解锁并进入等待状态;
-		//如果有可用的连接, 返回true, 保持锁定状态并继续执行
-		return !pool_.empty(); });
-	//如果连接池被标记为停止, 直接返回空指针
+	//有界等待：数据库不可达或连接耗尽时，业务线程必须在有限时间内失败，
+	//否则单逻辑线程会被永久挂住，整个实例表现为"进程还在、所有请求都不返回"
+	const bool ready = cond_.wait_for(lock, std::chrono::milliseconds(MYSQL_POOL_WAIT_MS), [this] {
+		return b_stop_.load() || !pool_.empty();
+	});
 	if (b_stop_) {
+		return nullptr;
+	}
+	if (!ready) {
+		//唤醒检测线程尽快补池；DB 恢复后不必再等完整的 60 秒巡检周期
+		check_requested_ = true;
+		lock.unlock();
+		check_cond_.notify_one();
+		std::cerr << "[mysql] pool wait timeout, no connection available" << std::endl;
 		return nullptr;
 	}
 	//从连接池中获取一个可用的连接对象

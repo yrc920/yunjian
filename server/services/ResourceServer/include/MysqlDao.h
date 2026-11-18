@@ -25,6 +25,8 @@ public:
 	bool UpdateUserIcon(int uid, const std::string& icon); //更新头像文件名
 	//聊天图片全部落盘后回写消息状态：0 未上传，1 已上传；sender 用于确认归属
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
+	//下载鉴权：本人、共用同一会话的成员，或对方当前头像
+	bool CanAccessResource(int requester, int owner, const std::string& name);
 
 private:
 	std::unique_ptr<MySqlPool> pool_; //共享给所有文件任务线程

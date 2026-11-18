@@ -5,6 +5,19 @@
 #include <chrono>
 #include <iostream>
 
+namespace {
+//所有池内会话统一带连接/读写超时：MySQL 被暂停或网络中断时，
+//不能让文件线程永久挂住；超时后抛 mysqlx::Error，连接会被丢弃并补建
+mysqlx::SessionSettings MakeSessionSettings(const std::string& host, unsigned port,
+	const std::string& user, const std::string& pass, const std::string& schema)
+{
+	mysqlx::SessionSettings settings(host, port, user, pass, schema);
+	//只设置建连超时；查询级超时见评审报告 Phase 1（DB 工作线程/看门狗）
+	settings.set(mysqlx::SessionOption::CONNECT_TIMEOUT, std::chrono::milliseconds(2000));
+	return settings;
+}
+}
+
 MysqlDao::MysqlDao()
 {
 	auto& cfg = ConfigMgr::Inst(); //配置按当前工作目录的config.ini读取
@@ -20,7 +33,7 @@ MysqlDao::MysqlDao()
 		if (value > 0)
 			xport_num = static_cast<unsigned>(value); //只接受正数端口
 	}
-	pool_.reset(new MySqlPool(host, xport_num, user, pass, schema, 4)); //4条长连接由后台线程巡检
+	pool_.reset(new MySqlPool(host, xport_num, user, pass, schema, 6)); //6条长连接由后台线程巡检
 }
 
 MysqlDao::~MysqlDao()
@@ -87,6 +100,43 @@ bool MysqlDao::UpdateUserIcon(int uid, const std::string& icon)
 	}
 }
 
+bool MysqlDao::CanAccessResource(int requester, int owner, const std::string& name)
+{
+	if (requester <= 0 || owner <= 0 || name.empty())
+		return false;
+	if (requester == owner)
+		return true; //自己的文件不用再查
+
+	auto con = pool_->getConnection(); //从池里借一条会话
+	if (con == nullptr)
+		return false; //池不可用时按拒绝处理：宁可下载失败，也不越权放行
+
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+	});
+
+	try {
+		//头像是公开资源：只要这个文件仍是对方的当前头像，任何登录用户都能取
+		auto icon = con->_session->sql("SELECT 1 FROM user WHERE uid = ? AND icon = ?")
+			.bind(owner).bind(name).execute().fetchOne();
+		if (!icon.isNull())
+			return true;
+
+		//其余资源要求双方至少共处一个会话：单聊两人各一行成员记录，群聊同 thread_id
+		auto shared = con->_session->sql(
+			"SELECT 1 FROM conversation_member mine "
+			"JOIN conversation_member peer ON peer.thread_id = mine.thread_id "
+			"WHERE mine.uid = ? AND peer.uid = ? LIMIT 1")
+			.bind(requester).bind(owner).execute().fetchOne();
+		return !shared.isNull();
+	}
+	catch (mysqlx::Error& e) {
+		if (con) con->_healthy = false; //连接不可复用，归还时丢弃并补建
+		std::cerr << "Mysqlx Error checking resource access: " << e.what() << std::endl;
+		return false;
+	}
+}
+
 bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int status)
 {
 	auto con = pool_->getConnection();
@@ -116,7 +166,7 @@ MySqlPool::MySqlPool(const std::string& host, unsigned port, const std::string& 
 {
 	for (int i = 0; i < _pool_size; ++i) {
 		try {
-			mysqlx::SessionSettings settings(_host, _port, _user, _pass, _schema); //X协议连接参数
+			auto settings = MakeSessionSettings(_host, _port, _user, _pass, _schema); //X协议连接参数
 			auto session = std::make_unique<mysqlx::Session>(settings);
 			auto now = std::chrono::system_clock::now().time_since_epoch();
 			auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now).count();
@@ -201,7 +251,7 @@ void MySqlPool::checkConnection()
 bool MySqlPool::reconnect(long long timestamp)
 {
 	try {
-		mysqlx::SessionSettings settings(_host, _port, _user, _pass, _schema); //重新建会话
+		auto settings = MakeSessionSettings(_host, _port, _user, _pass, _schema); //重新建会话
 		auto session = std::make_unique<mysqlx::Session>(settings);
 		auto con = std::make_unique<SqlConnection>(std::move(session), timestamp);
 		{
@@ -223,12 +273,20 @@ bool MySqlPool::reconnect(long long timestamp)
 std::unique_ptr<SqlConnection> MySqlPool::getConnection()
 {
 	std::unique_lock<std::mutex> lock(_mutex); //保护空闲队列与停止标志
-	//没有空闲连接时挂起，直到有连接归还、检查线程补连或服务停机
-	_cond.wait(lock, [this] {
+	//有界等待：数据库不可达或连接耗尽时，文件线程必须在有限时间内失败
+	const bool ready = _cond.wait_for(lock, std::chrono::milliseconds(MYSQL_POOL_WAIT_MS), [this] {
 		return _stopped.load() || !_pool.empty();
 	});
 	if (_stopped.load()) //停机期间不再借出连接
 		return nullptr;
+	if (!ready) {
+		//唤醒检查线程尽快补池；DB 恢复后不必再等完整的巡检周期
+		_check_requested = true;
+		lock.unlock();
+		_check_cond.notify_one();
+		std::cerr << "[mysql] pool wait timeout, no connection available" << std::endl;
+		return nullptr;
+	}
 
 	auto con = std::move(_pool.front()); //所有权交给调用方
 	_pool.pop(); //出队后总数不变，归还时再push回去

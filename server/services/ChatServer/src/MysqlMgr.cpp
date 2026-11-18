@@ -4,29 +4,6 @@ MysqlMgr::MysqlMgr() {}
 
 MysqlMgr::~MysqlMgr() {}
 
-int MysqlMgr::RegUser(const std::string& name, const std::string& email, const std::string& pwd)
-{
-	//调用数据库访问对象的RegUser方法, 将注册请求转发给数据库访问对象处理, 返回结果
-	return _dao.RegUser(name, email, pwd);
-}
-
-bool MysqlMgr::CheckEmail(const std::string& name, const std::string& email)
-{
-	//调用数据库访问对象的CheckEmail方法, 将检查用户名和邮箱是否匹配的请求转发给数据库访问对象处理
-	return _dao.CheckEmail(name, email);
-}
-
-bool MysqlMgr::UpdatePwd(const std::string& name, const std::string& pwd)
-{
-	//调用数据库访问对象的UpdatePwd方法, 将更新密码的请求转发给数据库访问对象处理
-	return _dao.UpdatePwd(name, pwd);
-}
-
-bool MysqlMgr::CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo) {
-	//调用数据库访问对象的CheckPwd方法, 将检查邮箱和密码是否匹配的请求转发给数据库访问对象处理
-	return _dao.CheckPwd(email, pwd, userInfo);
-}
-
 bool MysqlMgr::AddFriendApply(const int& from, const int& to, const std::string& desc,
 	const std::string& back_name, const std::vector<std::string>& tags)
 {
@@ -122,15 +99,15 @@ bool MysqlMgr::DeleteFriend(int uid, int touid)
 
 long long MysqlMgr::GetOrCreatePrivateChat(int user1, int user2)
 {
-	//单聊会话由 private_chat 的两人组合唯一确定, 创建过程在DAO里用事务处理
+	//单聊会话由 conversation.dm_key 唯一确定, 创建过程在DAO里用事务处理
 	return _dao.GetOrCreatePrivateChat(user1, user2);
 }
 
 bool MysqlMgr::GetChatThreads(int uid, long long last_thread_id, int limit,
-	std::vector<ChatThreadInfo>& threads, bool& has_more)
+	std::vector<ChatThreadInfo>& threads, bool& has_more, long long last_time)
 {
-	//调用数据库访问对象的GetChatThreads方法, 按会话ID游标向后翻页
-	return _dao.GetChatThreads(uid, last_thread_id, limit, threads, has_more);
+	//调用数据库访问对象的GetChatThreads方法, 优先按活跃时间倒序, 旧游标仍兼容
+	return _dao.GetChatThreads(uid, last_thread_id, limit, threads, has_more, last_time);
 }
 
 bool MysqlMgr::GetChatMessages(int uid, long long thread_id, long long last_message_id, int limit,
@@ -170,6 +147,35 @@ bool MysqlMgr::UpdateChatMessageStatus(long long message_id, int sender, int sta
 bool MysqlMgr::GetThreadType(long long thread_id, int& thread_type)
 {
 	return _dao.GetThreadType(thread_id, thread_type);
+}
+
+int MysqlMgr::GetThreadTypeCached(long long thread_id)
+{
+	{
+		std::lock_guard<std::mutex> lock(_type_mutex);
+		auto iter = _type_cache.find(thread_id);
+		if (iter != _type_cache.end())
+			return iter->second;
+	}
+
+	//未命中才查库；查询失败或会话不存在时按单聊继续，
+	//至少不会把一条本可送达的私聊消息吞掉（与原来的降级行为一致）
+	int type = static_cast<int>(ThreadType::Private);
+	if (!_dao.GetThreadType(thread_id, type))
+		return static_cast<int>(ThreadType::Private);
+
+	{
+		std::lock_guard<std::mutex> lock(_type_mutex);
+		//同一 thread 的并发未命中可能重复插入，只有第一次插入才记入淘汰队列
+		if (_type_cache.emplace(thread_id, type).second) {
+			_type_order.push_back(thread_id);
+			if (_type_cache.size() > kThreadTypeCacheMax) {
+				_type_cache.erase(_type_order.front());
+				_type_order.pop_front();
+			}
+		}
+	}
+	return type;
 }
 
 long long MysqlMgr::CreateGroup(int owner_id, const std::string& group_name,

@@ -6,7 +6,7 @@
 #    · 逻辑线程按会话分派，落盘线程按文件名分派
 #    · 连接先校验 uid + token，再绑定到本次传输
 #
-#  依赖: Boost + hiredis + jsoncpp + mysql-connector-cpp + xigu_proto(gRPC) + Threads
+#  依赖: Boost + hiredis + jsoncpp + mysql-connector-cpp + xiguchat_proto(gRPC) + Threads
 #  产物: 单配置为 bin/ResourceServer/，多配置为 bin/ResourceServer/<配置名>/
 # ============================================================
 
@@ -20,6 +20,7 @@ find_package(OpenSSL REQUIRED)
 # ---------- 源文件清单 ----------
 set(SERVER_SOURCES
     src/ResourceServer.cpp     # 主入口：监听、信号与停服顺序
+    src/StorageJanitor.cpp     # 残留 .part 的定期清理
     src/CServer.cpp            # TCP 监听器
     src/CSession.cpp           # 2+4 协议收发与连接清理
     src/MsgNode.cpp            # 头部与包体编码
@@ -30,9 +31,6 @@ set(SERVER_SOURCES
     src/FileWorker.cpp         # 分片落盘与头像入库
     src/DownloadWorker.cpp     # 分片读取
     src/Base64.cpp             # 分片编解码
-    src/ConfigMgr.cpp          # config.ini 读取
-    src/IOContextPool.cpp      # io_context 线程池
-    src/RedisMgr.cpp           # Redis 连接池
     src/MysqlMgr.cpp           # MySQL 管理入口
     src/MysqlDao.cpp           # 用户资料查询与头像更新
     src/ChatGrpcClient.cpp     # 图片上传完成后通知 ChatServer
@@ -46,18 +44,15 @@ set(SERVER_HEADERS
     include/LogicSystem.h
     include/LogicWorker.h
     include/ResourceHandler.h
+    include/StorageJanitor.h   # 清理线程
     include/FileSystem.h
     include/FileWorker.h
     include/DownloadWorker.h
     include/FileTask.h
     include/Base64.h
-    include/ConfigMgr.h
-    include/IOContextPool.h
-    include/RedisMgr.h
     include/MysqlMgr.h
     include/MysqlDao.h
     include/ChatGrpcClient.h
-    include/Singleton.h
     include/const.h
     include/data.h
 )
@@ -67,8 +62,10 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 target_link_libraries(${SERVER_NAME} PRIVATE
-    # 图片上传完成通知 ChatServer；xigu_proto 已 PUBLIC 链接 gRPC/protobuf
-    xigu_proto
+    # 公共基础设施（配置、事件循环线程池、Redis 连接池）
+    xiguchat_common
+    # 图片上传完成通知 ChatServer；xiguchat_proto 已 PUBLIC 链接 gRPC/protobuf
+    xiguchat_proto
     Boost::filesystem
     Boost::headers
     hiredis::hiredis

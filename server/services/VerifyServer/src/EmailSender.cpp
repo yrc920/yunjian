@@ -11,6 +11,7 @@
 #include <Poco/Net/StringPartSource.h>
 #include <Poco/File.h>
 #include <Poco/Exception.h>
+#include "const.h"
 
 namespace {
 

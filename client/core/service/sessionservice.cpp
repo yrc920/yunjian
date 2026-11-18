@@ -273,8 +273,11 @@ SessionService::SessionService() : _ready(false)
             if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
                 GroupService::GetInstance()->RequestGroupInfo(threadId);
         }
-        if (data.value("load_more").toBool() && !threads.isEmpty())
-            loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
+        if (data.value("load_more").toBool() && !threads.isEmpty()) {
+            const auto last = threads.last().toObject();
+            loadMoreThreads(last.value("thread_id").toVariant().toLongLong(),
+                last.value("time").toVariant().toLongLong());
+        }
         else
             finishThreadList();
     });    connect(tcp, &TcpMgr::sig_chat_messages, this, [this](const QJsonObject &data) {
@@ -636,8 +639,11 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
         if (item.value("thread_type").toInt(1) == static_cast<int>(ChatThreadKind::Group))
             GroupService::GetInstance()->RequestGroupInfo(threadId);
     }
-    if (data.value("thread_more").toBool() && !threads.isEmpty())
-        loadMoreThreads(threads.last().toObject().value("thread_id").toVariant().toLongLong());
+    if (data.value("thread_more").toBool() && !threads.isEmpty()) {
+        const auto last = threads.last().toObject();
+        loadMoreThreads(last.value("thread_id").toVariant().toLongLong(),
+            last.value("time").toVariant().toLongLong());
+    }
     else
         finishThreadList();
     _connecting = false;
@@ -666,13 +672,13 @@ void SessionService::requestMessages(qint64 threadId, qint64 lastMessageId)
         QJsonDocument(request).toJson(QJsonDocument::Compact));
 }
 
-// 会话列表翻页：服务端只认大于该值的 thread_id
-void SessionService::loadMoreThreads(qint64 lastThreadId)
+// 会话列表翻页：服务端按 (活跃时间, thread_id) 倒序，旧服务的 thread_id 游标仍兼容
+void SessionService::loadMoreThreads(qint64 lastThreadId, qint64 lastTime)
 {
     if (lastThreadId <= 0)
         return;
     QJsonObject request{{"fromuid", UserMgr::GetInstance()->GetUid()},
-                        {"thread_id", lastThreadId}};
+                        {"thread_id", lastThreadId}, {"last_time", lastTime}};
     emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_THREAD_REQ,
         QJsonDocument(request).toJson(QJsonDocument::Compact));
 }

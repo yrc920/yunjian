@@ -1,6 +1,13 @@
 # GateServer 配置模板：复制为 config.ini 后按本机修改
 [GateServer]
 Port = 8080
+# 口令哈希线程：Argon2id 单次约 40ms、占 64MiB，不能占用 HTTP IO 线程。
+# Threads 就是同时进行的哈希数，也是内存上界（默认 2 => 峰值约 128MiB）
+[Password]
+Threads = 2
+# 排队上限，满了直接回 1101 让客户端重试。队列只影响排队时间，
+# 内存由 Threads 决定，所以 9 点登录高峰可以放宽一些
+QueueLimit = 128
 [VerifyServer]
 Host = 127.0.0.1
 Port = 50051

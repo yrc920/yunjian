@@ -258,8 +258,7 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
     //接收方在本实例在线时立即推送；资源服务器已向状态服务查好目标实例。
     //群聊没有单一接收方：按成员列表广播，发送者自己已经看到消息，跳过
     if (ok) {
-        int thread_type = static_cast<int>(ThreadType::Private);
-        MysqlMgr::GetInstance()->GetThreadType(message.thread_id, thread_type);
+        const int thread_type = MysqlMgr::GetInstance()->GetThreadTypeCached(message.thread_id);
         if (thread_type == static_cast<int>(ThreadType::Group)) {
             std::vector<int> members;
             if (MysqlMgr::GetInstance()->GetGroupMemberIds(message.thread_id, members)) {

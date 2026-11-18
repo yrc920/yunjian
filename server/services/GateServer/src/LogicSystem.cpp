@@ -4,7 +4,11 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "StatusGrpcClient.h"
+#include "PasswordPool.h"
 #include <ctime>
+#include <cctype>
+#include <cstdlib>
+#include <functional>
 
 namespace {
 
@@ -16,6 +20,47 @@ std::string ClientIp(const std::shared_ptr<HttpConnection>& connection)
 	if (ec)
 		return {};
 	return endpoint.address().to_string();
+}
+
+//把"哈希 + 落库"放到口令线程池执行：Argon2id 单次 64 MiB，
+//在单线程 io_context 上做会把所有 HTTP 请求一起卡住。
+//work 在池线程算完得到回包，再回投到连接所属的 IO 线程写响应；
+//队列排满时立刻回可重试错误，不让请求等到超时
+void PostPasswordWork(const std::shared_ptr<HttpConnection>& connection,
+	std::function<Json::Value()> work)
+{
+	connection->DeferResponse();
+	const bool queued = PasswordPool::Instance().Post(
+		[connection, work = std::move(work)]() {
+			Json::Value response = work();
+			boost::asio::post(connection->GetSocket().get_executor(),
+				[connection, response]() {
+					connection->SendDeferred(response.toStyledString());
+				});
+		});
+	if (queued)
+		return;
+
+	Json::Value busy;
+	busy["error"] = ErrorCodes::ServiceUnavailable;
+	connection->SendDeferred(busy.toStyledString());
+}
+
+//登录限流键统一小写：MySQL 的邮箱比较不区分大小写，Redis 键区分，
+//不归一化的话换个大小写就能绕过同一账号的失败计数
+std::string ToLowerAscii(std::string text)
+{
+	for (char& ch : text)
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	return text;
+}
+
+long long ReadCounter(const std::string& key)
+{
+	std::string value;
+	if (!RedisMgr::GetInstance()->Get(key, value))
+		return 0;
+	return std::strtoll(value.c_str(), nullptr, 10);
 }
 
 } // namespace
@@ -170,31 +215,26 @@ LogicSystem::LogicSystem() {
             return true;
         }
 
-		//查找数据库判断用户是否存在
-		int uid = MysqlMgr::GetInstance()->RegUser(name, email, pwd);
-		//如果uid为0或者-1, 则说明用户已经存在, 返回错误信息
-		if (uid == 0 || uid == -1) {
-			std::cout << " user or email exist" << std::endl;
-			root["error"] = ErrorCodes::UserExist; //设置错误码为用户已经存在
-			//将JSON数据转换为字符串, 并写入响应内容中
-			std::string jsonstr = root.toStyledString();
-			beast::ostream(connection->_response.body()) << jsonstr;
-			return true;
-		}
+		//注册要写库并生成哈希，同样交给口令线程池
+		PostPasswordWork(connection, [name, email, pwd]() {
+			Json::Value result;
+			const int uid = MysqlMgr::GetInstance()->RegUser(name, email, pwd);
+			if (uid == 0 || uid == -1) {
+				std::cerr << " user or email exist" << std::endl;
+				result["error"] = ErrorCodes::UserExist;
+				return result;
+			}
 
-		//验证码一次性使用：注册成功后立即删除，避免同一码再用于改密
-		RedisMgr::GetInstance()->Del(CODEPREFIX + email);
+			//验证码一次性使用：注册成功后立即删除，避免同一码再用于改密
+			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
 
-		//如果用户不存在, 则将用户信息写入数据库, 返回注册成功的响应
-        root["error"] = 0;
-		root["uid"] = uid;
-		root["email"] = email;
-		root["user"] = name;
-		//响应中不再回传密码与验证码
-		//将JSON数据转换为字符串, 并写入响应内容中
-        std::string jsonstr = root.toStyledString();
-        beast::ostream(connection->_response.body()) << jsonstr;
-        return true;
+			result["error"] = 0;
+			result["uid"] = uid;
+			result["email"] = email;
+			result["user"] = name;
+			return result;
+		});
+		return true;
     });
 
 	//注册用户重置密码的POST请求的URL和对应的处理函数
@@ -247,43 +287,30 @@ LogicSystem::LogicSystem() {
             return true;
         }
 
-        //查询数据库判断用户名和邮箱是否匹配
-        bool email_valid = MysqlMgr::GetInstance()->CheckEmail(name, email);
-		//如果用户名和邮箱不匹配, 则返回错误信息
-        if (!email_valid) {
-            std::cout << " user email not match" << std::endl;
-			root["error"] = ErrorCodes::EmailNotMatch; //设置错误码为用户名和邮箱不匹配
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+        //改密要写新哈希，和注册一样交给口令线程池
+		PostPasswordWork(connection, [name, email, pwd]() {
+			Json::Value result;
+			if (!MysqlMgr::GetInstance()->CheckEmail(name, email)) {
+				std::cerr << " user email not match" << std::endl;
+				result["error"] = ErrorCodes::EmailNotMatch;
+				return result;
+			}
 
-        //更新密码为最新密码
-        bool b_up = MysqlMgr::GetInstance()->UpdatePwd(name, pwd);
-		//如果更新密码失败, 则返回错误信息
-        if (!b_up) {
-            std::cout << " update pwd failed" << std::endl;
-			root["error"] = ErrorCodes::PasswdUpFailed; //设置错误码为更新密码失败
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+			if (!MysqlMgr::GetInstance()->UpdatePwd(name, pwd)) {
+				std::cerr << " update pwd failed" << std::endl;
+				result["error"] = ErrorCodes::PasswdUpFailed;
+				return result;
+			}
 
-		//验证码一次性使用：改密成功后立即删除，避免同一码再次改密
-		RedisMgr::GetInstance()->Del(CODEPREFIX + email);
+			//验证码一次性使用：改密成功后立即删除，避免同一码再次改密
+			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
 
-		//如果更新密码成功, 则返回更新密码成功的响应
-        std::cout << "succeed to update password" << std::endl;
-        root["error"] = 0;
-        root["email"] = email;
-        root["user"] = name;
-		//响应中不再回传密码
-		//将JSON数据转换为字符串, 并写入响应内容中
-		std::string jsonstr = root.toStyledString();
-        beast::ostream(connection->_response.body()) << jsonstr;
-        return true;
+			result["error"] = 0;
+			result["email"] = email;
+			result["user"] = name;
+			return result;
+		});
+		return true;
         });
 
 	//注册用户登录的POST请求的URL和对应的处理函数
@@ -311,46 +338,68 @@ LogicSystem::LogicSystem() {
 		//如果解析成功, 则从src_root中提取email和passwd字段的值
         auto email = src_root["email"].asString();
         auto pwd = src_root["passwd"].asString();
-		UserInfo userInfo; //用于存储用户信息的结构体对象
 
-        //查询数据库判断邮箱和密码是否匹配
-        bool pwd_valid = MysqlMgr::GetInstance()->CheckPwd(email, pwd, userInfo);
-		//如果邮箱和密码不匹配, 则返回错误信息
-        if (!pwd_valid) {
-            std::cout << " user pwd not match" << std::endl;
-			root["error"] = ErrorCodes::PasswdInvalid; //设置错误码为邮箱和密码不匹配
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+		//登录失败限流：先查失败计数，超限时直接返回，不再做 256MB 的密码校验。
+		//只统计失败、成功清零，正常用户偶发输错不会被长期锁住
+		const std::string account = ToLowerAscii(email);
+		const long long bucket = std::time(nullptr) / LOGIN_FAIL_WINDOW_SECONDS;
+		const std::string account_key = LOGIN_FAIL_PREFIX + account + "_" + std::to_string(bucket);
+		const std::string ip = ClientIp(connection);
+		const std::string ip_key = ip.empty() ? std::string()
+			: LOGIN_FAIL_IP_PREFIX + ip + "_" + std::to_string(bucket);
+		const long long account_fails = ReadCounter(account_key);
+		const long long ip_fails = ip_key.empty() ? 0 : ReadCounter(ip_key);
+		if (account_fails >= LOGIN_ACCOUNT_FAIL_LIMIT || ip_fails >= LOGIN_IP_FAIL_LIMIT) {
+			root["error"] = ErrorCodes::TooManyRequests;
+			beast::ostream(connection->_response.body()) << root.toStyledString();
+			return true;
+		}
 
-        //查询StatusServer找到合适的连接
-        auto reply = StatusGrpcClient::GetInstance()->GetChatServer(userInfo.uid);
-		//如果查询StatusServer失败, 则返回错误信息
-        if (reply.error()) {
-            std::cout << " grpc get chat server failed, error is " << reply.error() << std::endl;
-			root["error"] = ErrorCodes::RPCFailed; //设置错误码为RPC调用失败
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+        //剩下的活都绕不开密码校验：交给口令线程池，IO 线程继续接别的连接
+		PostPasswordWork(connection,
+			[email, pwd, account_key, ip_key]() {
+				Json::Value result;
+				UserInfo user_info;
+				bool db_error = false;
+				const bool pwd_valid = MysqlMgr::GetInstance()->CheckPwd(
+					email, pwd, user_info, db_error);
+				if (!pwd_valid) {
+					//数据库不可用是服务端故障，不能当成密码错误，也不能累加失败次数
+					if (db_error) {
+						result["error"] = ErrorCodes::RPCFailed;
+						return result;
+					}
+					//失败计数带 60 秒 TTL，窗口结束后自动归零
+					RedisMgr::GetInstance()->IncrWithTtl(account_key, LOGIN_FAIL_WINDOW_SECONDS);
+					if (!ip_key.empty())
+						RedisMgr::GetInstance()->IncrWithTtl(ip_key, LOGIN_FAIL_WINDOW_SECONDS);
+					result["error"] = ErrorCodes::PasswdInvalid;
+					return result;
+				}
 
-		//如果查询StatusServer成功, 则返回登录成功的响应, 包含用户信息和StatusServer的连接信息
-        std::cout << "succeed to load userinfo uid is " << userInfo.uid << std::endl;
-        root["error"] = 0;
-        root["email"] = email;
-        root["uid"] = userInfo.uid;
-        root["token"] = reply.token();
-        root["host"] = reply.host();
-		root["port"] = reply.port();
-		root["res_host"] = reply.res_host();
-		root["res_port"] = reply.res_port();
-		//将JSON数据转换为字符串, 并写入响应内容中
-        std::string jsonstr = root.toStyledString();
-        beast::ostream(connection->_response.body()) << jsonstr;
-        return true;
+				//密码正确：清掉失败计数，避免历史失败影响后续登录
+				RedisMgr::GetInstance()->Del(account_key);
+				if (!ip_key.empty())
+					RedisMgr::GetInstance()->Del(ip_key);
+
+				const auto reply = StatusGrpcClient::GetInstance()->GetChatServer(user_info.uid);
+				if (reply.error()) {
+					std::cerr << "grpc get chat server failed, error is " << reply.error() << std::endl;
+					result["error"] = ErrorCodes::RPCFailed;
+					return result;
+				}
+
+				result["error"] = 0;
+				result["email"] = email;
+				result["uid"] = user_info.uid;
+				result["token"] = reply.token();
+				result["host"] = reply.host();
+				result["port"] = reply.port();
+				result["res_host"] = reply.res_host();
+				result["res_port"] = reply.res_port();
+				return result;
+			});
+		return true;
         });
 }
 

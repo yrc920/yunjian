@@ -4,6 +4,7 @@
 #include "IOContextPool.h"
 #include "LogicSystem.h"
 #include "RedisMgr.h"
+#include "StorageJanitor.h"
 #include <boost/asio.hpp>
 #include <csignal>
 #include <cstdlib>
@@ -24,6 +25,8 @@ int main()
 		auto pool = IOContextPool::GetInstance();
 		boost::asio::io_context io_context; //acceptor所在事件循环
 		auto server = std::make_shared<CServer>(io_context, static_cast<short>(port)); //开始监听
+		StorageJanitor janitor; //清理上传中断留下的 .part，独立线程不影响接入
+		janitor.Start();
 
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM); //Ctrl-C/系统终止
 		signals.async_wait([&io_context](auto, auto) {
@@ -34,6 +37,7 @@ int main()
 
 		//先停止接入与会话，再结束业务线程，最后回收网络线程和Redis连接
 		server->Stop();
+		janitor.Stop();
 		LogicSystem::GetInstance()->Stop();
 		FileSystem::GetInstance()->Stop();
 		pool->StopAfterDrain();

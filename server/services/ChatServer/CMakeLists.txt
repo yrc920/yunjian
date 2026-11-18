@@ -5,7 +5,7 @@
 #    config/<实例名>.ini  ->  build/bin/<实例名>/（可执行文件 + 依赖库 + config.ini）
 #  新增实例只需往 config/ 下再放一份 ini，无需改动本文件。
 #
-#  依赖: xigu_proto（共享 proto 库）+ gRPC/protobuf + Boost
+#  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
 #        + hiredis + jsoncpp + mysql-connector-cpp
 #  产物: 单配置为 bin/<实例名>/；多配置为 bin/<实例名>/<配置名>/
 # ============================================================
@@ -24,9 +24,6 @@ set(SERVER_SOURCES
     src/CSession.cpp           # 单个 TCP 会话的收发
     src/LogicSystem.cpp        # 业务分发：消息路由到处理函数
     src/MsgNode.cpp            # 消息协议编解码节点（包头+包体）
-    src/ConfigMgr.cpp          # 配置文件 config.ini 的读取与单例
-    src/IOContextPool.cpp      # boost::asio io_context 线程池
-    src/RedisMgr.cpp           # Redis 客户端封装（hiredis）
     src/MysqlMgr.cpp           # MySQL 连接池（X DevAPI）
     src/MysqlDao.cpp           # 数据访问层
     src/UserMgr.cpp            # 在线用户管理（uid -> session 映射）
@@ -44,16 +41,12 @@ set(SERVER_HEADERS
     include/LogicSystem.h
     include/RequestValidation.h
     include/MsgNode.h
-    include/ConfigMgr.h
-    include/IOContextPool.h
-    include/RedisMgr.h
     include/MysqlMgr.h
     include/MysqlDao.h
     include/UserMgr.h
     include/ChatGrpcClient.h
     include/StatusGrpcClient.h
     include/SessionRouter.h
-    include/Singleton.h
     include/const.h
     include/data.h
 )
@@ -92,7 +85,7 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---------- 链接库 ----------
-# xigu_proto:            共享 proto 生成代码（静态库）
+# xiguchat_proto:            共享 proto 生成代码（静态库）
 # gRPC::grpc++:          gRPC C++ 运行时
 # protobuf::libprotobuf: protobuf 运行时
 # Boost::filesystem:     路径处理
@@ -102,7 +95,8 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # unofficial::mysql-connector-cpp::connector: MySQL 连接器
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
-    xigu_proto
+    xiguchat_common
+    xiguchat_proto
     gRPC::grpc++
     protobuf::libprotobuf
     Boost::filesystem

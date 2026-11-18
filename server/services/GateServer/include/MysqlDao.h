@@ -22,8 +22,10 @@ public:
 	int RegUser(const std::string& name, const std::string& email, const std::string& pwd);
 	bool UpdatePwd(const std::string& name, const std::string& newpwd); //更新密码
 	bool CheckEmail(const std::string& name, const std::string& email); //检查用户名和邮箱是否匹配
-	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
-	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo);
+	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中。
+	//db_error 区分"数据库不可用"与"密码错误"，前者不能计入登录失败次数
+	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo,
+		bool& db_error);
 	~MysqlDao();
 
 private:
