@@ -2,7 +2,6 @@
 // 常量定义和工具类
 //
 
-#include <functional>
 #include <string>
 
 enum ErrorCodes {
@@ -33,20 +32,7 @@ enum ErrorCodes {
 	ResponseTooLarge = 1106, //响应超过单帧上限，已回错误包而不是断开连接
 };
 
-//Defer类(go语言风格的延迟执行)
-class Defer {
-public:
-	//接受一个lambda表达式或者函数指针
-	Defer(std::function<void()> func) : func_(func) {}
-
-	//析构时执行传入的函数
-	~Defer() {
-		func_();
-	}
-
-private:
-	std::function<void()> func_;
-};
+#include "Defer.h"
 
 #define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
 
@@ -65,7 +51,6 @@ constexpr int RECALL_WINDOW_SECONDS = 120;
 #define HEAD_ID_LEN 2 //头部id长度
 #define HEAD_DATA_LEN 2 //头部数据长度
 
-#define MAX_RECVQUE 10000 //最大接收队列长度
 #define MAX_SENDQUE 1000 //最大发送队列长度
 #define MAX_LOGICQUE 10000 //最大逻辑队列长度
 
@@ -165,6 +150,14 @@ constexpr int ROUTE_NEGATIVE_CACHE_SECONDS = 5;
 //5 秒窗口会让登录后的第一条消息错过实时投递；群广播仍用 5 秒，避免 200 人风暴
 constexpr int ROUTE_SINGLE_NEGATIVE_SECONDS = 1;
 constexpr int ROUTE_CACHE_MAX = 20000;
+
+//消息归档：默认保留一年，每小时检查一次（默认 24 小时执行一批），
+//每批 2000 条，避免一次删太多把表锁住
+constexpr int DEFAULT_ARCHIVE_RETENTION_DAYS = 365;
+constexpr int DEFAULT_ARCHIVE_INTERVAL_HOURS = 24;
+constexpr int DEFAULT_ARCHIVE_BATCH = 2000;
+//第一次归档前的等待时间（秒）
+constexpr int DEFAULT_ARCHIVE_FIRST_DELAY_SECONDS = 300;
 
 #define HEART_BEAT_INTERVAL 30 //定时器周期：心跳检测、租约续期与实例上报共用
 #define HEART_THRESHOLD 20 //心跳阈值

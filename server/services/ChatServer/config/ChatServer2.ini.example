@@ -19,10 +19,16 @@ AdvertiseRpcHost = 127.0.0.1
 Capacity = 1000
 Port = 8091
 RPCPort = 50056
+# TLS：两项都填才加密客户端连接，留空按明文 TCP；证书与网关共用同一份
+SslCert =
+SslKey =
+# 证书文件被替换后多久检查一次（秒），0 表示不检查
+SslReloadSeconds = 60
 
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+# 经典协议端口（Boost.MySQL）
+Port = 3306
 User = root
 Passwd = 123456
 Schema = xigu
@@ -39,3 +45,22 @@ Servers = chatserver1
 Name = chatserver1
 Host = 127.0.0.1
 Port = 50055
+
+# 消息归档：超过保留期的消息搬到 chat_message_archive 再从主表删除。
+# 两个实例都会跑，按 message_id 分批 + INSERT IGNORE，重复执行安全
+[Archive]
+Enabled = 1
+RetentionDays = 365
+IntervalHours = 24
+BatchSize = 2000
+# 启动后多久跑第一次（秒），避免批量重启时同时开搬
+FirstDelaySeconds = 300
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+# Level 可选 trace/debug/info/warn/error/critical/off；排障时临时调 debug
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

@@ -1,7 +1,7 @@
 #ifndef FILETCPMGR_H
 #define FILETCPMGR_H
 
-#include <QTcpSocket>
+#include <QSslSocket>
 #include <QQueue>
 #include <QThread>
 #include <QMap>
@@ -46,7 +46,7 @@ private:
     void sendWindow(const QString &md5); //按拥塞窗口补发待确认分片
     void sendDownloadRequest(const QString &name, int seq = 0); //seq为0时使用记录里的当前片
 
-    QTcpSocket _socket; //必须与FileTcpMgr同线程，MoveToThread里单独迁移
+    QSslSocket _socket; //明文与 TLS 都走它，必须与FileTcpMgr同线程
     QString _host;
     quint16 _port = 0;
     QByteArray _buffer; //半包缓存

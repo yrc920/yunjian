@@ -2,7 +2,6 @@
 // 资源服务器常量、错误码与延迟执行工具
 //
 
-#include <functional>
 #include <cstdint>
 
 //连接池等待上限：数据库/缓存故障时快速失败，避免文件线程被永久挂住
@@ -35,27 +34,16 @@ enum ErrorCodes {
 	FileQuotaExceeded = 1021, //用户已用空间加上本次上传会超过配额
 };
 
-//go语言风格的延迟执行
-class Defer {
-public:
-	explicit Defer(std::function<void()> func) : func_(std::move(func)) {}
-	~Defer() {
-		func_();
-	}
-
-private:
-	std::function<void()> func_;
-};
+#include "Defer.h"
 
 #define HEAD_TOTAL_LEN 6 //2字节消息ID + 4字节包体长度
 #define HEAD_ID_LEN 2
 #define HEAD_DATA_LEN 4
 
 //每片原始文件字节数，客户端与服务器必须一致。
-//64KB 是按单帧上限反推的结果：Base64 后约 87KB，仍在 128KB 包体以内，
-//10MB 图片从 5120 次往返降到 160 次
+//分片以原始字节进帧（4 字节头长 + JSON 头 + 数据），10MB 图片 160 次往返
 #define MAX_FILE_LEN (64 * 1024)
-//单帧包体上限：64KB 原始数据的 Base64 + JSON 包装约 88KB，留出余量
+//单帧包体上限：64KB 数据 + 几百字节 JSON 头，留出一倍余量
 #define MAX_MESSAGE_LEN (128 * 1024)
 //单个文件上限，与客户端断点续传的4GB约束一致
 #define MAX_FILE_SIZE (4LL * 1024 * 1024 * 1024)

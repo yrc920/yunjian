@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <iostream>
 #include <set>
+#include "Log.h"
 
 namespace {
 
@@ -62,7 +63,7 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context,
 
 	InstanceInfo instance;
 	if (!InstanceRegistry::Inst().Pick(instance)) {
-		std::cout << "[session] route failed uid=" << request->uid() << " no_instance" << std::endl;
+		LOG_WARN << "[session] route failed uid=" << request->uid() << " no_instance";
 		reply->set_error(ErrorCodes::ServiceUnavailable);
 		return Status::OK;
 	}
@@ -132,8 +133,8 @@ Status StatusServiceImpl::AllocateSession(ServerContext* context,
 		}
 	}
 
-	std::cout << "[session] alloc uid=" << uid << " epoch=" << epoch
-		<< " inst=" << request->instance() << " kicked=" << kicked_instance << std::endl;
+	LOG_INFO << "[session] alloc uid=" << uid << " epoch=" << epoch
+		<< " inst=" << request->instance() << " kicked=" << kicked_instance;
 	return Status::OK;
 }
 
@@ -203,8 +204,8 @@ Status StatusServiceImpl::LogoutSession(ServerContext* context,
 		return Status::OK;
 	}
 
-	std::cout << "[session] logout uid=" << request->uid()
-		<< " revoked=" << revoked << std::endl;
+	LOG_INFO << "[session] logout uid=" << request->uid()
+		<< " revoked=" << revoked;
 	reply->set_revoked(revoked);
 	reply->set_error(ErrorCodes::Success);
 	return Status::OK;

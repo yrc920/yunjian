@@ -10,6 +10,7 @@
 #include <memory>
 #include "const.h"
 #include "MsgNode.h"
+#include "TlsSocket.h"
 
 namespace net = boost::asio;
 using tcp = boost::asio::ip::tcp;
@@ -18,7 +19,8 @@ class CServer;
 class CSession : public std::enable_shared_from_this<CSession>
 {
 public:
-	CSession(boost::asio::io_context& io_context, CServer* server); //绑定IO线程并生成会话ID
+	//tls 为空时按明文 TCP 服务；非空则连接先完成 TLS 握手再读第一帧
+	CSession(boost::asio::io_context& io_context, CServer* server, std::shared_ptr<TlsContext> tls);
 	~CSession();
 
 	tcp::socket& GetSocket(); //返回socket引用，供acceptor绑定
@@ -47,7 +49,7 @@ private:
 	//异步写完成：继续队首或清理失败队列
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
 
-	tcp::socket _socket; //与CSession同属一个IO线程
+	TlsSocket _socket; //明文或 TLS 的统一封装，与CSession同属一个IO线程
 	std::string _session_id; //逻辑线程按它做哈希分派
 	std::atomic<int> _user_uid{0}; //0表示尚未通过token校验，非0后不再允许换人
 	char _data[MAX_MESSAGE_LEN]; //一次只处理一帧，头部和包体都复用这块缓冲

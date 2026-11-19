@@ -12,7 +12,8 @@
 class CServer : public std::enable_shared_from_this<CServer>
 {
 public:
-	CServer(boost::asio::io_context& io_context, short port); //绑定端口并挂第一个accept
+	//tls 为空时客户端连接为明文 TCP；非空则每条连接先握手
+	CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<TlsContext> tls);
 	~CServer();
 
 	void ClearSession(std::string session_id); //断连时从会话表移除
@@ -28,4 +29,5 @@ private:
 	std::map<std::string, std::shared_ptr<CSession>> _sessions; //会话ID -> 会话
 	std::mutex _mutex; //读写会话表都从这里过
 	std::atomic<bool> _stopped{false}; //停服后不再挂新的accept
+	std::shared_ptr<TlsContext> _tls; //空 = 明文接入
 };

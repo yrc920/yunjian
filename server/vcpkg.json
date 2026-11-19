@@ -4,17 +4,29 @@
   "description": "XiguChat backend microservices (CMake build)",
   "builtin-baseline": "b8b8df2201ad8509b81a830fe0957bcb98e06c27",
   "dependencies": [
-    { "name": "grpc", "features": [ "codegen" ] },
-    "protobuf",
     "boost-asio",
     "boost-beast",
     "boost-filesystem",
+    "boost-mysql",
     "boost-property-tree",
     "boost-uuid",
+    {
+      "name": "grpc",
+      "features": [
+        "codegen"
+      ]
+    },
     "hiredis",
     "jsoncpp",
     "libsodium",
-    "mysql-connector-cpp",
-    { "name": "poco", "features": [ "net", "netssl" ] }
+    {
+      "name": "poco",
+      "features": [
+        "net",
+        "netssl"
+      ]
+    },
+    "protobuf",
+    "spdlog"
   ]
 }

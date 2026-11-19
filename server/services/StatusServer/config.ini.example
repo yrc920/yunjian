@@ -8,7 +8,8 @@ Host = 127.0.0.1
 Port = 9090
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+# 经典协议端口（Boost.MySQL）
+Port = 3306
 User = root
 Passwd = 123456
 Schema = xigu
@@ -20,3 +21,12 @@ Passwd = 123456
 # 留空表示接受任意实例注册，仅用于本机调试
 [chatservers]
 Name = chatserver1,chatserver2
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+# Level 可选 trace/debug/info/warn/error/critical/off；排障时临时调 debug
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

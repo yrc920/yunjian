@@ -12,9 +12,10 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include "Log.h"
 
-CSession::CSession(boost::asio::io_context& io_context, CServer* server) :
-	_socket(io_context), _user_uid(0), _server(server), _b_close(false)
+CSession::CSession(boost::asio::io_context& io_context, CServer* server, std::shared_ptr<TlsContext> tls) :
+	_socket(io_context, std::move(tls)), _user_uid(0), _server(server), _b_close(false)
 {
 	boost::uuids::uuid a_uuid = boost::uuids::random_generator()(); //生成一个随机的UUID
 	_session_id = boost::uuids::to_string(a_uuid); //将UUID转换为字符串形式
@@ -26,7 +27,7 @@ CSession::~CSession() {
 }
 
 tcp::socket& CSession::GetSocket() {
-	return _socket; //返回socket对象的引用，以便服务器可以使用它进行通信
+	return _socket.LowestSocket(); //返回socket对象的引用，以便服务器可以使用它进行通信
 }
 
 std::string& CSession::GetSessionId() {
@@ -61,9 +62,8 @@ void CSession::Close() {
     //先标记关闭，让其他线程停止投递新消息，再把实际关闭动作交给socket所属的IO线程
     //每个io_context只有一个工作线程，关闭与异步收发的发起操作在同一线程执行，避免并发操作socket
     auto self = shared_from_this();
-    boost::asio::post(_socket.get_executor(), [self]() {
-        boost::system::error_code ec;
-        self->_socket.close(ec); //使用error_code接收错误，避免在异步回调中抛出异常
+    boost::asio::post(_socket.GetExecutor(), [self]() {
+        self->_socket.Close();
     });
 }
 
@@ -71,7 +71,7 @@ void CSession::CloseSoon(int delay_ms)
 {
     //定时器由回调持有，连接提前销毁也不会留下悬空对象
     auto self = shared_from_this();
-    auto timer = std::make_shared<boost::asio::steady_timer>(_socket.get_executor());
+    auto timer = std::make_shared<boost::asio::steady_timer>(_socket.GetExecutor());
     timer->expires_after(std::chrono::milliseconds(delay_ms));
     timer->async_wait([self, timer](const boost::system::error_code& ec) {
         if (!ec)
@@ -87,8 +87,22 @@ std::shared_ptr<CSession>CSession::SharedSelf() {
 void CSession::Start() {
     //accept在服务器线程完成，会话的读取由自己的IO线程启动；捕获self保证任务执行前会话不会被销毁
     auto self = shared_from_this();
-    boost::asio::post(_socket.get_executor(), [self]() {
-        if (!self->IsClosed()) self->AsyncReadHead(HEAD_TOTAL_LEN); //任务排队期间可能已经收到关闭请求
+    boost::asio::post(_socket.GetExecutor(), [self]() {
+        if (self->IsClosed()) return; //任务排队期间可能已经收到关闭请求
+        //TLS 连接先握手再读第一帧；明文连接这里会立即回调成功，后面只有一条路径
+        self->_socket.AsyncHandshake([self](const boost::system::error_code& ec) {
+            if (ec) {
+                //扫描器、证书不匹配或握手超时都会走到这里，属于常见噪声
+                if (ec != boost::asio::error::operation_aborted)
+                    LOG_DEBUG << "tls handshake failed: " << ec.message();
+                //握手失败还没开始读，读回调不会再来，这里直接把会话摘掉，别等心跳超时
+                self->Close();
+                self->DealExceptionSession();
+                return;
+            }
+            if (!self->IsClosed())
+                self->AsyncReadHead(HEAD_TOTAL_LEN);
+            });
     });
 }
 
@@ -99,8 +113,8 @@ void CSession::Send(std::string msg, std::uint16_t msgid)
     //长度字段是 2 字节；超过上限说明调用方拼了一个过大的响应。
     //此时回一个最小错误包让客户端结束等待，而不是关连接——关连接会连带影响该用户的其他会话。
     if (msg.size() > MAX_RESPONSE_LEN) {
-        std::cerr << "response too large, size=" << msg.size()
-            << " msgid=" << msgid << std::endl;
+        LOG_WARN << "response too large, size=" << msg.size()
+            << " msgid=" << msgid;
         static const std::string fallback =
             "{\"error\":" + std::to_string(static_cast<int>(ErrorCodes::ResponseTooLarge))
             + ",\"message\":\"response too large\"}";
@@ -117,7 +131,7 @@ void CSession::Send(std::string msg, std::uint16_t msgid)
     }
     auto self = shared_from_this();
     //消息内容移入回调，由回调持有到真正入队，调用方返回后不会留下失效的字符串引用
-    boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msgid]() mutable {
+    boost::asio::post(_socket.GetExecutor(), [self, msg = std::move(msg), msgid]() mutable {
         self->SendOnIO(std::move(msg), msgid);
     });
 }
@@ -140,7 +154,7 @@ void CSession::SendOnIO(std::string msg, std::uint16_t msgid)
     //已有写操作时只入队，后续由HandleWrite续写，避免同时对同一个socket发起多次async_write
     if (writing) return;
     auto& node = _send_que.front();
-    boost::asio::async_write(_socket, boost::asio::buffer(node->_data, node->_total_len),
+    _socket.AsyncWrite(boost::asio::buffer(node->_data, node->_total_len),
         std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
 }
 
@@ -150,7 +164,7 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 	try {
 		//如果发生错误，输出错误信息
 		if (error) {
-			std::cout << "handle write failed, error is " << error.what() << std::endl;
+			LOG_DEBUG << "handle write failed, error is " << error.what();
 			Close(); //关闭连接
             DealExceptionSession(); //处理异常连接
             //async_write完成前必须保留队首缓冲区，因此不能在Close中直接清空发送队列
@@ -168,13 +182,12 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 		if (!_send_que.empty() && !IsClosed()) {
 			auto& msgnode = _send_que.front(); //获取发送队列中的下一个消息节点
 			//异步发送消息数据，当发送完成后会调用HandleWrite函数进行处理
-			boost::asio::async_write(_socket,
-				boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			_socket.AsyncWrite(boost::asio::buffer(msgnode->_data, msgnode->_total_len),
 				std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
 		}
 	}
 	catch (std::exception& e) {
-		std::cerr << "Exception code : " << e.what() << std::endl;
+		LOG_ERROR << "Exception code : " << e.what();
 	}
 }
 
@@ -189,8 +202,8 @@ void CSession::AsyncReadBody(int total_len)
 				if (ec) {
 					//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
 					if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
-						std::cerr << "handle read failed: " << ec.message()
-							<< " (" << ec.value() << ")" << std::endl;
+						LOG_DEBUG << "handle read failed: " << ec.message()
+							<< " (" << ec.value() << ")";
 					Close(); //关闭连接
 					DealExceptionSession(); //处理异常连接
 					return;
@@ -199,8 +212,8 @@ void CSession::AsyncReadBody(int total_len)
 				//如果读取的字节数小于消息长度，说明数据不完整，关闭连接并清除会话
 				//封装的asyncReadFull函数会保证读取到指定长度的数据，除非发生错误，这里的判断其实是冗余的
 				if (bytes_transfered < static_cast<std::size_t>(total_len)) {
-					std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
-						<< total_len << "]" << std::endl;
+					LOG_DEBUG << "read length not match, read [" << bytes_transfered << "] , total ["
+						<< total_len << "]";
 					Close(); //关闭连接
                 DealExceptionSession(); //关闭并清理异常连接
 					return;
@@ -226,7 +239,7 @@ void CSession::AsyncReadBody(int total_len)
 				AsyncReadHead(HEAD_TOTAL_LEN); //继续监听头部接受事件
 			}
 			catch (std::exception& e) {
-				std::cout << "Exception code is " << e.what() << std::endl;
+				LOG_ERROR << "Exception code is " << e.what();
 			}
 		});
 }
@@ -241,9 +254,10 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			//如果发生错误，关闭连接并清除会话
 			if (ec) {
 				//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
-				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
-					std::cerr << "handle read failed: " << ec.message()
-						<< " (" << ec.value() << ")" << std::endl;
+				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset
+					&& ec != ssl::error::stream_truncated)
+					LOG_DEBUG << "handle read failed: " << ec.message()
+						<< " (" << ec.value() << ")";
 				Close(); //关闭连接
 				DealExceptionSession(); //处理异常连接
 				return;
@@ -252,8 +266,8 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			//如果读取的字节数小于头部长度，说明数据不完整，关闭连接并清除会话
 			//封装的asyncReadFull函数会保证读取到指定长度的数据，除非发生错误，这里的判断其实是冗余的
 			if (bytes_transfered < HEAD_TOTAL_LEN) {
-				std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
-					<< HEAD_TOTAL_LEN << "]" << std::endl;
+				LOG_DEBUG << "read length not match, read [" << bytes_transfered << "] , total ["
+					<< HEAD_TOTAL_LEN << "]";
 				Close(); //关闭连接
                 DealExceptionSession(); //关闭并清理异常连接
 				return;
@@ -275,7 +289,7 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
             //这里先限制消息ID的数值范围，具体ID是否注册了处理函数由LogicSystem判断
 			if (msg_id == 0 || msg_id > MAX_LENGTH) {
-				std::cout << "invalid msg_id is " << msg_id << std::endl;
+				LOG_WARN << "invalid msg_id is " << msg_id;
 				Close();
                 DealExceptionSession(); //关闭并清理异常连接
 				return;
@@ -290,7 +304,7 @@ void CSession::AsyncReadHead(int /*total_len*/)
             //用无符号数读取包长，避免高位为1时被当成负数而绕过上限检查
             //拒绝空包和超过接收缓冲区的消息体，检查通过后才分配RecvNode并启动读取
 			if (msg_len == 0 || msg_len > MAX_LENGTH) {
-				std::cout << "invalid data length is " << msg_len << std::endl;
+				LOG_WARN << "invalid data length is " << msg_len;
 				Close();
                 DealExceptionSession(); //关闭并清理异常连接
 				return;
@@ -301,7 +315,7 @@ void CSession::AsyncReadHead(int /*total_len*/)
 			AsyncReadBody(msg_len); //继续异步读取消息体，准备接收数据
 		}
 		catch (std::exception& e) {
-			std::cout << "Exception code is " << e.what() << std::endl;
+			LOG_ERROR << "Exception code is " << e.what();
 		}
 	});
 }
@@ -371,15 +385,16 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 {
 	auto self = shared_from_this();
 	//异步读取数据到接收缓冲区中
-	_socket.async_read_some(boost::asio::buffer(_data + read_len, total_len - read_len),
+	_socket.AsyncReadSome(boost::asio::buffer(_data + read_len, total_len - read_len),
 		[read_len, total_len, handler, self](
 			const boost::system::error_code& ec, std::size_t  bytesTransfered) {
 			//如果发生错误
 			if (ec) {
 				//客户端正常断开（EOF / RST）不记日志：3000 人在线时每次重连都打一行会淹没有效信息
-				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset)
-					std::cerr << "handle read failed: " << ec.message()
-						<< " (" << ec.value() << ")" << std::endl;
+				if (ec != boost::asio::error::eof && ec != boost::asio::error::connection_reset
+					&& ec != ssl::error::stream_truncated)
+					LOG_DEBUG << "handle read failed: " << ec.message()
+						<< " (" << ec.value() << ")";
 				handler(ec, read_len + bytesTransfered); //调用回调函数，传入错误码和实际读取的长度
 				return;
 			}
@@ -398,7 +413,7 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 bool CSession::IsHeartbeatExpired(std::time_t& now) {
     double diff_sec = std::difftime(now, _last_heartbeat);
     if (diff_sec > HEART_THRESHOLD) {
-        std::cout << "heartbeat expired, session id is  " << _session_id << std::endl;
+        LOG_DEBUG << "heartbeat expired, session id is  " << _session_id;
         return true;
     }
     return false;

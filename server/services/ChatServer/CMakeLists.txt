@@ -6,7 +6,7 @@
 #  新增实例只需往 config/ 下再放一份 ini，无需改动本文件。
 #
 #  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
-#        + hiredis + jsoncpp + mysql-connector-cpp
+#        + hiredis + jsoncpp（MySQL 走 xiguchat_common 的 Boost.MySQL）
 #  产物: 单配置为 bin/<实例名>/；多配置为 bin/<实例名>/<配置名>/
 # ============================================================
 
@@ -23,9 +23,10 @@ set(SERVER_SOURCES
     src/CServer.cpp            # TCP 监听器（boost::asio acceptor）
     src/CSession.cpp           # 单个 TCP 会话的收发
     src/LogicSystem.cpp        # 业务分发：消息路由到处理函数
+    src/ArchiveJanitor.cpp     # 过期消息归档（独立线程，分批搬运）
     src/MsgNode.cpp            # 消息协议编解码节点（包头+包体）
-    src/MysqlMgr.cpp           # MySQL 连接池（X DevAPI）
     src/MysqlDao.cpp           # 数据访问层
+    src/UserCache.cpp          # 用户资料的缓存读取（Redis + MySQL 回填）
     src/UserMgr.cpp            # 在线用户管理（uid -> session 映射）
     src/ChatGrpcClient.cpp     # 调用对端聊天实例的 gRPC 客户端
     src/StatusGrpcClient.cpp   # 调用 StatusServer：租约、位置、实例注册
@@ -39,10 +40,11 @@ set(SERVER_HEADERS
     include/CServer.h
     include/CSession.h
     include/LogicSystem.h
+    include/ArchiveJanitor.h
     include/RequestValidation.h
     include/MsgNode.h
-    include/MysqlMgr.h
     include/MysqlDao.h
+    include/UserCache.h
     include/UserMgr.h
     include/ChatGrpcClient.h
     include/StatusGrpcClient.h
@@ -92,7 +94,6 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # Boost::headers:        仅头文件的 Boost 库（asio/beast 等）
 # hiredis::hiredis:      Redis 客户端
 # JsonCpp::JsonCpp:      JSON 库
-# unofficial::mysql-connector-cpp::connector: MySQL 连接器
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
     xiguchat_common
@@ -103,7 +104,6 @@ target_link_libraries(${SERVER_NAME} PRIVATE
     Boost::headers
     hiredis::hiredis
     JsonCpp::JsonCpp
-    unofficial::mysql-connector-cpp::connector
     Threads::Threads
 )
 if(WIN32)
@@ -139,7 +139,7 @@ endif()
 # 各平台依赖的落盘方式不同，但结论一致：
 #   · Windows（vcpkg 动态三元组）：依赖 DLL 必须与可执行文件同目录。
 #     vcpkg applocal 会在链接后递归解析，把直接依赖和间接依赖的 DLL
-#     （如 mysqlcppconnx 依赖的 OpenSSL libssl/libcrypto、zlib）
+#     （如 Boost.Charconv 与 OpenSSL libssl/libcrypto）
 #     一并拷入主实例目录。
 #   · macOS / Linux：默认 triplet 的多数依赖静态链接，个别端口可用
 #     动态库，构建产物通过 rpath 引用安装目录；复制实例目录不会自动

@@ -4,6 +4,7 @@
 #include <boost/filesystem.hpp>
 #include <json/json.h>
 #include <iostream>
+#include "Log.h"
 
 LogicSystem::LogicSystem()
 {
@@ -125,7 +126,7 @@ void LogicSystem::SaveFileInfo(const std::shared_ptr<FileInfo>& info)
 
 	if (!RedisMgr::GetInstance()->SetEx(FILE_INFO_PREFIX + info->_md5,
 		root.toStyledString(), FILE_INFO_EXPIRE)) { //一小时过期
-		std::cerr << "save file progress to redis failed, md5: " << info->_md5 << std::endl;
+		LOG_WARN << "save file progress to redis failed, md5: " << info->_md5;
 	}
 
 	AddFileInfo(info); //内存与Redis保持一致

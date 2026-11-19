@@ -6,6 +6,7 @@
 #include <ctime>
 #include <sstream>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -70,7 +71,7 @@ InstanceRegistry::InstanceRegistry()
 			_allowed.push_back(word);
 	}
 	if (_allowed.empty())
-		std::cout << "[instance] 白名单为空，将接受任意实例注册，请在 [chatservers] Name 中配置" << std::endl;
+		LOG_WARN << "[instance] 白名单为空，将接受任意实例注册，请在 [chatservers] Name 中配置";
 }
 
 InstanceRegistry& InstanceRegistry::Inst()
@@ -98,7 +99,7 @@ bool InstanceRegistry::Register(const std::string& name, const std::string& host
 	const std::string control_host = rpc_host.empty() ? host : rpc_host;
 
 	if (!Allowed(name)) {
-		std::cout << "[instance] register rejected name=" << name << " not in whitelist" << std::endl;
+		LOG_WARN << "[instance] register rejected name=" << name << " not in whitelist";
 		return false;
 	}
 
@@ -121,8 +122,8 @@ bool InstanceRegistry::Register(const std::string& name, const std::string& host
 		InstanceInfo info;
 		if (Get(name, info))
 			draining = info.draining;
-		std::cout << "[instance] registered name=" << name << " " << host << ":"
-			<< client_port << " rpc=" << rpc_port << std::endl;
+		LOG_INFO << "[instance] registered name=" << name << " " << host << ":"
+			<< client_port << " rpc=" << rpc_port;
 	}
 	return ok;
 }
@@ -134,7 +135,7 @@ bool InstanceRegistry::Unregister(const std::string& name)
 	//立即从集合与哈希中删除，新登录不再分配到正在退出的实例
 	RedisMgr::GetInstance()->SRem(INSTANCE_SET, name);
 	const bool removed = RedisMgr::GetInstance()->Del(InstanceKey(name));
-	std::cout << "[instance] unregistered name=" << name << std::endl;
+	LOG_INFO << "[instance] unregistered name=" << name;
 	return removed;
 }
 
@@ -171,7 +172,7 @@ bool InstanceRegistry::Drain(const std::string& name, int grace_seconds)
 		{ std::to_string(ttl * 1000) });
 	const bool ok = reply && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1;
 	freeReplyObject(reply);
-	std::cout << "[instance] drain name=" << name << " grace=" << ttl << "s" << std::endl;
+	LOG_INFO << "[instance] drain name=" << name << " grace=" << ttl << "s";
 	return ok;
 }
 

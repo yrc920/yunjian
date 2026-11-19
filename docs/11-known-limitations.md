@@ -9,8 +9,8 @@
 
 | # | 问题 | 影响 | 改进方向 |
 | --- | --- | --- | --- |
-| S1 | 密码在 HTTP 链路上仅经客户端 `xorString()` 做**可逆 XOR 变形**（按长度取模，只处理前 `len % 255` 个字符），网关未启用 TLS | 任何中间人可还原明文密码 | 网关启用 HTTPS（Beast 支持 `ssl_stream`）；客户端改为在 TLS 之上传输，或至少改用不可逆的服务端挑战-响应 |
-| S2 | 服务间 gRPC 全部使用 `InsecureChannelCredentials` | 内网可信前提下的设计，跨机房部署不适用 | 启用 TLS 或 mTLS |
+| S1 | HTTP 网关、聊天与资源三条客户端通道均已支持 TLS（`14-tls-deployment.md`），**未配置证书时仍是明文** | 默认配置直接公网部署等于裸奔；套接字层加密不改变"密码先做可逆 XOR"的设计 | 部署时强制配证书；后续可把 XOR 换掉，改成服务端挑战-响应 |
+| S2 | 服务间 gRPC 全部使用 `InsecureChannelCredentials` | 只走回环/容器内网，流量不出宿主机；跨机房部署不适用。加密的复杂度（配置、轮换要重启）大于当前收益，见 `14-tls-deployment.md` 14.11 | 拆到多机或过等保时再启用 TLS/mTLS |
 | S8 | 好友申请目标缺少存在性/外键校验；发消息已在 DAO 校验好友关系或会话成员 | 好友申请可指向不存在的 uid；消息发送已不能绕过好友关系 | 补目标存在性校验与 `friend_apply` 的外键/唯一约束 |
 
 ## 11.2 可靠性类
@@ -25,7 +25,7 @@
 | R6 | 实例探活依赖心跳 TTL | 实例崩溃后 90 秒内仍可能被分配到，新客户端会连接失败并重试 | 缩短 `inst_` TTL 到 45 秒，或由 StatusServer 主动探活 |
 | R7 | 断连释放是异步尽力通知 | 状态服务不可用时释放失败，租约要等 90 秒 TTL 过期；期间重新登录会直接覆盖，不影响用户 | 本地增加释放重试队列，恢复后补发 |
 | R8 | 用户资料缓存无 TTL，只靠写入方主动覆盖：头像上传（ResourceServer）与本人改资料（ChatServer）会刷新 `ubaseinfo_` / `nameinfo_`，其余路径（手工改库、其他服务写入）不会自动失效 | 非这两条路径改动的资料可能长期读到旧值 | 统一收敛为「写库后删键」，或给缓存加 TTL |
-| R9 | Redis/MySQL 连接池缺少完整的连接超时、失效剔除和重连策略 | 初始化无可用连接或运行中断网时，调用可能长时间阻塞；gRPC deadline 不能代替数据库超时 | 增加有界等待、健康检测与重连退避 |
+| R9 | MySQL 已换成 Boost.MySQL 经典协议：每次查询带 deadline（Asio 操作级取消）、会话级查询/锁超时、有界借出、坏连接剔除与健康熔断 | 数据库冻结时单条调用最多等一个 deadline（默认 5s），之后连接被丢弃重建；后续请求毫秒级失败 | 无。已验证取消后连接不复用、无泄漏 |
 | R10 | 同步好友/踢人 RPC 失败后缺少完整补偿 | 跨实例操作可能只完成一部分 | 检查每一步返回值，按 session 版本或消息 ID 做幂等补偿 |
 
 ## 11.3 性能类
@@ -44,7 +44,7 @@
 | --- | --- | --- | --- |
 | C1 | `GetBaseInfo` 逻辑在 **三处重复** | `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient`（ChatServer） | 收敛到 `UserMgr` 或独立的 `UserCache` 组件 |
 | C2 | `ErrorCodes` 枚举在 GateServer / StatusServer / ChatServer **各自复制一份**（1001–1009，ChatServer 多 1010/1011） | 三处 `include/const.h` | 抽到公共头，避免漏改导致语义漂移 |
-| C3 | `IOContextPool` / `ConfigMgr` / `RedisMgr` / `MysqlMgr` / `MysqlDao` / `Singleton` 在五个服务中**逐份复制** | `services/*/` | 抽取为公共静态库，各服务链接；代价是服务间的独立性下降，需权衡 |
+| C3 | ~~基础模块在各服务逐份复制~~：`ConfigMgr` / `RedisMgr` / `IOContextPool` / `Log` / MySQL 访问层已收敛到 `xiguchat_common`；`MysqlDao` 按服务保留（表集合不同，合并只会产出一个巨型类） | `services/*/MysqlDao.*` | 结构性冗余已消除；`MysqlDao` 的分服务保留是设计选择 |
 | C9 | `GetBaseInfo` 仍在 `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient` 三处重复 | ChatServer | 收敛到 `UserMgr` 或独立的 `UserCache` |
 | C10 | StatusServer 只有一个进程实例，进程级故障期间新登录不可用 | `services/StatusServer/` | 需要 HA 时按 uid 分片多活，或加主备与领导者租约；接口已预留 `device_class` 与批量查询 |
 | C8 | `LogicSystem` handler 返回值 `bool` 未被使用 | GateServer | 接口简化或真正使用返回值表达"是否成功" |
@@ -77,7 +77,8 @@
 
 按"风险 × 成本"排序，建议的推进顺序：
 
-1. **S1 / S2 / S8**（安全，成本中）：HTTP 上 TLS、服务间 TLS/mTLS、好友申请目标校验。
+1. **S2 / S8**（安全，成本中）：服务间 gRPC 的 TLS/mTLS、好友申请目标校验。
+   客户端三条通道的 TLS 已完成（`14-tls-deployment.md`），部署时配证书即可生效。
 2. **R2**（可靠性，成本中）：断线重连与 token 复用；必须识别 1021 的 reason，
    异地登录时停止自动重连，否则会和新会话互踢。
 3. **C1 / C2 / C9**（结构，成本低）：错误码与 `GetBaseInfo` 收敛，避免三处实现漂移。

@@ -5,7 +5,7 @@
 | 源码 | `server/services/StatusServer/` |
 | 产物 | `bin/StatusServer/` |
 | 监听 | gRPC `[StatusServer].Host:Port`，默认 `127.0.0.1:50052` |
-| 依赖 | gRPC / protobuf、Boost.Asio（信号）、Boost.Uuid、hiredis、mysql-connector-cpp |
+| 依赖 | gRPC / protobuf、Boost.Asio（信号）、Boost.Uuid、hiredis |
 | 角色 | 会话租约的唯一权威、实例注册与选路、在线位置查询、顶号通知 |
 
 StatusServer 不转发聊天消息。它只负责"谁在线、在哪台实例、哪个 epoch 说了算"，

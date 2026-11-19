@@ -1,5 +1,4 @@
 #include "DownloadWorker.h"
-#include "Base64.h"
 #include "const.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
@@ -10,7 +9,7 @@
 
 namespace {
 
-//下载结果放进Json：成功才带分片和偏移，失败只留错误码，响应字段由逻辑层补
+//下载结果：头部字段放 Json，分片原始字节单独传，由逻辑层拼成二进制帧
 void FinishDownload(const std::shared_ptr<DownloadTask>& task, int error,
 	const std::string& data = std::string(), long long current_size = 0,
 	long long total_size = 0, bool last = false)
@@ -18,13 +17,12 @@ void FinishDownload(const std::shared_ptr<DownloadTask>& task, int error,
 	Json::Value result;
 	result["error"] = error;
 	if (error == ErrorCodes::Success) {
-		result["data"] = data; //Base64分片
 		result["current_size"] = Json::Int64(current_size); //本片结束偏移
 		result["total_size"] = Json::Int64(total_size); //文件总大小
 		result["is_last"] = last; //本片是否已经读到文件尾
 	}
 	if (task->_callback)
-		task->_callback(result);
+		task->_callback(result, data);
 }
 
 }
@@ -91,7 +89,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 		return;
 	}
 
-	//最后一片可能不足2048字节，读取长度取剩余字节数
+	//最后一片可能不足 64KB，读取长度取剩余字节数
 	const long long remain = total_size - offset;
 	const std::size_t read_len = static_cast<std::size_t>(
 		std::min<long long>(MAX_FILE_LEN, remain));
@@ -111,6 +109,6 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	}
 
 	const bool last = offset + static_cast<long long>(read_len) >= total_size; //是否读到文件尾
-	FinishDownload(task, ErrorCodes::Success, base64::Encode(data),
-		offset + static_cast<long long>(read_len), total_size, last); //数据与偏移一起回给逻辑线程
+	FinishDownload(task, ErrorCodes::Success, data,
+		offset + static_cast<long long>(read_len), total_size, last); //原始字节与偏移一起回给逻辑线程
 }

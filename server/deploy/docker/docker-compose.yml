@@ -1,6 +1,7 @@
 # XiguChat 后端容器编排。以下变量都取自同目录的 .env：
 #   PUBLIC_HOST  客户端实际访问的地址（必填）
 #   EMAIL_*      验证码邮件的发送账号
+#   GATE_PORT    GateServer 端口，启用 HTTPS 时改成 8443
 # 用法：
 #   docker compose up -d      启动
 #   docker compose logs -f    查看日志
@@ -10,18 +11,19 @@ services:
     image: xiguchat-server:amd64
     container_name: xiguchat
     ports:
-      - "8080:8080"   # GateServer HTTP 接口
+      # 同一端口既作 HTTP 也作 HTTPS：是否加密取决于 ./certs 里有没有证书
+      - "${GATE_PORT:-8080}:${GATE_PORT:-8080}"
       - "8090:8090"   # chatserver1 TCP
       - "8091:8091"   # chatserver2 TCP
       - "9090:9090"   # ResourceServer 头像/文件传输
       # 数据库只绑回环地址，公网访问不到。异地连接走 SSH 隧道：
       #   ssh -N -L 3306:127.0.0.1:3306 ubuntu@<服务器IP>
       # 之后本机连 127.0.0.1:3306 即等同连到容器内的 MySQL
-      - "127.0.0.1:3306:3306"     # MySQL 传统协议（图形客户端走这个）
-      - "127.0.0.1:33060:33060"   # MySQL X 协议（项目自身使用）
+      - "127.0.0.1:3306:3306"     # MySQL 经典协议（服务与图形客户端都走这个）
       - "127.0.0.1:6380:6380"     # Redis
     environment:
       PUBLIC_HOST: "${PUBLIC_HOST:-127.0.0.1}"
+      GATE_PORT: "${GATE_PORT:-8080}"
       EMAIL_HOST: "${EMAIL_HOST:-smtp.qq.com}"
       EMAIL_PORT: "${EMAIL_PORT:-465}"
       EMAIL_USER: "${EMAIL_USER:-}"
@@ -31,6 +33,8 @@ services:
       - mysql-data:/var/lib/mysql
       - workspace:/workspace
       - resource-data:/var/lib/xiguchat/storage
+      # 证书目录：放 fullchain.pem 与 privkey.pem，网关自动切到 HTTPS
+      - ./certs:/etc/xiguchat/certs:ro
     restart: unless-stopped
 
 volumes:

@@ -1,6 +1,7 @@
 #include "tcpmgr.h"
 #include <QAbstractSocket>
 #include <QDebug>
+#include <QSslError>
 #include <QJsonDocument>
 #include <limits>
 #include "usermgr.h"
@@ -15,12 +16,26 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
 {
     registerMetaType();
 
-    //处理连接成功, 相当于异步等待连接成功的事件
-    QObject::connect(&_socket, &QTcpSocket::connected, this, [this]() {
+    //传输层就绪：明文是 connected，TLS 要等握手完成（encrypted）才算真的连上
+    auto on_transport_ready = [this]() {
         qDebug() << "Connected to server!";
         _manual_close = false;
         emit sig_con_success(true); //连接成功后发出信号通知界面更新状态
+    };
+    QObject::connect(&_socket, &QTcpSocket::connected, this, [this, on_transport_ready]() {
+        if (tcp_tls_enabled)
+            return; //握手在 connected 之后，交给 encrypted 通知
+        on_transport_ready();
     });
+    QObject::connect(&_socket, &QSslSocket::encrypted, this, on_transport_ready);
+    //证书不受信、域名不匹配都会走到这里；QSslSocket 默认在信号之后断开连接
+    QObject::connect(&_socket, &QSslSocket::sslErrors, this,
+        [this](const QList<QSslError> &errors) {
+            const QString reason = errors.isEmpty() ? QStringLiteral("TLS handshake failed")
+                                                    : errors.first().errorString();
+            qWarning() << "[tcp] tls error:" << reason;
+            emit sig_con_failed(reason);
+        });
 
     //连接层面的失败（地址不可达、端口拒绝、超时）此前没有任何出口，
     //界面只能干等；这里把它接出来，让调用方能立即给出提示
@@ -701,7 +716,10 @@ void TcpMgr::slot_tcp_connect(ServerInfo info)
     _host = info.Host; //服务器地址
     _port = static_cast<uint16_t>(info.Port.toUInt()); //服务器端口
     CloseConnection();
-    _socket.connectToHost(_host, _port); //连接到服务器(异步)
+    if (tcp_tls_enabled)
+        _socket.connectToHostEncrypted(_host, _port); //加密连接：握手完成后才发 encrypted
+    else
+        _socket.connectToHost(_host, _port); //连接到服务器(异步)
 }
 
 void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)

@@ -38,7 +38,33 @@ CREATE TABLE `chat_message` (
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),
   KEY `idx_chat_message_thread` (`thread_id`,`message_id`),
   CONSTRAINT `fk_message_conversation` FOREIGN KEY (`thread_id`) REFERENCES `conversation` (`thread_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=283 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=315 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `chat_message_archive`
+--
+
+DROP TABLE IF EXISTS `chat_message_archive`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `chat_message_archive` (
+  `message_id` bigint unsigned NOT NULL,
+  `thread_id` bigint unsigned NOT NULL,
+  `sender_id` int NOT NULL,
+  `recv_id` int NOT NULL DEFAULT '0',
+  `client_msg_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `msg_type` tinyint unsigned NOT NULL DEFAULT '0',
+  `state` tinyint unsigned NOT NULL DEFAULT '0',
+  `upload_state` tinyint unsigned NOT NULL DEFAULT '1',
+  `mentions` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `archived_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`message_id`),
+  KEY `idx_archive_thread` (`thread_id`,`message_id`),
+  KEY `idx_archive_time` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -54,6 +80,8 @@ CREATE TABLE `conversation` (
   `dm_key` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `owner_id` int NOT NULL DEFAULT '0',
+  `state` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '0 æ­£å¸¸ 1 å·²è§£æ•£',
+  `dissolved_at` datetime DEFAULT NULL,
   `notice` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `last_message_id` bigint unsigned NOT NULL DEFAULT '0',
   `last_message_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -61,7 +89,7 @@ CREATE TABLE `conversation` (
   PRIMARY KEY (`thread_id`),
   UNIQUE KEY `uk_conversation_dm` (`dm_key`),
   KEY `idx_conversation_last` (`last_message_at`,`thread_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -142,7 +170,7 @@ CREATE TABLE `user` (
   PRIMARY KEY (`uid`),
   UNIQUE KEY `uk_user_name` (`name`),
   UNIQUE KEY `uk_user_email` (`email`)
-) ENGINE=InnoDB AUTO_INCREMENT=1010 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=1014 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -154,7 +182,7 @@ CREATE TABLE `user` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-11-18 12:23:38
+-- Dump completed on 2026-11-19  6:49:27
 -- MySQL dump 10.13  Distrib 9.7.4, for Linux (aarch64)
 --
 -- Host: localhost    Database: xigu
@@ -178,7 +206,7 @@ CREATE TABLE `user` (
 
 LOCK TABLES `user` WRITE;
 /*!40000 ALTER TABLE `user` DISABLE KEYS */;
-INSERT INTO `user` VALUES (1001,'西故','3099154616@qq.com','$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8','xigu','',0,''),(1002,'霄宫','xigu920@163.com','$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870','烟花','',1,''),(1003,'test1','123@123.com','$argon2id$v=19$m=65536,t=2,p=1$tXdYqduAQZKxtsyo3ac+rQ$voCSwFb/G2QfrcmexfKS8KLxyTaDS3TWC3bmVmzy6WU','','',0,''),(1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$i/YGk9wHcPEZqaMz6tPvnw$wS9HqxYhRExuUD+8sOPsVM3okGX1WKic5aJS3HhefJQ','','',0,''),(1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');
+INSERT INTO `user` VALUES (1001,'西故','3099154616@qq.com','$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8','xigu','',0,''),(1002,'霄宫','xigu920@163.com','$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870','烟花','',1,''),(1003,'test1','123@123.com','$argon2id$v=19$m=65536,t=2,p=1$tXdYqduAQZKxtsyo3ac+rQ$voCSwFb/G2QfrcmexfKS8KLxyTaDS3TWC3bmVmzy6WU','','',0,''),(1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$gNlpRDd7H5TFIwsvI/uZVQ$sh+mt+qXh0xQ0fA5Ij1E75KRnWrUVl4MMlFihDbccUs','','',0,''),(1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');
 /*!40000 ALTER TABLE `user` ENABLE KEYS */;
 UNLOCK TABLES;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
@@ -191,4 +219,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-11-18 12:23:38
+-- Dump completed on 2026-11-19  6:49:28

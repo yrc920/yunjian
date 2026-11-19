@@ -2,7 +2,7 @@
 #  XiguChat Server — 后端微服务（CMake 构建）
 #
 #  技术栈: C++20 + gRPC + protobuf + boost::asio/beast + hiredis
-#          + jsoncpp + MySQL X DevAPI (mysql-connector-cpp)
+#          + jsoncpp + Boost.MySQL
 #          + libsodium + Poco Net/NetSSL
 #  依赖:   vcpkg manifest（server/vcpkg.json），由 vcpkg
 #          toolchain 自动安装，版本由 vcpkg baseline 锁定
@@ -53,8 +53,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # hiredis：Redis 客户端
 # jsoncpp：JSON 序列化
 # unofficial-sodium：libsodium，口令哈希（Argon2id，仅 GateServer 使用）
-# unofficial-mysql-connector-cpp：MySQL X DevAPI 连接器（除 VerifyServer 外均使用）
 # Poco Net/NetSSL：SMTP 客户端（验证码邮件，465 端口 SSL 直连）
+# spdlog：日志（异步 + 轮转）
 # Threads：跨平台线程库（std::thread 依赖）
 find_package(gRPC CONFIG REQUIRED)
 find_package(protobuf CONFIG REQUIRED)
@@ -62,13 +62,10 @@ find_package(Boost CONFIG REQUIRED COMPONENTS filesystem)
 find_package(hiredis CONFIG REQUIRED)
 find_package(jsoncpp CONFIG REQUIRED)
 find_package(unofficial-sodium CONFIG REQUIRED)
-find_package(unofficial-mysql-connector-cpp CONFIG REQUIRED)
 find_package(Poco CONFIG REQUIRED COMPONENTS Net NetSSL)
 find_package(Threads REQUIRED)
-# mysql-connector-cpp 的 X DevAPI 压缩功能依赖 zstd 与 lz4，
-# 但 vcpkg 的 unofficial 配置不会自动传递该依赖，需显式查找
-find_package(zstd CONFIG REQUIRED)
-find_package(lz4 CONFIG REQUIRED)
+# spdlog：统一日志（异步入队 + 轮转文件），由 common 静态库向上传递
+find_package(spdlog CONFIG REQUIRED)
 
 # ---------- 公共编译选项 ----------
 # 源码统一 UTF-8（无 BOM），构建期显式固定输入与执行字符集，
@@ -109,17 +106,3 @@ add_subdirectory(services/ChatServer)
 add_subdirectory(services/VerifyServer)
 add_subdirectory(services/ResourceServer)
 
-# ---------- 统一补链接 ----------
-# 除 VerifyServer 外的服务都链接 mysql-connector-cpp（X DevAPI），
-# vcpkg 的 unofficial 配置不会传递它的部分间接依赖，需在此显式补上：
-#   zstd/lz4 —— X DevAPI 压缩功能用到，三平台都缺
-#   resolv   —— X DevAPI 做域名 SRV 解析时用到 ns_initparse/ns_parserr，
-#               Linux 的当前连接器构建需要显式链接 libresolv；
-#               macOS SDK 也提供 libresolv，但当前构建无需此补链；
-#               Windows 的解析依赖由连接器的平台配置提供。
-foreach(server IN ITEMS GateServer StatusServer ChatServer ResourceServer)
-    target_link_libraries(${server} PRIVATE zstd::libzstd LZ4::lz4)
-    if(UNIX AND NOT APPLE)
-        target_link_libraries(${server} PRIVATE resolv)
-    endif()
-endforeach()

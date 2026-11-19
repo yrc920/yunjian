@@ -50,7 +50,7 @@ Windows（MSVC）无需安装——该端口在 MSVC 下使用自带的 VS 工�
     { "name": "grpc", "features": [ "codegen" ] },
     "protobuf", "boost-asio", "boost-beast", "boost-filesystem",
     "boost-property-tree", "boost-uuid", "hiredis", "jsoncpp",
-    "libsodium", "mysql-connector-cpp",
+    "libsodium", "boost-mysql",
     { "name": "poco", "features": [ "net", "netssl" ] }
   ]
 }
@@ -128,14 +128,13 @@ flowchart LR
 | `hiredis::hiredis` | Redis 客户端 |
 | `JsonCpp::JsonCpp` | JSON 序列化 |
 | `unofficial-sodium::sodium` | Argon2id 口令哈希（仅 GateServer） |
-| `unofficial::mysql-connector-cpp::connector` | MySQL X DevAPI（GateServer / StatusServer / ChatServer / ResourceServer） |
+| `Boost::mysql` | MySQL 客户端（经典协议），由 `xiguchat_common` PUBLIC 传递；连带 `boost-charconv` |
 | `Poco::NetSSL` / `Poco::Net` | SMTP over SSL（仅 VerifyServer） |
 | `Threads::Threads` | 线程支持 |
 | `ws2_32` | Windows Winsock（仅 WIN32） |
 
-顶层 `CMakeLists.txt` 末尾对 GateServer / StatusServer / ChatServer / ResourceServer 统一补链接
-`zstd::libzstd` 与 `LZ4::lz4`：mysql-connector-cpp 的 X DevAPI 压缩功能引用这两个库的符号，
-而 vcpkg 的 `unofficial` 配置不会自动传递该依赖，需显式补齐（顺序必须在 mysql 之后）。
+`Boost::mysql` 是头文件库，运行时只需要 `boost-charconv`（数字解析）与 OpenSSL；
+两者都由 vcpkg 的 `boost-mysql` 端口声明，CMake 侧无需再手工补链接。
 
 ## 2.4 ChatServer 多实例机制
 
@@ -329,7 +328,7 @@ cd build/macos-clang/bin
 | Windows 报 MinGW 相关错误 | `QT_MINGW_ROOT` 必须是 Qt 6.5 自带的 `mingw1120_64` |
 | vcpkg 大量包重新编译 | Xcode 等编译器/工具链升级可能改变 vcpkg ABI 哈希。新工具链通常需要重新编译；只有 CLT 版本和原构建条件一致时，指定 `DEVELOPER_DIR` 才可能复用缓存 |
 | `protoc` / `grpc_cpp_plugin` 找不到 | 确认 vcpkg triplet 下 `tools/protobuf` 与 `tools/grpc` 已安装（manifest 中 grpc 需带 `codegen` feature） |
-| 链接报 zstd / lz4 符号未定义 | 顶层 CMakeLists 的补链接仅覆盖 Gate/Status/Chat；新增服务需自行补上 |
+| 链接报 `boost_charconv` 符号未定义 | `boost-mysql` 依赖 `boost-charconv` 的编译库，确认 manifest 里 `boost-mysql` 已安装；新增服务只需链接 `xiguchat_common` |
 | 新增 ChatServer ini 后未生成目录 | `CONFIGURE_DEPENDS` 需重新 configure；若未自动触发，手动重跑 `cmake --preset ...` |
 
 ### protobuf 配置警告

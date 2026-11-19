@@ -1,6 +1,7 @@
 #include "LogicSystem.h"
+#include "UserCache.h"
 #include "StatusGrpcClient.h"
-#include "MysqlMgr.h"
+#include "MysqlDao.h"
 #include "const.h"
 #include "RedisMgr.h"
 #include "UserMgr.h"
@@ -13,6 +14,7 @@
 #include <cstdint>
 #include <ctime>
 #include <map>
+#include "Log.h"
 
 namespace {
 //加好友双方各自的第一句: 申请方留言为空时用默认值, 同意方固定发通过语。
@@ -67,6 +69,22 @@ LogicSystem::~LogicSystem()
     Stop();
 }
 
+std::pair<std::size_t, std::size_t> LogicSystem::QueueDepth()
+{
+	std::size_t logic_queued = 0;
+	for (std::size_t shard = 0; shard < kLogicShards; ++shard) {
+		std::lock_guard<std::mutex> lock(_mutexes[shard]);
+		logic_queued += _msg_ques[shard].size();
+	}
+
+	std::size_t delivery_queued = 0;
+	{
+		std::lock_guard<std::mutex> lock(_delivery_mutex);
+		delivery_queued = _delivery_queue.size();
+	}
+	return { logic_queued, delivery_queued };
+}
+
 void LogicSystem::Stop()
 {
     //停服标志是原子的：各分片在各自锁内检查，不会错过 notify
@@ -100,7 +118,7 @@ void LogicSystem::PostDeliveryTask(std::function<void()> task)
 			return; //停服后不再排队
 		if (_delivery_queue.size() >= kDeliveryQueueMax) {
 			//对端长时间不可达时只丢实时投递，消息仍在库里，登录同步会补回
-			std::cerr << "[delivery] queue full, drop one task" << std::endl;
+			LOG_WARN << "[delivery] queue full, drop one task";
 			return;
 		}
 		_delivery_queue.push_back(std::move(task));
@@ -126,7 +144,7 @@ void LogicSystem::DeliveryLoop()
 			task(); //单条投递失败只记日志，不影响后续任务
 		}
 		catch (const std::exception& error) {
-			std::cerr << "[delivery] task failed: " << error.what() << std::endl;
+			LOG_ERROR << "[delivery] task failed: " << error.what();
 		}
 	}
 }
@@ -147,7 +165,7 @@ void LogicSystem::PostMsgToQue(std::shared_ptr<LogicNode> msg)
 		const auto id = msg->_recvnode->_msg_id;
 		auto session = msg->_session;
 		unique_lk.unlock(); //回包不占队列锁
-		std::cerr << "[logic] queue full, reject msg id=" << id << " shard=" << shard << std::endl;
+		LOG_WARN << "[logic] queue full, reject msg id=" << id << " shard=" << shard;
 		Json::Value response;
 		response["error"] = ErrorCodes::ServiceUnavailable;
 		session->Send(response.toStyledString(), static_cast<std::uint16_t>(id + 1));
@@ -218,7 +236,7 @@ void LogicSystem::DealMsg(std::size_t shard) {
             handler->second(session, id, data);
         } catch (const std::exception& error) {
             //异常在单条消息的边界处理，关闭对应连接后继续消费其他消息，避免异常逃出线程导致进程终止
-            std::cerr << "Chat request failed: " << error.what() << std::endl;
+            LOG_ERROR << "Chat request failed: " << error.what();
             session->Close();
             session->DealExceptionSession();
         }
@@ -328,7 +346,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 
 	std::string base_key = USER_BASE_INFO + uid_str; //构建用户基本信息在Redis中的键名
 	auto user_info = std::make_shared<UserInfo>(); //初始化用户信息对象
-	bool b_base = GetBaseInfo(base_key, uid, user_info); //获取用户基本信息
+	bool b_base = usercache::GetBaseInfo(base_key, uid, user_info); //获取用户基本信息
 	//如果获取用户基本信息失败，说明用户ID无效，返回uid无效错误码
 	if (!b_base) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -349,7 +367,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	//客户端拿到 thread_more 后按游标继续拉
 	std::vector<ChatThreadInfo> chat_threads;
 	bool thread_more = false;
-	if (MysqlMgr::GetInstance()->GetChatThreads(uid, 0, 50, chat_threads, thread_more)) {
+	if (MysqlDao::GetInstance()->GetChatThreads(uid, 0, 50, chat_threads, thread_more)) {
 		Json::Value thread_array(Json::arrayValue);
 		for (const auto& thread : chat_threads)
 			thread_array.append(BuildThreadItem(thread));
@@ -379,7 +397,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 
 	//我发出去的申请同样下发, 客户端在「新的朋友」里显示等待验证
 	std::vector<std::shared_ptr<ApplyInfo>> sent_apply_list;
-	if (MysqlMgr::GetInstance()->GetSentApplyList(uid, sent_apply_list, 0, 10)) {
+	if (MysqlDao::GetInstance()->GetSentApplyList(uid, sent_apply_list, 0, 10)) {
 		for (auto& apply : sent_apply_list) {
 			Json::Value obj;
 			obj["name"] = apply->_name;
@@ -444,10 +462,12 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	//本实例的路由缓存可能刚存过一个"离线"结论，登录成功后立刻失效，
 	//否则同实例的发送方在缓存过期前仍会把消息当成离线处理
 	SessionRouter::Inst().Invalidate(uid);
+	spdlog::info("chat login uid={} sid={} epoch={} inst={}", uid,
+		session->GetSessionId(), lease.epoch(), ConfigMgr::Inst()["SelfServer"]["Name"]);
 
 	if (!lease.kicked_instance().empty()) {
-		std::cout << "[login] uid=" << uid << " epoch=" << lease.epoch()
-			<< " superseded inst=" << lease.kicked_instance() << std::endl;
+		LOG_INFO << "[login] uid=" << uid << " epoch=" << lease.epoch()
+			<< " superseded inst=" << lease.kicked_instance();
 	}
 	return;
 }
@@ -483,7 +503,7 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session,
 	if (rtvalue.get("error", ErrorCodes::Error_Json).asInt() == ErrorCodes::Success
 		&& target > 0 && me > 0) {
 		rtvalue["relation"] = target == me ? -1
-			: MysqlMgr::GetInstance()->GetFriendRelation(me, target);
+			: MysqlDao::GetInstance()->GetFriendRelation(me, target);
 	}
 	return;
 }
@@ -515,7 +535,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 		session->Send(return_str, ID_ADD_FRIEND_RSP);
 		});
 
-    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid, welcome, bakname, tags)) {
+    if (!MysqlDao::GetInstance()->AddFriendApply(uid, touid, welcome, bakname, tags)) {
         rtvalue["error"] = ErrorCodes::RPCFailed;
         return;
     }
@@ -531,7 +551,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 
 	std::string base_key = USER_BASE_INFO + std::to_string(uid);
 	auto apply_info = std::make_shared<UserInfo>(); //初始化申请人用户信息对象
-	bool b_info = GetBaseInfo(base_key, uid, apply_info); //获取申请人用户基本信息
+	bool b_info = usercache::GetBaseInfo(base_key, uid, apply_info); //获取申请人用户基本信息
 
 	//如果目标用户在当前服务器上
 	if (to_ip_value == self_name) {
@@ -588,7 +608,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	auto user_info = std::make_shared<UserInfo>();
 
 	std::string base_key = USER_BASE_INFO + std::to_string(touid);
-	bool b_info = GetBaseInfo(base_key, touid, user_info);
+	bool b_info = usercache::GetBaseInfo(base_key, touid, user_info);
 	if (b_info) {
 		rtvalue["name"] = user_info->name;
 		rtvalue["nick"] = user_info->nick;
@@ -618,7 +638,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
             my_tags.push_back(tag.asString());
     }
 	bool first_approve = false;
-	if (!MysqlMgr::GetInstance()->AddFriend(uid, touid, back_name, my_tags, apply_desc,
+	if (!MysqlDao::GetInstance()->AddFriend(uid, touid, back_name, my_tags, apply_desc,
         peer_back, peer_tags, first_approve)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
@@ -626,11 +646,11 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 	//同意方自己填的备注随回包返回，客户端不必等下一次登录才看到
 	rtvalue["back"] = back_name;
 	//好友关系已经提交, 会话和欢迎消息属于附加内容; 写失败只记日志, 不回滚也不让审批失败
-	long long thread_id = MysqlMgr::GetInstance()->GetOrCreatePrivateChat(uid, touid);
+	long long thread_id = MysqlDao::GetInstance()->GetOrCreatePrivateChat(uid, touid);
 	if (thread_id > 0)
 		rtvalue["thread_id"] = Json::Int64(thread_id);
 	else
-		std::cerr << "create private chat failed, friend relation kept: " << uid << " - " << touid << std::endl;
+		LOG_ERROR << "create private chat failed, friend relation kept: " << uid << " - " << touid;
 
 	//重复同意（例如连点两次）只回成功：关系与欢迎语都已经写过，再写会造出重复消息
 	if (!first_approve)
@@ -651,12 +671,12 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 		const std::string approver_id = "friend-welcome-" + std::to_string(uid) + "-"
 			+ std::to_string(touid) + "-" + stamp;
 		//先写申请方的留言，再写同意方的默认句，message_id 顺序就是聊天里的显示顺序
-		if (!MysqlMgr::GetInstance()->SaveChatMessages(touid, uid, thread_id,
+		if (!MysqlDao::GetInstance()->SaveChatMessages(touid, uid, thread_id,
 			{{applicant_id, applicant_welcome}}, applicant_msgs))
-			std::cerr << "save applicant welcome failed: " << applicant_id << std::endl;
-		if (!MysqlMgr::GetInstance()->SaveChatMessages(uid, touid, thread_id,
+			LOG_ERROR << "save applicant welcome failed: " << applicant_id;
+		if (!MysqlDao::GetInstance()->SaveChatMessages(uid, touid, thread_id,
 			{{approver_id, kDefaultApproveWelcome}}, approver_msgs))
-			std::cerr << "save approver welcome failed: " << approver_id << std::endl;
+			LOG_ERROR << "save approver welcome failed: " << approver_id;
 	}
 
 	//同一条欢迎消息对两个客户端的方向不同: 自己发的算已发送, 对方发的算未读
@@ -713,7 +733,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 				notify["tags"].append(tag);
 			std::string base_key = USER_BASE_INFO + std::to_string(uid);
 			auto user_info = std::make_shared<UserInfo>();
-			bool b_info = GetBaseInfo(base_key, uid, user_info);
+			bool b_info = usercache::GetBaseInfo(base_key, uid, user_info);
 			if (b_info) {
 				notify["name"] = user_info->name;
 				notify["nick"] = user_info->nick;
@@ -793,22 +813,24 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 	//先落库再投递: 对方离线时消息已经保存在 chat_message, 登录后还能拉回
 	std::vector<ChatMessageInfo> saved;
 	if (thread_type == static_cast<int>(ThreadType::Group)) {
-		if (!MysqlMgr::GetInstance()->SaveGroupMessages(uid, thread_id, mentions, contents, saved)) {
+		if (!MysqlDao::GetInstance()->SaveGroupMessages(uid, thread_id, mentions, contents, saved)) {
 			rtvalue["error"] = ErrorCodes::RPCFailed;
 			rtvalue["group_invalid"] = true; //不在群里或群已解散
 			return;
 		}
 	}
-	else if (!MysqlMgr::GetInstance()->SaveChatMessages(uid, touid, thread_id, contents, saved)) {
+	else if (!MysqlDao::GetInstance()->SaveChatMessages(uid, touid, thread_id, contents, saved)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		//写库失败最常见的原因是关系不完整（任何一方删了好友），
 		//单独标出来，客户端才能提示"你们已不是好友"而不是笼统的发送失败
-		if (!MysqlMgr::GetInstance()->IsMutualFriend(uid, touid))
+		if (!MysqlDao::GetInstance()->IsMutualFriend(uid, touid))
 			rtvalue["not_friend"] = true;
 		return;
 	}
 	//thread_id 可能是0(客户端还没建会话), 以写库结果为准回填
 	if (!saved.empty()) thread_id = saved.front().thread_id;
+	spdlog::debug("message saved thread={} sender={} count={} last_id={}", thread_id, uid,
+		saved.size(), saved.empty() ? 0 : saved.back().message_id);
 	if (session->IsClosed() || !_p_server->CheckValid(session->GetSessionId())) return;
 	rtvalue["thread_id"] = Json::Int64(thread_id);
 	rtvalue["thread_type"] = thread_type;
@@ -833,7 +855,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 	//群聊：除自己外全部成员都要收到，本实例直投、其他实例聚合后转发
 	if (thread_type == static_cast<int>(ThreadType::Group)) {
 		std::vector<int> members;
-		if (!MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members))
+		if (!MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members))
 			return;
 		BroadcastGroupEvent(thread_id, members, uid, notify, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 		return;
@@ -915,9 +937,9 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	const std::string mentions = JoinMentions(root["mentions"]);
 	const bool group = thread_type == static_cast<int>(ThreadType::Group);
 	const bool saved_ok = group
-		? MysqlMgr::GetInstance()->SaveGroupResourceMessage(uid, thread_id, mentions, unique_id,
+		? MysqlDao::GetInstance()->SaveGroupResourceMessage(uid, thread_id, mentions, unique_id,
 			1, name, saved)
-		: MysqlMgr::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id, 1,
+		: MysqlDao::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id, 1,
 			name, saved);
 	if (!saved_ok) {
 		response["error"] = ErrorCodes::RPCFailed;
@@ -982,9 +1004,9 @@ void LogicSystem::DealResourceChatMsg(std::shared_ptr<CSession> session,
 	const std::string mentions = JoinMentions(root["mentions"]);
 	const bool group = thread_type == static_cast<int>(ThreadType::Group);
 	const bool saved_ok = group
-		? MysqlMgr::GetInstance()->SaveGroupResourceMessage(uid, thread_id, mentions, unique_id,
+		? MysqlDao::GetInstance()->SaveGroupResourceMessage(uid, thread_id, mentions, unique_id,
 			msg_type, content, saved)
-		: MysqlMgr::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id,
+		: MysqlDao::GetInstance()->SaveResourceMessage(uid, touid, thread_id, unique_id,
 			msg_type, content, saved);
 	if (!saved_ok) {
 		response["error"] = ErrorCodes::RPCFailed;
@@ -1013,12 +1035,12 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session,
 	response["error"] = ErrorCodes::Success;
 	response["uid"] = peer_uid;
 	//打开会话时补拉一次: 登录后新加的好友可能还没有 thread_id
-	const long long thread_id = MysqlMgr::GetInstance()->GetOrCreatePrivateChat(uid, peer_uid);
+	const long long thread_id = MysqlDao::GetInstance()->GetOrCreatePrivateChat(uid, peer_uid);
 	if (thread_id <= 0) {
 		response["error"] = ErrorCodes::RPCFailed;
 	} else {
 		response["thread_id"] = Json::Int64(thread_id);
-		auto peer = MysqlMgr::GetInstance()->GetUser(peer_uid);
+		auto peer = MysqlDao::GetInstance()->GetUser(peer_uid);
 		if (peer) {
 			response["name"] = peer->name;
 			response["nick"] = peer->nick;
@@ -1043,7 +1065,7 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
 	std::vector<ChatThreadInfo> threads;
 	bool has_more = false;
 	Json::Value response;
-	response["error"] = MysqlMgr::GetInstance()->GetChatThreads(
+	response["error"] = MysqlDao::GetInstance()->GetChatThreads(
 		uid, last_id, 100, threads, has_more, last_time)
 		? ErrorCodes::Success : ErrorCodes::RPCFailed;
 	response["thread_list"] = Json::arrayValue;
@@ -1065,7 +1087,7 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 	const long long last_message_id = root["message_id"].asInt64();
 	std::vector<ChatMessageInfo> messages;
 	bool has_more = false;
-	const bool success = MysqlMgr::GetInstance()->GetChatMessages(
+	const bool success = MysqlDao::GetInstance()->GetChatMessages(
 		uid, thread_id, last_message_id, 100, messages, has_more);
 	const int thread_type = ThreadTypeOf(thread_id);
 	Json::Value response;
@@ -1119,8 +1141,8 @@ void LogicSystem::LogoutHandler(std::shared_ptr<CSession> session,
 		auto reply = StatusGrpcClient::GetInstance()->LogoutSession(
 			uid, session->GetSessionId(), session->GetEpoch());
 		if (reply.error() != ErrorCodes::Success) {
-			std::cout << "[logout] revoke failed uid=" << uid
-				<< " err=" << reply.error() << std::endl;
+			LOG_WARN << "[logout] revoke failed uid=" << uid
+				<< " err=" << reply.error();
 		}
 		rsp["revoked"] = reply.revoked();
 	}
@@ -1161,13 +1183,13 @@ void LogicSystem::UpdateProfile(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	if (!MysqlMgr::GetInstance()->UpdateUserProfile(uid, nick, sex, desc)) {
+	if (!MysqlDao::GetInstance()->UpdateUserProfile(uid, nick, sex, desc)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
 	}
 
 	//资料缓存按uid和用户名各存一份, 写完立即覆盖; 在线好友搜索资料时直接读到新值
-	auto user_info = MysqlMgr::GetInstance()->GetUser(uid);
+	auto user_info = MysqlDao::GetInstance()->GetUser(uid);
 	if (user_info) {
 		Json::Value base_root;
 		base_root["uid"] = user_info->uid;
@@ -1200,12 +1222,12 @@ void LogicSystem::NotifyFriendsProfileChanged(int uid)
 		return;
 
 	//头像可能是资源服务器写的, 这里统一从库里读一次, 保证推送内容与落库一致
-	auto user_info = MysqlMgr::GetInstance()->GetUser(uid);
+	auto user_info = MysqlDao::GetInstance()->GetUser(uid);
 	if (!user_info)
 		return;
 
 	std::vector<int> friend_ids;
-	if (!MysqlMgr::GetInstance()->GetFriendIds(uid, friend_ids) || friend_ids.empty())
+	if (!MysqlDao::GetInstance()->GetFriendIds(uid, friend_ids) || friend_ids.empty())
 		return;
 
 	Json::Value notify;
@@ -1285,7 +1307,7 @@ void LogicSystem::UpdateFriendRemark(std::shared_ptr<CSession> session,
 	}
 
 	//返回值区分“不是好友”和“数据库错误”, 前者不能落成成功回包
-	const int result = MysqlMgr::GetInstance()->UpdateFriendRemark(self_uid, friend_uid, remark,
+	const int result = MysqlDao::GetInstance()->UpdateFriendRemark(self_uid, friend_uid, remark,
 		tags);
 	if (result == 0) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -1322,7 +1344,7 @@ void LogicSystem::GetProfile(std::shared_ptr<CSession> session,
 	//只查公开资料, 不返回邮箱与密码; 目标不是好友也允许, 搜索结果同样需要
 	std::string base_key = USER_BASE_INFO + std::to_string(touid);
 	auto user_info = std::make_shared<UserInfo>();
-	if (!GetBaseInfo(base_key, touid, user_info)) {
+	if (!usercache::GetBaseInfo(base_key, touid, user_info)) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
 		return;
 	}
@@ -1420,7 +1442,7 @@ void LogicSystem::MarkMessagesRead(std::shared_ptr<CSession> session,
 	if (thread_type == static_cast<int>(ThreadType::Group)) {
 		//群聊只推进自己的已读游标，未读数与会话行"有人@我"由它推导；
 		//群里不展示逐条已读，所以不向其他成员推送
-		if (!MysqlMgr::GetInstance()->MarkGroupRead(uid, thread_id, message_id)) {
+		if (!MysqlDao::GetInstance()->MarkGroupRead(uid, thread_id, message_id)) {
 			rtvalue["error"] = ErrorCodes::RPCFailed;
 			return;
 		}
@@ -1431,7 +1453,7 @@ void LogicSystem::MarkMessagesRead(std::shared_ptr<CSession> session,
 
 	bool changed = false;
 	int peer_uid = 0;
-	if (!MysqlMgr::GetInstance()->MarkChatMessagesRead(uid, thread_id, message_id, changed, peer_uid)) {
+	if (!MysqlDao::GetInstance()->MarkChatMessagesRead(uid, thread_id, message_id, changed, peer_uid)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
 	}
@@ -1469,7 +1491,7 @@ void LogicSystem::RecallMessage(std::shared_ptr<CSession> session,
 	}
 
 	ChatMessageInfo message;
-	const int code = MysqlMgr::GetInstance()->RecallChatMessage(uid, message_id, message);
+	const int code = MysqlDao::GetInstance()->RecallChatMessage(uid, message_id, message);
 	if (code != ErrorCodes::Success) {
 		rtvalue["error"] = code;
 		return;
@@ -1488,7 +1510,7 @@ void LogicSystem::RecallMessage(std::shared_ptr<CSession> session,
 		payload["message_id"] = Json::Int64(message.message_id);
 		payload["fromuid"] = uid;
 		std::vector<int> members;
-		if (MysqlMgr::GetInstance()->GetGroupMemberIds(message.thread_id, members))
+		if (MysqlDao::GetInstance()->GetGroupMemberIds(message.thread_id, members))
 			BroadcastGroupEvent(message.thread_id, members, uid, payload, ID_NOTIFY_MSG_RECALLED);
 		return;
 	}
@@ -1523,7 +1545,7 @@ void LogicSystem::DeleteFriend(std::shared_ptr<CSession> session,
 	}
 
 	//只删自己这一行：对方仍把你看作好友，直到他也删除
-	if (!MysqlMgr::GetInstance()->DeleteFriend(uid, touid)) {
+	if (!MysqlDao::GetInstance()->DeleteFriend(uid, touid)) {
 		rtvalue["error"] = ErrorCodes::RPCFailed;
 		return;
 	}
@@ -1627,7 +1649,7 @@ Json::Value LogicSystem::BuildThreadItem(const ChatThreadInfo& thread) const
 int LogicSystem::ThreadTypeOf(long long thread_id)
 {
 	//会话类型不会变，走进程内缓存；未命中才查库，失败按单聊继续
-	return MysqlMgr::GetInstance()->GetThreadTypeCached(thread_id);
+	return MysqlDao::GetInstance()->GetThreadTypeCached(thread_id);
 }
 
 //一条已落库消息的公共字段：文本、图片、视频文件与系统消息共用同一套键名，
@@ -1702,7 +1724,7 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 	GroupInfo info;
 	std::vector<GroupMemberInfo> member_list;
 	int error = ErrorCodes::Success;
-	const long long thread_id = MysqlMgr::GetInstance()->CreateGroup(uid, name, members,
+	const long long thread_id = MysqlDao::GetInstance()->CreateGroup(uid, name, members,
 		info, member_list, error);
 	if (thread_id <= 0) {
 		response["error"] = error;
@@ -1711,6 +1733,7 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 		return;
 	}
 
+	spdlog::info("group created thread={} owner={} members={}", thread_id, uid, info.member_count);
 	response["thread_id"] = Json::Int64(thread_id);
 	response["thread_type"] = static_cast<int>(ThreadType::Group);
 	Json::Value group_json;
@@ -1753,13 +1776,13 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 	//首条系统消息由服务端写，文案里带上创建者，成员翻历史时能看懂群的来历。
 	//这条要发给包括群主在内的所有人：发送者本地没有这条消息
 	const std::string text = [&]() {
-		auto self = MysqlMgr::GetInstance()->GetUser(uid);
+		auto self = MysqlDao::GetInstance()->GetUser(uid);
 		const std::string actor = self ? (self->nick.empty() ? self->name : self->nick)
 			: std::to_string(uid);
 		return actor + " 创建了群聊，快和大家打个招呼吧";
 	}();
 	ChatMessageInfo message;
-	if (MysqlMgr::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
+	if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
 		Json::Value payload;
 		payload["error"] = ErrorCodes::Success;
 		payload["thread_id"] = Json::Int64(thread_id);
@@ -1793,7 +1816,7 @@ void LogicSystem::GetGroupInfo(std::shared_ptr<CSession> session,
 
 	GroupInfo info;
 	std::vector<GroupMemberInfo> members;
-	if (thread_id <= 0 || !MysqlMgr::GetInstance()->GetGroupInfo(uid, thread_id, info, members)) {
+	if (thread_id <= 0 || !MysqlDao::GetInstance()->GetGroupInfo(uid, thread_id, info, members)) {
 		response["error"] = ErrorCodes::GroupNotFound;
 		return;
 	}
@@ -1884,7 +1907,7 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 	}
 
 	std::string applied;
-	const int code = MysqlMgr::GetInstance()->UpdateGroupField(thread_id, uid, field, value, applied);
+	const int code = MysqlDao::GetInstance()->UpdateGroupField(thread_id, uid, field, value, applied);
 	if (code != ErrorCodes::Success) {
 		response["error"] = code;
 		response["message"] = code == ErrorCodes::GroupDenied ? "只有群主或管理员可以修改"
@@ -1896,21 +1919,21 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 	//群名与公告要让所有成员看到；群昵称与免打扰是个人设置，不推送
 	if (action == "name" || action == "notice") {
 		std::vector<int> members;
-		if (!MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members))
+		if (!MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members))
 			return;
 		Json::Value detail;
 		detail[action] = applied;
 		PushGroupChanged(thread_id, members, uid, "info", detail);
 
 		//系统消息留痕：改群名与改公告都写一行，成员翻历史时能看懂发生了什么
-		auto self = MysqlMgr::GetInstance()->GetUser(uid);
+		auto self = MysqlDao::GetInstance()->GetUser(uid);
 		const std::string actor = self ? (self->nick.empty() ? self->name : self->nick)
 			: std::to_string(uid);
 		const std::string text = action == "name"
 			? actor + " 修改群名为「" + applied + "」"
 			: actor + " 更新了群公告";
 		ChatMessageInfo message;
-		if (MysqlMgr::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
+		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
 			Json::Value payload;
 			payload["error"] = ErrorCodes::Success;
 			payload["thread_id"] = Json::Int64(thread_id);
@@ -1948,7 +1971,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 	response["action"] = action;
 
 	auto userName = [](int member_uid) {
-		auto user = MysqlMgr::GetInstance()->GetUser(member_uid);
+		auto user = MysqlDao::GetInstance()->GetUser(member_uid);
 		if (!user)
 			return std::string("成员");
 		return user->nick.empty() ? user->name : user->nick;
@@ -1968,7 +1991,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 		}
 		std::vector<int> added;
 		int member_count = 0;
-		const int code = MysqlMgr::GetInstance()->InviteGroupMembers(thread_id, uid, invited,
+		const int code = MysqlDao::GetInstance()->InviteGroupMembers(thread_id, uid, invited,
 			added, member_count);
 		if (code != ErrorCodes::Success) {
 			response["error"] = code;
@@ -1991,13 +2014,13 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 		}
 
 		std::vector<int> members;
-		MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members);
+		MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members);
 		const std::string text = userName(uid) + " 邀请 " + names + " 加入了群聊";
 		ChatMessageInfo message;
 		Json::Value detail;
 		detail["member_count"] = member_count;
 		PushGroupChanged(thread_id, members, uid, "members", detail);
-		if (MysqlMgr::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
+		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
 			Json::Value payload;
 			payload["error"] = ErrorCodes::Success;
 			payload["thread_id"] = Json::Int64(thread_id);
@@ -2020,12 +2043,12 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 		int member_count = 0;
 		std::string text;
 		if (action == "remove") {
-			code = MysqlMgr::GetInstance()->RemoveGroupMember(thread_id, uid, target, member_count);
+			code = MysqlDao::GetInstance()->RemoveGroupMember(thread_id, uid, target, member_count);
 			text = userName(uid) + " 将 " + userName(target) + " 移出群聊";
 		}
 		else {
 			const bool admin = action == "set_admin";
-			code = MysqlMgr::GetInstance()->SetGroupAdmin(thread_id, uid, target, admin);
+			code = MysqlDao::GetInstance()->SetGroupAdmin(thread_id, uid, target, admin);
 			text = userName(uid) + (admin ? " 将 " : " 取消 ") + userName(target)
 				+ (admin ? " 设为管理员" : " 的管理员");
 		}
@@ -2036,7 +2059,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 			return;
 		}
 		std::vector<int> members;
-		MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members);
+		MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members);
 		if (action == "remove") {
 			response["member_count"] = member_count;
 			Json::Value detail;
@@ -2056,7 +2079,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 			PushGroupChanged(thread_id, members, uid, "members", detail);
 		}
 		ChatMessageInfo message;
-		if (MysqlMgr::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
+		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
 			Json::Value payload;
 			payload["error"] = ErrorCodes::Success;
 			payload["thread_id"] = Json::Int64(thread_id);
@@ -2070,20 +2093,20 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 
 	if (action == "leave") {
 		bool dismissed = false;
-		const int code = MysqlMgr::GetInstance()->LeaveGroup(thread_id, uid, dismissed);
+		const int code = MysqlDao::GetInstance()->LeaveGroup(thread_id, uid, dismissed);
 		if (code != ErrorCodes::Success) {
 			response["error"] = code;
 			response["message"] = code == ErrorCodes::GroupDenied ? "群主请先解散群聊" : "退群失败";
 			return;
 		}
 		std::vector<int> members;
-		MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members);
+		MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members);
 		Json::Value detail;
 		detail["target"] = uid;
 		if (!members.empty())
 			PushGroupChanged(thread_id, members, uid, "members", detail);
 		ChatMessageInfo message;
-		if (MysqlMgr::GetInstance()->AddGroupSystemMessage(thread_id, uid,
+		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid,
 			userName(uid) + " 退出了群聊", message) && !members.empty()) {
 			Json::Value payload;
 			payload["error"] = ErrorCodes::Success;
@@ -2097,15 +2120,17 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 	}
 
 	if (action == "dismiss") {
-		//解散前先取成员列表：群一删，成员行与消息都会按外键级联清理
+		//解散是软删：成员行与消息都保留，这里取成员列表只为把变更推给他们
 		std::vector<int> members;
-		MysqlMgr::GetInstance()->GetGroupMemberIds(thread_id, members);
-		const int code = MysqlMgr::GetInstance()->DismissGroup(thread_id, uid);
+		MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members);
+		const int code = MysqlDao::GetInstance()->DismissGroup(thread_id, uid);
 		if (code != ErrorCodes::Success) {
 			response["error"] = code;
 			response["message"] = code == ErrorCodes::GroupDenied ? "只有群主可以解散群聊" : "解散失败";
 			return;
 		}
+		spdlog::info("group dismissed thread={} owner={} members={}",
+			thread_id, uid, members.size());
 		Json::Value detail;
 		PushGroupChanged(thread_id, members, 0, "dismissed", detail);
 		return;
@@ -2167,7 +2192,7 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
     }
 	//redis中没有则查询mysql
 	std::shared_ptr<UserInfo> user_info = nullptr;
-	user_info = MysqlMgr::GetInstance()->GetUser(uid); //根据用户ID从MySQL数据库中获取用户信息
+	user_info = MysqlDao::GetInstance()->GetUser(uid); //根据用户ID从MySQL数据库中获取用户信息
 	//如果数据库中没有用户信息，则返回uid无效错误码
 	if (user_info == nullptr) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -2227,7 +2252,7 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 
 	//redis中没有则查询mysql
 	std::shared_ptr<UserInfo> user_info = nullptr;
-	user_info = MysqlMgr::GetInstance()->GetUser(name); //根据用户名从MySQL数据库中获取用户信息
+	user_info = MysqlDao::GetInstance()->GetUser(name); //根据用户名从MySQL数据库中获取用户信息
 	//如果数据库中没有用户信息，则返回uid无效错误码
 	if (user_info == nullptr) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -2252,61 +2277,14 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 	rtvalue["desc"] = user_info->desc;
 	rtvalue["sex"] = user_info->sex;
 }
-
-bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
-{
-	//优先查redis中查询用户信息
-	std::string info_str = "";
-	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str); //从Redis中获取用户信息
-	//如果Redis中有用户信息，则解析Json字符串并填充用户信息对象
-	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		userinfo->uid = root["uid"].asInt();
-		userinfo->name = root["name"].asString();
-		userinfo->email = root["email"].asString();
-		userinfo->nick = root["nick"].asString();
-		userinfo->desc = root["desc"].asString();
-		userinfo->sex = root["sex"].asInt();
-		userinfo->icon = root["icon"].asString();
-
-	}
-	else
-	{
-		//redis中没有则查询mysql
-		//查询数据库
-		std::shared_ptr<UserInfo> user_info = nullptr;
-		user_info = MysqlMgr::GetInstance()->GetUser(uid);
-		//如果数据库中没有用户信息，则返回false，表示用户ID无效
-		if (user_info == nullptr) {
-			return false;
-		}
-
-		userinfo = user_info; //将数据库查询到的用户信息赋值给传入的用户信息对象
-
-		//将数据库内容写入redis缓存
-		Json::Value redis_root;
-		redis_root["uid"] = uid;
-		redis_root["name"] = userinfo->name;
-		redis_root["email"] = userinfo->email;
-		redis_root["nick"] = userinfo->nick;
-		redis_root["desc"] = userinfo->desc;
-		redis_root["sex"] = userinfo->sex;
-		redis_root["icon"] = userinfo->icon;
-		RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
-	}
-	return true;
-}
-
 bool LogicSystem::GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>>& list)
 {
 	//从mysql获取好友申请列表
-	return MysqlMgr::GetInstance()->GetApplyList(to_uid, list, 0, 10);
+	return MysqlDao::GetInstance()->GetApplyList(to_uid, list, 0, 10);
 }
 
 bool LogicSystem::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>>& user_list)
 {
 	//从mysql获取好友列表
-	return MysqlMgr::GetInstance()->GetFriendList(self_id, user_list);
+	return MysqlDao::GetInstance()->GetFriendList(self_id, user_list);
 }

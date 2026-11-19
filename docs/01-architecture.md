@@ -26,7 +26,7 @@ flowchart TB
     end
 
     subgraph access["接入层 · GateServer"]
-        Gate["CServer（acceptor） → HttpConnection<br/>LogicSystem（URL 路由）<br/>VerifyGrpcClient / StatusGrpcClient<br/>MysqlMgr / RedisMgr / PasswordHash"]
+        Gate["CServer（acceptor） → HttpConnection<br/>LogicSystem（URL 路由）<br/>VerifyGrpcClient / StatusGrpcClient<br/>MysqlDao / RedisMgr / PasswordHash"]
     end
 
     subgraph support["支撑层"]
@@ -42,7 +42,7 @@ flowchart TB
         Res["CServer → CSession（2+4 字节帧）<br/>LogicWorker 池（按会话）<br/>FileWorker / DownloadWorker 池（按文件名）"]
     end
 
-    Store[("MySQL X DevAPI<br/>+ Redis hiredis")]
+    Store[("MySQL Boost.MySQL<br/>+ Redis hiredis")]
     Mail["邮箱服务商"]
 
     CMgr -->|"HTTP / JSON"| Gate
@@ -151,7 +151,7 @@ sequenceDiagram
     participant CS as ChatServer
 
     C->>G: POST /user_login {email, passwd}
-    G->>G: MysqlMgr::CheckPwd() Argon2id 校验 → uid
+    G->>G: MysqlDao::CheckPwd() Argon2id 校验 → uid
     G->>S: GetChatServer(uid)
     S->>S: 生成 UUID token
     S->>R: SETEX utoken_#lt;uid#gt; 7 天 #lt;token#gt;
@@ -220,7 +220,7 @@ sequenceDiagram
 | io_context 线程池 | `IOContextPool` | `hardware_concurrency()` | 四服务各自持有一份（模板相同、代码独立） |
 | Redis 连接 | `RedisConPool`（hiredis） | 5 | `RedisMgr` |
 | gRPC Stub | `RPConPool` / `ChatConPool` | 5 | `VerifyGrpcClient` / `ChatGrpcClient` |
-| MySQL 会话 | `MysqlMgr` 内部池 | 见源码 | `MysqlDao` |
+| MySQL 会话 | `MysqlPool`（`common/MysqlPool.h`） | 见源码 | `MysqlDao` |
 
 所有池均遵循同一模式：`std::queue` + `std::mutex` + `std::condition_variable`，
 `b_stop_` 标志用于关闭时唤醒所有等待者。

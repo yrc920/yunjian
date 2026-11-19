@@ -14,6 +14,7 @@
 #include <cstdint>
 #include "const.h"
 #include "MsgNode.h"
+#include "TlsSocket.h"
 
 namespace net = boost::asio;            //from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp;       //from <boost/asio/ip/tcp.hpp>
@@ -23,7 +24,8 @@ class LogicSystem;
 class CSession : public std::enable_shared_from_this<CSession>
 {
 public:
-	CSession(boost::asio::io_context& io_context, CServer* server);
+	//tls 为空时按明文 TCP 服务；非空则连接先完成 TLS 握手再读第一帧
+	CSession(boost::asio::io_context& io_context, CServer* server, std::shared_ptr<TlsContext> tls);
 	~CSession();
 	tcp::socket& GetSocket(); //返回socket对象的引用，以便服务器可以使用它进行通信
 	std::string& GetSessionId(); //返回会话ID的引用，以便服务器可以使用它来标识会话
@@ -70,7 +72,7 @@ private:
 	//处理写操作完成后的回调函数
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
 
-	tcp::socket _socket; //套接字
+	TlsSocket _socket; //明文或 TLS 的统一封装，读写与关闭都从这里走
 	std::string _session_id; //连接的 UUID；与登录 token 分开使用
     std::atomic<int> _user_uid; //当前绑定的用户ID，0表示未认证，允许逻辑线程和清理线程读取
     std::atomic<long long> _epoch{0}; //登录租约的 epoch，清理时用它判断租约是否还属于本连接

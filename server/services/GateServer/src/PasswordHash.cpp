@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include <sodium.h>
+#include "Log.h"
 
 namespace {
 //Argon2id 的运算开销，取 libsodium 的"交互式"档：
@@ -19,7 +20,7 @@ void EnsureSodiumReady()
     std::call_once(flag, []() {
         //sodium_init 成功返回 0，失败返回 -1（此后哈希与校验都会失败）
         if (sodium_init() != 0) {
-            std::cerr << "libsodium init failed" << std::endl;
+            LOG_ERROR << "libsodium init failed";
         }
     });
 }

@@ -15,13 +15,22 @@
 
 ```ini
 [GateServer]
+scheme=http
 host=127.0.0.1
 port=8080
+
+[Network]
+tls=false
 ```
 
 | 字段 | 说明 |
 | --- | --- |
-| `host` / `port` | 网关地址，启动时拼成 `http://host:port` 存入全局 `gate_url_prefix` |
+| `scheme` | `http` 或 `https`，缺省按 `http`；写成其它值时也按 `http` 处理 |
+| `host` | 用 HTTPS 时**必须填证书上的域名**，填 IP 会因证书不匹配被拒 |
+| `port` | 留空表示用协议默认端口（80 / 443） |
+| `Network/tls` | 聊天（8090/8091）与文件（9090）通道是否走 TLS，缺省 `false`；必须与服务端证书开关一致 |
+
+启动时拼成 `scheme://host:port` 存入全局 `gate_url_prefix`。
 
 > 键名大小写：`QSettings` 读取时用 `"GateServer/host"`、`"GateServer/port"`，
 > 与文件中的小写键名保持一致即可。
@@ -32,7 +41,10 @@ port=8080
 
 ```ini
 [GateServer]
-Port = 8080              # HTTP 监听端口
+Port = 8080              # 监听端口，HTTPS 与明文共用这一项
+SslCert =                # 证书链（fullchain），留空 = 明文 HTTP
+SslKey =                 # 私钥，与 SslCert 同时填或同时留空
+SslReloadSeconds = 60    # 比对证书文件 mtime 的间隔，0 = 不热加载
 
 [VerifyServer]
 Host = 127.0.0.1         # VerifyServer 地址（gRPC 客户端用）
@@ -44,7 +56,9 @@ Port = 50052
 
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060            # MySQL X 协议端口，不是 3306
+Port = 3306              # 经典协议端口
+QueryTimeoutMs = 5000    # 单条查询的 deadline，到点由 Asio 取消
+PoolSize = 8             # 可选，缺省按服务给定（Gate/Chat 8，Resource 6，Status 5）
 User = root
 Passwd = 123456
 Schema = xigu
@@ -57,10 +71,16 @@ Passwd = 123456
 
 | 段 | 字段 | 说明 |
 | --- | --- | --- |
-| `GateServer` | `Port` | HTTP 监听端口 |
+| `GateServer` | `Port` | 监听端口；启用 TLS 后仍是同一端口，只换了协议 |
+| `GateServer` | `SslCert` / `SslKey` | 证书链与私钥的绝对路径。两项都填才启用 HTTPS，只填一项启动失败 |
+| `GateServer` | `SslReloadSeconds` | 证书热加载间隔，续期覆盖文件后自动生效，无需重启 |
 | `VerifyServer` / `StatusServer` | `Host` / `Port` | 下游 gRPC 服务地址，用于建立 Stub 连接池（各 5 条） |
-| `Mysql` | `XPort` | **X Protocol 端口（默认 33060）**，经典协议 3306 不适用 |
+| `Mysql` | `Port` | 经典协议端口，默认 3306；X 协议已不再使用 |
+| `Mysql` | `QueryTimeoutMs` | 单条查询的 deadline（默认 5000）。到点用 Asio 操作级取消打断，连接不再复用，由池换新建 |
+| `Mysql` | `PoolSize` | 连接池容量，缺省按服务的默认值 |
 | `Redis` | `Port` | 默认 6380（非 Redis 默认的 6379） |
+
+> 证书怎么申请、怎么部署、怎么续期，见 [14 · 域名与 HTTPS 部署](14-tls-deployment.md)。
 
 ---
 
@@ -119,6 +139,9 @@ Name = chatserver1       # 本实例名，必须与 StatusServer 登记的名字
 Host = 0.0.0.0           # gRPC 监听地址
 Port = 8090              # 面向客户端的 TCP 监听端口
 RPCPort = 50055          # 面向其他 ChatServer 实例的 gRPC 端口
+SslCert =                # 证书链；与 SslKey 同时填才加密客户端连接
+SslKey =                 # 私钥
+SslReloadSeconds = 60    # 证书热加载间隔，0 = 不检查
 
 [Mysql]  ...同 GateServer...
 [Redis]  ...同 GateServer...
@@ -135,7 +158,9 @@ Port = 50056             # 对端的 RPCPort（gRPC），注意不是对端的 T
 | 段 | 字段 | 说明 |
 | --- | --- | --- |
 | `[SelfServer] Name` | 实例名，注册到 StatusServer；必须与资源服务器的 `[ChatServers]` 清单一致 |
-| `[SelfServer] AdvertiseHost` | 客户端可访问的地址，随登录路由下发；不能填 `0.0.0.0` |
+| `[SelfServer] AdvertiseHost` | 客户端可访问的地址，随登录路由下发；不能填 `0.0.0.0`；开 TLS 后必须是证书域名 |
+| `[SelfServer] SslCert/SslKey` | 证书链与私钥，两项都填才启用 TLS，只填一项启动失败 |
+| `[SelfServer] SslReloadSeconds` | 证书热加载间隔，续期覆盖文件后自动生效 |
 | `[SelfServer] AdvertiseRpcHost` | 实例间 RPC 使用的主机名；容器部署时填 `127.0.0.1`，与客户端地址不同 |
 | `[SelfServer] Capacity` | 期望承载的会话数，选路按 `sessions/capacity` 计算负载 |
 | `[SelfServer] Host` | gRPC 监听地址（`0.0.0.0` 表示监听全部网卡） |
@@ -198,6 +223,9 @@ CA =                     # CA 证书包路径；留空按平台自动探测
 ```ini
 [SelfServer]
 Port = 9090                 # 面向客户端的 TCP 端口
+SslCert =                   # 证书链；与 SslKey 同时填才加密文件传输
+SslKey =
+SslReloadSeconds = 60
 
 [Storage]
 Path = storage              # 相对服务工作目录；文件存 <Path>/<uid>/<name>

@@ -4,9 +4,12 @@
 #include "VerifyServiceImpl.h"
 
 #include <boost/asio.hpp>
+#include "Log.h"
 
 int main()
 {
+	Log::Init("VerifyServer"); //日志最先初始化，后面所有启动信息都走这里
+	Log::Guard log_guard; //任何 return 路径都会刷盘
 	auto& cfg = ConfigMgr::Inst(); //获取配置管理器实例（读取当前目录下的 config.ini）
 	std::string server_address(cfg["VerifyServer"]["Host"] + ":" + cfg["VerifyServer"]["Port"]);
 
@@ -23,17 +26,17 @@ int main()
 		std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
         //端口占用等原因可能使BuildAndStart返回空指针，启动失败时直接退出，不能继续调用Wait或Shutdown
         if (!server) {
-            std::cerr << "Cannot start gRPC server on " << server_address << std::endl;
+            LOG_ERROR << "Cannot start gRPC server on " << server_address;
             return EXIT_FAILURE;
         }
-		std::cout << "Server listening on " << server_address << std::endl;
+		spdlog::info("grpc listening on {}", server_address);
 
 		boost::asio::io_context io_context;
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM); //捕获 Ctrl+C 与终止信号
 
 		signals.async_wait([&server](const boost::system::error_code& error, int /*signal_number*/) {
 			if (!error) {
-				std::cout << "Shutting down server..." << std::endl;
+				LOG_INFO << "Shutting down server...";
 				server->Shutdown(); //优雅关闭，等待在途 RPC 结束
 			}
 			});
@@ -47,7 +50,7 @@ int main()
 		EmailSender::UninitSSL();
 	}
 	catch (std::exception const& e) {
-		std::cerr << "Error: " << e.what() << std::endl;
+		LOG_ERROR << "Error: " << e.what();
 		return EXIT_FAILURE;
 	}
 	return 0;

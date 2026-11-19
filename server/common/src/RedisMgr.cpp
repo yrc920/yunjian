@@ -3,6 +3,7 @@
 #endif
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
+#include "Log.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -184,7 +185,7 @@ redisContext* RedisConPool::getConnection()
 		_check_requested = true;
 		lock.unlock();
 		_check_cond.notify_one();
-		std::cerr << "[redis] no connection available, wait timed out" << std::endl;
+		LOG_WARN << "[redis] no connection available, wait timed out";
 		return nullptr;
 	}
 
@@ -260,6 +261,18 @@ RedisMgr::RedisMgr()
 RedisMgr::~RedisMgr()
 {
 	Close();
+}
+
+bool RedisMgr::Ping()
+{
+	BorrowedConnection con(*_con_pool);
+	if (!con)
+		return false;
+
+	auto* reply = static_cast<redisReply*>(redisCommand(con.get(), "PING"));
+	const bool alive = reply != nullptr && reply->type == REDIS_REPLY_STATUS;
+	freeReplyObject(reply);
+	return alive;
 }
 
 bool RedisMgr::Get(const std::string& key, std::string& value)

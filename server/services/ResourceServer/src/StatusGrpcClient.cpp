@@ -2,6 +2,7 @@
 #include "ConfigMgr.h"
 #include <chrono>
 #include <iostream>
+#include "Log.h"
 
 StatusGrpcClient::StatusGrpcClient()
 {
@@ -9,7 +10,7 @@ StatusGrpcClient::StatusGrpcClient()
 	const std::string host = cfg["StatusServer"]["Host"];
 	const std::string port = cfg["StatusServer"]["Port"];
 	if (host.empty() || port.empty()) {
-		std::cerr << "[ResourceServer] 未配置 [StatusServer]，在线位置查询将不可用" << std::endl;
+		LOG_WARN << "[ResourceServer] 未配置 [StatusServer]，在线位置查询将不可用";
 		return;
 	}
 	auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());

@@ -30,6 +30,8 @@ class LogicSystem :public Singleton<LogicSystem>
 public:
 	~LogicSystem(); //使基类析构时可以访问派生类的析构函数
     void Stop(); //由主线程停服，在 Redis 与 io_context 销毁前结束业务线程
+	//队列深度：运维指标，业务队列持续增长说明处理跟不上
+	std::pair<std::size_t, std::size_t> QueueDepth();
 	void PostMsgToQue(std::shared_ptr<LogicNode> msg); //将消息节点添加到消息队列中，供逻辑处理线程处理
     void SetServer(std::shared_ptr<CServer> pserver);
 	//资料变更后推给在线好友: 改资料成功后由逻辑层调用, 换头像时经 gRPC 从资源服务器触发
@@ -111,7 +113,6 @@ private:
 	//根据用户名查询用户信息，并将结果填充到Json值对象中
 	void GetUserByName(std::string name, Json::Value& rtvalue);
 	//获取用户基本信息
-	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 	//获取好友申请信息列表
 	bool GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>>& list);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>>& user_list);

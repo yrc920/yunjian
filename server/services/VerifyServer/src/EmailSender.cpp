@@ -12,6 +12,7 @@
 #include <Poco/File.h>
 #include <Poco/Exception.h>
 #include "const.h"
+#include "Log.h"
 
 namespace {
 
@@ -23,8 +24,8 @@ std::string ResolveCAPath(const std::string& configured)
 	if (!configured.empty()) {
 		if (Poco::File(configured).exists())
 			return configured;
-		std::cerr << "CA file not found: " << configured
-		          << ", fallback to auto detection" << std::endl;
+		LOG_WARN << "CA file not found: " << configured
+		          << ", fallback to auto detection";
 	}
 
 	//按顺序检查常见的PEM证书包位置，找到第一个存在的路径就返回
@@ -106,15 +107,15 @@ bool EmailSender::Send(const std::string& to, const std::string& subject, const 
 
 		session.sendMessage(message);
 		session.close(); //发送 QUIT 并关闭连接
-		std::cout << "Succeed to send mail to " << to << std::endl;
+		LOG_INFO << "Succeed to send mail to " << to;
 		return true;
 	}
 	catch (Poco::Exception& e) {
-		std::cerr << "Send mail failed: " << e.displayText() << std::endl;
+		LOG_ERROR << "Send mail failed: " << e.displayText();
 		return false;
 	}
 	catch (std::exception& e) {
-		std::cerr << "Send mail failed: " << e.what() << std::endl;
+		LOG_ERROR << "Send mail failed: " << e.what();
 		return false;
 	}
 }

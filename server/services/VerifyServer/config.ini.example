@@ -20,3 +20,12 @@ From = your_email@qq.com
 # Windows 无系统 PEM 证书库，保持留空即可）。
 # 只有需要指定私有 CA 时才填绝对路径。
 CA =
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+# Level 可选 trace/debug/info/warn/error/critical/off；排障时临时调 debug
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

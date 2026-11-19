@@ -7,7 +7,8 @@ Host = __PUBLIC_HOST__
 Port = 9090
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+# 经典协议端口（Boost.MySQL）
+Port = 3306
 User = root
 Passwd = 123456
 Schema = xigu

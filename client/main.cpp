@@ -47,10 +47,22 @@ int main(int argc, char *argv[])
     const QString config_path = QDir(QCoreApplication::applicationDirPath())
                                     .filePath(QStringLiteral("config.ini"));
     QSettings settings(config_path, QSettings::IniFormat);
-    gate_url_prefix = QStringLiteral("http://")
-                      + settings.value(QStringLiteral("GateServer/host")).toString()
-                      + QLatin1Char(':')
-                      + settings.value(QStringLiteral("GateServer/port")).toString();
+    // scheme 决定走 HTTP 还是 HTTPS：旧配置没有这一项，按 http 处理，本地开发不用改
+    QString scheme = settings.value(QStringLiteral("GateServer/scheme"), QStringLiteral("http"))
+                         .toString().trimmed().toLower();
+    if (scheme != QStringLiteral("https"))
+        scheme = QStringLiteral("http");
+    const QString gate_host = settings.value(QStringLiteral("GateServer/host")).toString().trimmed();
+    const QString gate_port = settings.value(QStringLiteral("GateServer/port")).toString().trimmed();
+    // port 留空表示用协议默认端口（80 / 443），反代到 443 时就不必写端口
+    gate_url_prefix = scheme + QStringLiteral("://") + gate_host
+                      + (gate_port.isEmpty() ? QString() : QLatin1Char(':') + gate_port);
+
+    // 聊天与文件通道的加密开关：必须与服务端 [SelfServer] 的 SslCert 配置一致
+    const QString tls_text = settings.value(QStringLiteral("Network/tls"), QStringLiteral("false"))
+                                 .toString().trimmed().toLower();
+    tcp_tls_enabled = tls_text == QStringLiteral("true") || tls_text == QStringLiteral("1")
+                      || tls_text == QStringLiteral("yes") || tls_text == QStringLiteral("on");
 
     int exitCode = 0;
     {

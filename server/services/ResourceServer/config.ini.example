@@ -2,6 +2,11 @@
 # 文件按当前工作目录读取，服务启动时要进入自己的产物目录
 [SelfServer]
 Port = 9090
+# TLS：两项都填才加密客户端连接，留空按明文 TCP；证书与网关共用同一份
+SslCert =
+SslKey =
+# 证书文件被替换后多久检查一次（秒），0 表示不检查
+SslReloadSeconds = 60
 
 # 上传文件根目录，相对当前工作目录；头像保存在 <Path>/<uid>/<文件名>
 [Storage]
@@ -15,7 +20,8 @@ SweepMinutes = 60
 
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+# 经典协议端口（Boost.MySQL）
+Port = 3306
 User = root
 Passwd = 123456
 Schema = xigu
@@ -43,3 +49,12 @@ Port = 50055
 Name = chatserver2
 Host = 127.0.0.1
 Port = 50056
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+# Level 可选 trace/debug/info/warn/error/critical/off；排障时临时调 debug
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

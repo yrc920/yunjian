@@ -6,15 +6,13 @@
 #    · 逻辑线程按会话分派，落盘线程按文件名分派
 #    · 连接先校验 uid + token，再绑定到本次传输
 #
-#  依赖: Boost + hiredis + jsoncpp + mysql-connector-cpp + xiguchat_proto(gRPC) + Threads
+#  依赖: Boost + hiredis + jsoncpp + xiguchat_proto(gRPC) + Threads（MySQL 走 xiguchat_common）
 #  产物: 单配置为 bin/ResourceServer/，多配置为 bin/ResourceServer/<配置名>/
 # ============================================================
 
 set(SERVER_NAME ResourceServer)
 
-# X DevAPI 压缩与 zlib 符号需要显式查找；vcpkg 提供 ZLIBConfig
-find_package(ZLIB REQUIRED)
-# X DevAPI 的 TLS 连接直接依赖 OpenSSL，静态链接时需要补上
+# 客户端连接的 TLS 与证书解析依赖 OpenSSL；静态链接时需要显式查找
 find_package(OpenSSL REQUIRED)
 
 # ---------- 源文件清单 ----------
@@ -30,8 +28,6 @@ set(SERVER_SOURCES
     src/FileSystem.cpp         # 文件线程池
     src/FileWorker.cpp         # 分片落盘与头像入库
     src/DownloadWorker.cpp     # 分片读取
-    src/Base64.cpp             # 分片编解码
-    src/MysqlMgr.cpp           # MySQL 管理入口
     src/MysqlDao.cpp           # 用户资料查询与头像更新
     src/ChatGrpcClient.cpp     # 图片上传完成后通知 ChatServer
     src/StatusGrpcClient.cpp   # 在线位置查询：接收方在哪台 ChatServer
@@ -49,8 +45,6 @@ set(SERVER_HEADERS
     include/FileWorker.h
     include/DownloadWorker.h
     include/FileTask.h
-    include/Base64.h
-    include/MysqlMgr.h
     include/MysqlDao.h
     include/ChatGrpcClient.h
     include/const.h
@@ -70,19 +64,11 @@ target_link_libraries(${SERVER_NAME} PRIVATE
     Boost::headers
     hiredis::hiredis
     JsonCpp::JsonCpp
-    unofficial::mysql-connector-cpp::connector
-    # mysql-connector-cpp 的 X DevAPI 静态库依赖 protobuf 与 zlib，但 unofficial
-    # 配置不会传递它们；不补链接时会出现大量 MessageLite/ZeroCopyStream/符号缺失
     protobuf::libprotobuf
-    ZLIB::ZLIB
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
 )
-if(APPLE)
-    # X DevAPI 的 SRV 解析调用 res_9_*，macOS 需要显式链接 libresolv
-    target_link_libraries(${SERVER_NAME} PRIVATE resolv)
-endif()
 if(WIN32)
     target_link_libraries(${SERVER_NAME} PRIVATE ws2_32)
 endif()

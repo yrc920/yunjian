@@ -2,13 +2,15 @@
 #include <iostream>
 #include "IOContextPool.h"
 #include "UserMgr.h"
+#include "LogicSystem.h"
 #include "ConfigMgr.h"
 #include "StatusGrpcClient.h"
 #include "const.h"
+#include "Log.h"
 
-CServer::CServer(boost::asio::io_context& io_context, short port) : _io_context(io_context),
+CServer::CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<TlsContext> tls) : _io_context(io_context),
     _port(port), _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
-    _timer(_io_context, std::chrono::seconds(HEART_BEAT_INTERVAL))
+    _timer(_io_context, std::chrono::seconds(HEART_BEAT_INTERVAL)), _tls(std::move(tls))
 {
 	auto& cfg = ConfigMgr::Inst();
 	_self_name = cfg["SelfServer"]["Name"];
@@ -28,13 +30,13 @@ CServer::CServer(boost::asio::io_context& io_context, short port) : _io_context(
 	if (_capacity <= 0)
 		_capacity = 1000;
 
-	std::cout << "Server start success, listen on port : " << _port << std::endl;
+	spdlog::info("tcp listening on :{}{}", _port, _tls ? " (tls)" : "");
 	StartAccept(); //开始接受连接
 }
 
 CServer::~CServer() {
 	Stop();
-	std::cout << "Server destruct listen on port : " << _port << std::endl;
+	spdlog::debug("tcp acceptor closed :{}", _port);
 }
 
 void CServer::HandleAccept(std::shared_ptr<CSession> new_session, const boost::system::error_code& error)
@@ -49,7 +51,7 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session, const boost::s
         new_session->Start();
 	}
 	else {
-		std::cout << "session accept failed, error is " << error.what() << std::endl;
+		LOG_WARN << "session accept failed, error is " << error.what();
 	}
 
 	if (!_stopped.load())
@@ -62,7 +64,7 @@ void CServer::StartAccept()
 	    return;
 	//从IOContext池中获取一个IOContext对象, 并创建一个新的会话对象来接受连接
 	auto& io_context = IOContextPool::GetInstance()->GetIOContext();
-	std::shared_ptr<CSession> new_session = std::make_shared<CSession>(io_context, this);
+	std::shared_ptr<CSession> new_session = std::make_shared<CSession>(io_context, this, _tls);
 
 	//异步接受连接, 当有新的连接到来时, 会调用HandleAccept函数
 	_acceptor.async_accept(new_session->GetSocket(),
@@ -101,23 +103,23 @@ std::shared_ptr<CSession> CServer::GetSession(const std::string& uuid)
 bool CServer::RegisterSelf()
 {
 	if (_self_name.empty() || _rpc_port <= 0) {
-		std::cout << "[instance] register skipped: SelfServer.Name 或 RPCPort 未配置" << std::endl;
+		LOG_WARN << "[instance] register skipped: SelfServer.Name 或 RPCPort 未配置";
 		return false;
 	}
 
 	auto reply = StatusGrpcClient::GetInstance()->RegisterInstance(_self_name, _advertise_host,
 		_advertise_rpc_host, _client_port, _rpc_port, _capacity);
 	if (reply.error() != ErrorCodes::Success) {
-		std::cout << "[instance] register failed name=" << _self_name
-			<< " err=" << reply.error() << std::endl;
+		LOG_ERROR << "[instance] register failed name=" << _self_name
+			<< " err=" << reply.error();
 		return false;
 	}
 
 	_registered = true;
 	_draining = reply.draining();
-	std::cout << "[instance] register ok name=" << _self_name << " "
+	LOG_INFO << "[instance] register ok name=" << _self_name << " "
 		<< _advertise_host << ":" << _client_port << " rpc=" << _rpc_port
-		<< " capacity=" << _capacity << std::endl;
+		<< " capacity=" << _capacity;
 	return true;
 }
 
@@ -141,13 +143,13 @@ void CServer::RenewLeases(const std::vector<std::shared_ptr<CSession>>& sessions
 		if (reply.error() == ErrorCodes::InstanceUnknown) {
 			//实例注册过期：下一轮重新注册，已有会话保持不动
 			_registered = false;
-			std::cout << "[instance] registration expired name=" << _self_name << std::endl;
+			LOG_WARN << "[instance] registration expired name=" << _self_name;
 		}
 		else if (reply.error() != ErrorCodes::Success) {
 			//连续失败只记日志：租约 TTL 到期由服务端判定离线，客户端不因此掉线
 			if (++_renew_failures == 3)
-				std::cout << "[lease] renew failing inst=" << _self_name
-					<< " err=" << reply.error() << std::endl;
+				LOG_WARN << "[lease] renew failing inst=" << _self_name
+					<< " err=" << reply.error();
 		}
 		else {
 			_renew_failures = 0;
@@ -163,8 +165,8 @@ void CServer::RenewLeases(const std::vector<std::shared_ptr<CSession>>& sessions
 					session->NotifyOffline(result.uid(), 1);
 					session->CloseSoon(300);
 					ClearSession(session->GetSessionId());
-					std::cout << "[lease] fenced uid=" << result.uid()
-						<< " local_epoch=" << session->GetEpoch() << std::endl;
+					LOG_INFO << "[lease] fenced uid=" << result.uid()
+						<< " local_epoch=" << session->GetEpoch();
 				}
 				else if (result.status() == 1 && result.epoch() > 0) {
 					//租约过期后重新授予，本地跟上新 epoch，后续释放才不会被当成旧连接
@@ -199,7 +201,7 @@ void CServer::on_timer(const boost::system::error_code& ec) {
 	if (_stopped.load())
 	    return;
     if (ec) {
-        std::cout << "timer error: " << ec.message() << std::endl;
+        LOG_WARN << "timer error: " << ec.message();
         return;
     }
     std::vector<std::shared_ptr<CSession>> expired_sessions;
@@ -238,6 +240,17 @@ void CServer::on_timer(const boost::system::error_code& ec) {
     }
 
     //再次设置，下一个60s检测
+    //每两个周期（约 60 秒）打一行指标：连接数、已认证会话、两个队列的深度。
+    //队列持续增长说明逻辑线程或投递线程跟不上，是扩容与排障的第一手信号
+    if (++_stats_tick >= 2) {
+        _stats_tick = 0;
+        const auto depth = LogicSystem::GetInstance()->QueueDepth();
+        LOG_INFO << "[stats] online=" << alive_sessions.size()
+            << " authed=" << session_count
+            << " logic_queue=" << depth.first
+            << " delivery_queue=" << depth.second;
+    }
+
     _timer.expires_after(std::chrono::seconds(HEART_BEAT_INTERVAL));
     if (!_stopped.load()) {
         _timer.async_wait([this](boost::system::error_code ec) {

@@ -1,38 +1,73 @@
 #include "HttpConnection.h"
 #include "LogicSystem.h"
 #include <stdexcept>
+#include "Log.h"
 
-HttpConnection::HttpConnection(boost::asio::io_context& ioc)
-	: _socket(ioc) {} //将io_context绑定到socket中
+namespace {
+//握手与请求读取的截止时间。默认构造的 steady_timer 永不过期，
+//必须显式设置，否则半开连接与慢速请求会一直占着 socket
+constexpr int kRequestTimeoutSeconds = 15;
+} // namespace
+
+HttpConnection::HttpConnection(boost::asio::io_context& ioc, std::shared_ptr<TlsContext> tls)
+	: _socket(ioc), _tls_context(tls ? tls->Get() : nullptr) {} //将io_context绑定到socket中
 
 void HttpConnection::Start() {
 	auto self = shared_from_this();
-    //先登记截止时间检查再开始读取，客户端只发送部分请求时也能触发超时关闭
-    //计时回调仍依赖IO线程执行，同步业务处理占用线程时并不能被这个定时器强制中断
-    CheckDeadline();
-	//异步读取请求
-	http::async_read(_socket, _buffer, _request, [self](beast::error_code ec,
-		std::size_t bytes_transferred) {
-			try {
-				if (ec) {
-					//客户端正常关闭（curl/短连接）会报 end_of_stream，不是服务端错误
-					if (ec != http::error::end_of_stream)
-						std::cerr << "http read err: " << ec.message() << " (" << ec.value() << ")" << std::endl;
-					return;
-				}
-				//处理读到的数据
-				boost::ignore_unused(bytes_transferred); //已读数据长度直接忽略
-				self->HandleReq(); //处理请求
+	//先给整条连接一个截止时间：握手、读请求、同步业务处理都算在内
+	deadline_.expires_after(std::chrono::seconds(kRequestTimeoutSeconds));
+	if (_tls_context) {
+		//整条连接持有同一份证书上下文：热加载只影响之后建立的连接
+		_tls_stream = std::make_unique<ssl::stream<tcp::socket>>(std::move(_socket), *_tls_context);
+		//握手同样受截止时间约束，半开连接不会一直占着 socket
+		CheckDeadline();
+		_tls_stream->async_handshake(ssl::stream_base::server, [self](beast::error_code ec) {
+			if (ec) {
+				//扫描器往 443 发明文、客户端不信任证书都会走到这里，属于常见的正常噪声
+				LOG_DEBUG << "tls handshake failed: " << ec.message();
+				self->Close();
+				return;
 			}
-			catch (std::exception& exp) {
-                std::cout << "exception is " << exp.what() << std::endl;
-                //请求解析或处理抛出异常时返回400，避免只打印日志却让客户端一直等不到响应
-                self->_response.result(http::status::bad_request);
-                self->_response.set(http::field::content_type, "text/plain");
-                beast::ostream(self->_response.body()) << "Bad request";
-                self->WriteResponse();
+			self->DoRead();
+			});
+		return;
+	}
+
+	//先登记截止时间检查再开始读取，客户端只发送部分请求时也能触发超时关闭
+	//计时回调仍依赖IO线程执行，同步业务处理占用线程时并不能被这个定时器强制中断
+	CheckDeadline();
+	DoRead();
+}
+
+void HttpConnection::DoRead() {
+	auto self = shared_from_this();
+	//同一个处理体接两种流：出错判断、异常兜底、交给 HandleReq 都不必写两遍
+	auto on_read = [self](beast::error_code ec, std::size_t bytes_transferred) {
+		try {
+			if (ec) {
+				//客户端正常关闭（curl/短连接）会报 end_of_stream，不是服务端错误
+				if (ec != http::error::end_of_stream && ec != ssl::error::stream_truncated)
+					LOG_DEBUG << "http read err: " << ec.message() << " (" << ec.value() << ")";
+				return;
 			}
-		});
+			//处理读到的数据
+			boost::ignore_unused(bytes_transferred); //已读数据长度直接忽略
+			self->HandleReq(); //处理请求
+		}
+		catch (std::exception& exp) {
+			LOG_WARN << "request handling failed: " << exp.what();
+			//请求解析或处理抛出异常时返回400，避免只打印日志却让客户端一直等不到响应
+			self->_response.result(http::status::bad_request);
+			self->_response.set(http::field::content_type, "text/plain");
+			beast::ostream(self->_response.body()) << "Bad request";
+			self->WriteResponse();
+		}
+	};
+
+	if (_tls_stream)
+		http::async_read(*_tls_stream, _buffer, _request, on_read);
+	else
+		http::async_read(_socket, _buffer, _request, on_read);
 }
 
 //将十进制的char转为16进制
@@ -160,7 +195,8 @@ void HttpConnection::HandleReq() {
 			WriteResponse(); //发送响应
 			return;
 		}
-		_response.result(http::status::ok); //设置响应状态码为200 OK
+		if (!_result_set)
+			_response.result(http::status::ok); //处理函数没指定时默认 200
 		_response.set(http::field::server, "GateServer"); //设置响应头中的服务器信息
 		WriteResponse(); //发送响应
 		return;
@@ -183,7 +219,8 @@ void HttpConnection::HandleReq() {
 		if (_deferred)
 			return;
 
-		_response.result(http::status::ok); //设置响应状态码为200 OK
+		if (!_result_set)
+			_response.result(http::status::ok); //处理函数没指定时默认 200
 		_response.set(http::field::server, "GateServer"); //设置响应头中的服务器信息
 		WriteResponse(); //发送响应
 		return;
@@ -194,6 +231,11 @@ void HttpConnection::HandleReq() {
 	_response.set(http::field::content_type, "text/plain");
 	beast::ostream(_response.body()) << "method not allowed\r\n";
 	WriteResponse();
+}
+
+void HttpConnection::SetResult(http::status status) {
+	_result_set = true;
+	_response.result(status);
 }
 
 void HttpConnection::DeferResponse() {
@@ -208,13 +250,43 @@ void HttpConnection::SendDeferred(const std::string& body) {
 }
 
 void HttpConnection::WriteResponse() {
-	auto self = shared_from_this();
 	_response.content_length(_response.body().size()); //设置响应内容长度
-	//异步发送响应
-	http::async_write(_socket, _response, [self](beast::error_code ec, std::size_t) {
-		self->_socket.shutdown(tcp::socket::shutdown_send, ec); //发送完成后关闭服务器端
-		self->deadline_.cancel(); //取消超时检查
-		});
+	DoWrite();
+}
+
+void HttpConnection::DoWrite() {
+	auto self = shared_from_this();
+	auto on_write = [self](beast::error_code ec, std::size_t) {
+		if (ec && ec != ssl::error::stream_truncated)
+			LOG_DEBUG << "http write err: " << ec.message() << " (" << ec.value() << ")";
+		self->FinishWrite();
+	};
+
+	if (_tls_stream)
+		http::async_write(*_tls_stream, _response, on_write);
+	else
+		http::async_write(_socket, _response, on_write);
+}
+
+void HttpConnection::FinishWrite() {
+	auto self = shared_from_this();
+	if (_tls_stream) {
+		//先发 close_notify 再关，客户端才不会把响应当成被截断；
+		//对端不回 close_notify 也无妨，5 秒后由定时器兜底关闭
+		deadline_.expires_after(std::chrono::seconds(5));
+		_tls_stream->async_shutdown([self](beast::error_code) { self->Close(); });
+		return;
+	}
+	//发送完成后关闭服务器端
+	beast::error_code ec;
+	self->_socket.shutdown(tcp::socket::shutdown_send, ec);
+	self->deadline_.cancel(); //取消超时检查
+}
+
+void HttpConnection::Close() {
+	beast::error_code ec;
+	deadline_.cancel();
+	GetSocket().close(ec);
 }
 
 void HttpConnection::CheckDeadline() {
@@ -223,7 +295,7 @@ void HttpConnection::CheckDeadline() {
 	deadline_.async_wait([self](beast::error_code ec) {
 		if (!ec) {
 			//关闭套接字以取消任何未完成的操作
-			self->_socket.close(ec);
+			self->Close();
 		}
-	});
+		});
 }

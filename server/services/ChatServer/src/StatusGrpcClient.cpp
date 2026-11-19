@@ -2,6 +2,7 @@
 #include "ConfigMgr.h"
 #include <chrono>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -101,8 +102,8 @@ message::AllocateSessionRsp StatusGrpcClient::AllocateSession(int uid, const std
 
 	if (!status.ok()) {
 		reply.set_error(ErrorCodes::ServiceUnavailable);
-		std::cout << "[login] allocate rpc failed uid=" << uid
-			<< " err=" << status.error_message() << std::endl;
+		LOG_ERROR << "[login] allocate rpc failed uid=" << uid
+			<< " err=" << status.error_message();
 	}
 	return reply;
 }
@@ -131,8 +132,8 @@ message::RenewSessionsRsp StatusGrpcClient::RenewSessions(const std::string& ins
 
 	if (!status.ok()) {
 		reply.set_error(ErrorCodes::ServiceUnavailable);
-		std::cout << "[lease] renew rpc failed inst=" << instance
-			<< " err=" << status.error_message() << std::endl;
+		LOG_WARN << "[lease] renew rpc failed inst=" << instance
+			<< " err=" << status.error_message();
 	}
 	return reply;
 }
@@ -163,7 +164,7 @@ message::ReleaseSessionRsp StatusGrpcClient::ReleaseSession(int uid,
 	}
 	//被顶替或已经过期都不算错误，日志里保留区分便于排查"为什么没下线"
 	if (!reply.released()) {
-		std::cout << "[lease] release ignored uid=" << uid << " epoch=" << epoch << std::endl;
+		LOG_DEBUG << "[lease] release ignored uid=" << uid << " epoch=" << epoch;
 	}
 	return reply;
 }

@@ -1,6 +1,7 @@
 #include "ChatControlClient.h"
 #include <chrono>
 #include <iostream>
+#include "Log.h"
 
 ChatControlClient& ChatControlClient::Inst()
 {
@@ -95,11 +96,11 @@ bool ChatControlClient::Kick(const std::string& host, int port, int uid,
 
 	const grpc::Status status = stub->KickSession(&context, request, &response);
 	if (!status.ok() || response.error() != 0) {
-		std::cout << "[session] kick failed uid=" << uid << " epoch=" << epoch
-			<< " target=" << address << " err=" << status.error_message() << std::endl;
+		LOG_WARN << "[session] kick failed uid=" << uid << " epoch=" << epoch
+			<< " target=" << address << " err=" << status.error_message();
 		return false;
 	}
-	std::cout << "[session] kick uid=" << uid << " epoch=" << epoch
-		<< " target=" << address << " closed=" << response.closed() << std::endl;
+	LOG_INFO << "[session] kick uid=" << uid << " epoch=" << epoch
+		<< " target=" << address << " closed=" << response.closed();
 	return true;
 }

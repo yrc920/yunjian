@@ -4,13 +4,13 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include <memory>
 #include <iostream>
 #include <string>
-#include <functional>
 #include "Singleton.h"
 #include <map>
 #include <unordered_map>
@@ -28,6 +28,7 @@
 namespace beast = boost::beast;         //from <boost/beast.hpp>
 namespace http = beast::http;           //from <boost/beast/http.hpp>
 namespace net = boost::asio;            //from <boost/asio.hpp>
+namespace ssl = boost::asio::ssl;       //from <boost/asio/ssl.hpp>
 using tcp = boost::asio::ip::tcp;       //from <boost/asio/ip/tcp.hpp>
 
 enum ErrorCodes {
@@ -46,20 +47,7 @@ enum ErrorCodes {
 	TooManyRequests = 1105, //登录失败次数超过上限
 };
 
-//Defer类(go语言风格的延迟执行)
-class Defer {
-public:
-	//接受一个lambda表达式或者函数指针
-	Defer(std::function<void()> func) : func_(func) {}
-
-	//析构时执行传入的函数
-	~Defer() {
-		func_();
-	}
-
-private:
-	std::function<void()> func_;
-};
+#include "Defer.h"
 
 #define CODEPREFIX "code_"
 

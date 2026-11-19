@@ -1,11 +1,12 @@
 #include "CServer.h"
 #include "IOContextPool.h"
 #include <iostream>
+#include "Log.h"
 
-CServer::CServer(boost::asio::io_context& io_context, short port)
-	: _port(port), _acceptor(io_context, tcp::endpoint(tcp::v4(), port)) //监听所有IPv4地址
+CServer::CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<TlsContext> tls)
+	: _port(port), _acceptor(io_context, tcp::endpoint(tcp::v4(), port)), _tls(std::move(tls)) //监听所有IPv4地址
 {
-	std::cout << "Resource server listen on port: " << _port << std::endl;
+	spdlog::info("tcp listening on :{}{}", _port, _tls ? " (tls)" : "");
 	StartAccept(); //先挂第一个accept
 }
 
@@ -29,7 +30,7 @@ void CServer::HandleAccept(std::shared_ptr<CSession> session, const boost::syste
 		session->Start(); //再开始读，避免首帧先于登记到达
 	}
 	else { //accept失败通常是acceptor已关闭
-		std::cout << "session accept failed, error is " << error.message() << std::endl;
+		LOG_INFO << "session accept failed, error is " << error.message();
 	}
 
 	//一次只挂一个accept，处理完继续挂下一个，形成接受循环
@@ -43,7 +44,7 @@ void CServer::StartAccept()
 		return;
 
 	auto& io_context = IOContextPool::GetInstance()->GetIOContext(); //轮询一个IO线程
-	auto session = std::make_shared<CSession>(io_context, this); //新会话属于该IO线程
+	auto session = std::make_shared<CSession>(io_context, this, _tls); //新会话属于该IO线程
 	_acceptor.async_accept(session->GetSocket(),
 		std::bind(&CServer::HandleAccept, this, session, std::placeholders::_1)); //异步等待下一个连接
 }

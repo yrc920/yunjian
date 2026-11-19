@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -42,7 +43,7 @@ int SweepStaleParts(int stale_hours)
 				boost::filesystem::remove(path, ec);
 				if (!ec) {
 					++removed;
-					std::cout << "[janitor] removed stale upload " << path.string() << std::endl;
+					LOG_INFO << "[janitor] removed stale upload " << path.string();
 				}
 			}
 		}
@@ -95,7 +96,7 @@ void StorageJanitor::Loop()
 			SweepStaleParts(stale_hours);
 		}
 		catch (std::exception& e) {
-			std::cerr << "[janitor] sweep failed: " << e.what() << std::endl;
+			LOG_ERROR << "[janitor] sweep failed: " << e.what();
 		}
 		lock.lock();
 

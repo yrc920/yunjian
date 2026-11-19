@@ -54,20 +54,6 @@ enum ErrorCodes {
 	TooManyRequests = 1105, //同一账号短时间内的登录次数超过上限
 };
 
-//Defer类(go语言风格的延迟执行)
-class Defer {
-public:
-	//接受一个lambda表达式或者函数指针
-	Defer(std::function<void()> func) : func_(func) {}
-
-	//析构时执行传入的函数
-	~Defer() {
-		func_();
-	}
-
-private:
-	std::function<void()> func_;
-};
 
 #define USERTOKENPREFIX  "utoken_" //用户Token前缀
 #define SESSIONPREFIX "sess_" //会话租约前缀，值为 hash: sid/inst/epoch

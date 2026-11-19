@@ -1,7 +1,7 @@
 # XiguChat 后端 Docker 部署
 
 把「编译环境 + MySQL + Redis」打包成一个镜像。跑镜像的机器不需要装编译器、
-不需要访问 GitHub：镜像里的第三方依赖（grpc / boost / mysql-connector-cpp 等）
+不需要访问 GitHub：镜像里的第三方依赖（grpc / boost / hiredis 等）
 已经用 vcpkg 预编译好，容器启动后只需从 git 仓库取代码、编译自己的代码。
 
 ---
@@ -56,7 +56,8 @@ cp .env.example .env
 
 | 变量 | 说明 |
 |---|---|
-| `PUBLIC_HOST` | **必须填对**。客户端实际用来访问服务器的地址：本机测试用 `127.0.0.1`，公网部署填服务器公网 IP。`StatusServer` 会把这个地址原样下发给客户端去连聊天与资源服务 |
+| `PUBLIC_HOST` | **必须填对**。客户端实际用来访问服务器的地址：本机测试用 `127.0.0.1`，公网部署填域名（如 `xiguchat.icu`）。`StatusServer` 会把这个地址原样下发给客户端去连聊天与资源服务 |
+| `GATE_PORT` | 网关端口，默认 `8080`（明文 HTTP）；启用 HTTPS 后改成 `8443`，客户端 `config.ini` 的 `port` 也要改成同一个值 |
 | `EMAIL_HOST` / `EMAIL_PORT` | SMTP 服务器，默认 `smtp.qq.com` / `465` |
 | `EMAIL_USER` / `EMAIL_PASS` | 发信账号与授权码（QQ 邮箱在「设置 → 账号 → POP3/SMTP 服务」生成） |
 | `EMAIL_FROM` | 发件人显示地址，通常与 `EMAIL_USER` 相同 |
@@ -78,8 +79,33 @@ docker compose down           # 停止并移除容器（数据卷保留）
 验证服务活着：
 
 ```bash
-curl http://<PUBLIC_HOST>:8080/get_test
+curl http://<PUBLIC_HOST>:8080/healthz
 ```
+
+### 4.1 启用 HTTPS / TLS
+
+三条客户端通道默认都是明文。把证书放进 `./certs`（与 `docker-compose.yml` 同级），
+网关（HTTPS）与聊天、文件通道（TLS）会一起切换，代码不用改：
+
+```bash
+mkdir -p certs
+# 腾讯云证书下载选 Nginx 格式，解压后改这两个名字
+cp xiguchat.icu_bundle.crt certs/fullchain.pem   # 必须是带中间 CA 的整份链
+cp xiguchat.icu.key       certs/privkey.pem
+chmod 600 certs/privkey.pem
+
+# .env 里改两行
+#   PUBLIC_HOST=xiguchat.icu
+#   GATE_PORT=8443
+docker compose up -d
+curl https://<PUBLIC_HOST>:8443/healthz
+```
+
+启动日志会打印 `传输加密：HTTPS 网关 …`、`tls cert ready … expires_in_days=89` 以及
+`tcp listening on :8090 (tls)` / `:9090 (tls)`。
+续期时直接覆盖这两个文件，60 秒内自动换新证书，不用重启。
+客户端要同时打开 `[Network] tls=true`，并且 `host` 填域名（证书不认 IP）。
+完整步骤（解析、备案、证书申请、常见错误）见 [docs/14-tls-deployment.md](../../docs/14-tls-deployment.md)。
 
 ---
 
@@ -102,7 +128,7 @@ mkdir -p xiguchat && cd xiguchat
 docker compose up -d
 ```
 
-云服务器的安全组 / 防火墙要放行 **8080、8090、8091、9090**，否则外面连不上。
+云服务器的安全组 / 防火墙要放行**网关端口（默认 8080，启用 HTTPS 后是 8443）、8090、8091、9090**，否则外面连不上。
 
 ---
 
@@ -123,12 +149,11 @@ docker exec xiguchat /opt/xiguchat/scripts/update.sh
 
 | 端口 | 用途 | 是否对外开放 |
 |---|---|---|
-| 8080 | GateServer HTTP 接口 | 是 |
+| 8080 / 8443 | GateServer 接口（`GATE_PORT`，明文或 HTTPS） | 是 |
 | 8090 / 8091 | 两个聊天实例的 TCP 长连接 | 是 |
 | 9090 | ResourceServer 头像/文件传输 | 是 |
 | 50051 / 50052 / 50055 / 50056 | 服务间 gRPC | 否，仅容器内部 |
-| 3306 | MySQL 传统协议（图形客户端用） | 否，只绑服务器本机回环 |
-| 33060 | MySQL X 协议（项目自身用） | 否，只绑服务器本机回环 |
+| 3306 | MySQL 经典协议（服务与图形客户端都用它） | 否，只绑服务器本机回环 |
 | 6380 | Redis | 否，只绑服务器本机回环 |
 
 数据库端口刻意不做公网映射：MySQL / Redis 一旦暴露在公网，会被扫描器持续爆破，
@@ -141,7 +166,7 @@ ssh -N -L 3306:127.0.0.1:3306 ubuntu@<服务器IP>
 
 保持这条命令运行，本机用图形客户端连 `127.0.0.1:3306`（账号 `root`、密码 `123456`）
 就等于连到服务器容器里的 MySQL。Navicat / DBeaver 等工具也可在连接设置里直接填
-SSH 隧道，效果相同。项目自身走 X 协议 33060，两者互不影响。
+SSH 隧道，效果相同。服务进程连接的也是这条 3306。
 
 ---
 
@@ -159,9 +184,12 @@ SSH 隧道，效果相同。项目自身走 X 协议 33060，两者互不影响�
 ## 9. 常见问题
 
 - **客户端能登录但连不上聊天服务**：`PUBLIC_HOST` 没填外网能访问的地址。
+- **改了端口后客户端连不上**：`GATE_PORT` 与客户端 `config.ini` 的 `port` 必须一致；
+  启用 HTTPS 时客户端 `scheme` 还要改成 `https`，`host` 必须填证书上的域名（填 IP 会报证书不匹配）。
 - **注册时收不到验证码邮件**：`.env` 里的邮件账号或授权码不对；容器日志里能看到 SMTP 报错。
 - **改了配置想生效**：改 `server/deploy/docker/config-templates/` 下的模板后重建镜像。
   直接改容器里 `/workspace/.../config.ini` 没用，每次启动都会被模板覆盖。
 - **MySQL 数据在哪**：数据卷 `mysql-data`，删容器不影响数据。
-- **为什么 MySQL 用官方源装**：项目通过 X DevAPI 访问数据库（33060 端口），
-  需要 X 插件，Ubuntu 仓库的 `mysql-server` 不含该插件。
+- **MySQL 为什么用官方源装**：项目通过经典协议（3306）访问数据库，X 插件已在
+  `mysql.cnf` 里关闭。官方源只为固定小版本行为；换成 Ubuntu 仓库的 `mysql-server`
+  同样可行，但需要重新验证初始化流程。

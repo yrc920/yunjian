@@ -5,8 +5,9 @@
 | 源码 | `server/services/ChatServer/` |
 | 产物 | `bin/<实例名>/`，每份 `config/*.ini` 一个实例 |
 | 监听 | TCP `[SelfServer].Port`（客户端，8090 / 8091）；gRPC `[SelfServer].RPCPort`（服务间，50055 / 50056） |
-| 依赖 | Boost.Asio、gRPC / protobuf、jsoncpp、hiredis、mysql-connector-cpp |
+| 依赖 | Boost.Asio、Boost.MySQL（经 `xiguchat_common`）、gRPC / protobuf、jsoncpp、hiredis |
 | 角色 | 承载客户端长连接；处理登录、搜索、好友申请/认证、文本/图片/视频/文件消息；跨实例转发 |
+| 加密 | `[SelfServer] SslCert/SslKey` 两项都填即启用 TLS 1.2/1.3；帧格式与读写逻辑不变，见 `14-tls-deployment.md` |
 
 ## 9.1 模块构成
 
@@ -22,7 +23,7 @@
 | `src/ChatGrpcClient.cpp` | gRPC 客户端：向对端实例发起转发（Stub 池 5） |
 | `src/StatusGrpcClient.cpp` | StatusServer 客户端：租约、批量续租、释放、位置查询、实例注册 |
 | `src/SessionRouter.cpp` | 在线位置缓存：正缓存 30 秒、负缓存 5 秒，未命中回源 StatusServer |
-| `src/IOContextPool.cpp` / `ConfigMgr.cpp` / `RedisMgr.cpp` / `MysqlMgr.cpp` / `MysqlDao.cpp` | 基础设施 |
+| `src/MysqlDao.cpp` + `common/{MysqlPool,MySqlSession}.cpp` | 数据访问与连接池 |
 
 ## 9.2 启动流程
 
@@ -214,7 +215,7 @@ flowchart TB
 ### 申请（1009）
 
 1. 解析 `{uid, applyname, bakname, touid, tags}`，`applyname` 是申请留言（为空时用默认句）；
-2. `MysqlMgr::AddFriendApply(uid, touid, welcome, bakname, tags)`：把申请留言写 `friend_apply.descs`、
+2. `MysqlDao::AddFriendApply(uid, touid, welcome, bakname, tags)`：把申请留言写 `friend_apply.descs`、
    备注写 `back_name`、分组写 `tags`（JSON 数组）；重复申请用 `ON DUPLICATE KEY UPDATE` 整组覆盖；
 3. 回 1010，`error` 表示申请是否已经落库；
 4. `SessionRouter::Lookup(touid)` 查对方所在实例；
@@ -245,7 +246,7 @@ flowchart TB
 
 1. `RequestValidation` 先校验三个字段类型与 `sex ∈ [0,2]`；
 2. handler 按 UTF-8 字符数再校验长度（昵称 20、签名 60），避免绕过界面写入超长内容；
-3. `MysqlMgr::UpdateUserProfile` 一次更新 `nick / sex / desc`（`desc` 是保留字，SQL 里加反引号）；
+3. `MysqlDao::UpdateUserProfile` 一次更新 `nick / sex / desc`（`desc` 是保留字，SQL 里加反引号）；
 4. 重新读库，用完整资料覆盖 `ubaseinfo_<uid>` 与 `nameinfo_<name>` 两份缓存；
 5. 回 1046，带最终落库值，客户端直接刷新本地资料。
 
@@ -269,7 +270,7 @@ flowchart TB
 
 > `friend` 与 `friend_apply` 的 `tags` 列由启动时的 `EnsureFriendTagColumns` 幂等补齐：
 > 先查 `information_schema.columns`，缺列才 `ALTER TABLE ... ADD COLUMN`。启动流程里预热
-> `MysqlMgr`，让这一步在启动阶段完成，而不是落到第一个登录请求上。
+> 由单例在首次使用时建立连接池（只建一条，其余后台补齐），不要在启动阶段连数据库。
 
 ### 资料变更推送（1051）
 

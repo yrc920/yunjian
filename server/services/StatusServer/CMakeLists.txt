@@ -3,7 +3,7 @@
 #  登录时签发 token 写入 Redis，并按各聊天实例的在线连接数挑选目标实例
 #
 #  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
-#        + hiredis + jsoncpp + mysql-connector-cpp
+#        + hiredis + jsoncpp（MySQL 走 xiguchat_common 的 Boost.MySQL）
 #  产物: 单配置为 bin/StatusServer/，多配置为 bin/StatusServer/<配置名>/
 #        macOS/Linux 预设使用单配置 Ninja，Windows 预设使用多配置 Visual Studio
 # ============================================================
@@ -22,8 +22,6 @@ set(SERVER_SOURCES
     src/SessionRegistry.cpp     # 会话租约与 epoch
     src/InstanceRegistry.cpp    # 实例注册与选路
     src/ChatControlClient.cpp   # 到聊天实例的控制链路（踢人）
-    src/MysqlMgr.cpp            # MySQL 连接池（X DevAPI）
-    src/MysqlDao.cpp            # 数据访问层
 )
 
 # ---------- 头文件清单 ----------
@@ -33,8 +31,6 @@ set(SERVER_HEADERS
     include/SessionRegistry.h
     include/InstanceRegistry.h
     include/ChatControlClient.h
-    include/MysqlMgr.h
-    include/MysqlDao.h
     include/const.h
 )
 
@@ -52,7 +48,6 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # Boost::headers:        仅头文件的 Boost 库
 # hiredis::hiredis:      Redis 客户端
 # JsonCpp::JsonCpp:      JSON 库
-# unofficial::mysql-connector-cpp::connector: MySQL 连接器
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
     xiguchat_common
@@ -63,7 +58,6 @@ target_link_libraries(${SERVER_NAME} PRIVATE
     Boost::headers
     hiredis::hiredis
     JsonCpp::JsonCpp
-    unofficial::mysql-connector-cpp::connector
     Threads::Threads
 )
 if(WIN32)

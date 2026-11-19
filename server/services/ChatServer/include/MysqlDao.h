@@ -3,8 +3,12 @@
 //
 
 #include "const.h"
+#include "Singleton.h"
+#include <cstddef>
+#include <deque>
+#include <unordered_map>
+#include "MysqlPool.h"
 #include <thread>
-#include <mysqlx/xdevapi.h>
 #include "data.h"
 #include <memory>
 #include <queue>
@@ -12,13 +16,13 @@
 #include <condition_variable>
 #include <atomic>
 #include <map>
-class SqlConnection; //封装MySQL连接对象, 包含连接对象和上次操作时间(前置声明)
-class MySqlPool; //MySQL连接池, 提供获取和归还连接的接口(前置声明)
+class MysqlSession; //一条MySQL会话（common/MysqlPool.h）
+class MysqlPool; //MySQL连接池（common/MysqlPool.h）
 
-class MysqlDao
+class MysqlDao : public Singleton<MysqlDao>
 {
+	friend class Singleton<MysqlDao>; //基类创建实例时需要访问私有构造函数
 public:
-	MysqlDao(); //初始化MySQL连接池
 	~MysqlDao();
 	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc,
@@ -56,7 +60,6 @@ public:
 	//两个人当前的关系：0 无关系, 1 互为好友, 2 我已申请待通过, 3 对方申请待我处理, 4 单向(被删过)
 	int GetFriendRelation(int me, int peer);
 	//双方是否还是好友：删好友后用于判断消息能否发出
-	bool IsFriend(int uid, int touid);
 	//双向关系是否完整（两行都在）：发消息的前提
 	bool IsMutualFriend(int uid, int touid);
 	//删除好友：只删自己这一行，对方仍保留关系
@@ -65,6 +68,10 @@ public:
 	long long GetOrCreatePrivateChat(int user1, int user2);
 	//按活跃时间倒序分页取会话列表; last_time 为上一页最后一条的 updated_at（UNIX 秒），
 	//旧客户端只传 thread_id 时退回按 thread_id 升序，保证兼容
+	//把超过保留期的消息搬到 chat_message_archive 并删除原行，返回搬走的条数。
+	//INSERT IGNORE + 按 message_id 顺序分批，两个实例同时跑也只会各自搬不同的批次
+	long long ArchiveChatMessages(int retention_days, int batch_size);
+
 	bool GetChatThreads(int uid, long long last_thread_id, int limit,
 		std::vector<ChatThreadInfo>& threads, bool& has_more, long long last_time = 0);
 	//按消息ID升序分页取会话内消息, 只允许会话成员读取
@@ -84,6 +91,8 @@ public:
 	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
 	//会话类型: 1 单聊 / 2 群聊; 不存在返回 false
 	bool GetThreadType(long long thread_id, int& thread_type);
+	//会话类型缓存：业务线程与 gRPC 线程都会读；未命中查库，查询失败按单聊返回
+	int GetThreadTypeCached(long long thread_id);
 
 	//建群: 群主 + 勾选的好友(必须是群主的好友), 同时写 conversation/成员与首条系统消息。
 	//返回 thread_id, 0 表示失败; error 带回具体原因
@@ -127,58 +136,24 @@ public:
 	//群已读游标: 只前进不后退, 未读数与会话行"有人@我"都由它推导
 	bool MarkGroupRead(int uid, long long thread_id, long long last_message_id);
 	//群成员在某个群的单行设置, 不存在返回 false
-	bool GetGroupMember(long long thread_id, int uid, GroupMemberInfo& member,
-		bool& muted, long long& last_read_message_id);
 
 private:
+	MysqlDao(); //建立连接池；只由 Singleton 调用
 	//把客户端传入的会话ID解析成有效单聊: 为0时校验好友关系并补建, 失败返回0
 	long long EnsureChatThread(int sender_id, int recv_id, long long thread_id);
 	//在已有连接上确认群成员身份并取出角色/群昵称/免打扰/已读游标,
 	//供建群、邀请、权限判断与消息写入复用, 避免同一事务里重复借连接
-	bool GetGroupMemberOn(mysqlx::Session* session, long long thread_id, int uid,
+	bool GetGroupMemberOn(MysqlSession* session, long long thread_id, int uid,
 		GroupMemberInfo& member, bool& muted, long long& last_read_message_id);
 
 	//MySQL连接池对象, 用于管理MySQL连接, 提供线程安全的获取和归还连接的接口
-	std::unique_ptr<MySqlPool> pool_;
-};
+	//连接池在首次 GetInstance 时建立，进程退出时关闭
+	std::unique_ptr<MysqlPool> pool_;
 
-//池内的一条连接: 会话对象, 最近活跃时间, 以及是否可复用的标记
-class SqlConnection {
-public:
-	SqlConnection(std::unique_ptr<mysqlx::Session> session, int64_t lasttime) :_session(std::move(session)), _last_oper_time(lasttime) {}
-	std::unique_ptr<mysqlx::Session> _session; //X DevAPI会话对象, 使用智能指针管理资源
-	int64_t _last_oper_time; //上次操作时间
-	bool _healthy{true}; //连接是否可复用, DAO捕获异常时置false, 归还时丢弃并补建
-};
-
-//连接池: 对外只暴露借还接口, 由检测线程保活并按池容量补足
-//业务线程捕获到异常时把连接标为不可复用, 归还即销毁, 不再进入队列
-class MySqlPool {
-public:
-	MySqlPool(const std::string& host, unsigned port, const std::string& user, const std::string& pass,
-		const std::string& schema, int poolSize);
-
-	void checkConnection(); //检查空闲连接, 并把池容量补足到 poolSize_
-    bool reconnect(long long timestamp); //重新连接
-	std::unique_ptr<SqlConnection> getConnection(); //获取连接
-	void returnConnection(std::unique_ptr<SqlConnection> con); //归还连接
-	void Close(); //关闭连接池
-	~MySqlPool();
-
-private:
-	std::string host_; //MySQL服务器地址
-	unsigned port_; //X Protocol端口号
-	std::string user_; //MySQL用户名
-	std::string pass_; //MySQL密码
-	std::string schema_; //MySQL数据库名
-	int poolSize_; //连接池大小
-
-	std::queue<std::unique_ptr<SqlConnection>> pool_; //连接池队列
-	std::mutex mutex_; //用于保护连接队列的互斥锁
-	std::condition_variable cond_; //业务线程等待可用连接
-	std::condition_variable check_cond_; //检测线程等待心跳周期、补池请求或停池通知
-	bool check_requested_{true}; //补池请求标记: 启动时先补齐初始化失败的连接, 之后由丢弃连接的线程置位
-	size_t connection_count_{0}; //池内连接总数(空闲+借出), 由mutex_保护; 容量判断不能用队列长度
-	std::atomic<bool> b_stop_; //连接池是否停止, 用于控制连接池的生命周期
-	std::thread _check_thread; //检测线程, 定期检查连接的状态并保持连接的活跃性(心跳机制)
+	//会话类型缓存：业务线程与 gRPC 线程都会读，用互斥锁保护；
+	//超过上限按插入顺序淘汰最旧的一条，避免长期运行后无限增长
+	static constexpr std::size_t kThreadTypeCacheMax = 20000;
+	std::mutex _type_mutex;
+	std::unordered_map<long long, int> _type_cache;
+	std::deque<long long> _type_order;
 };

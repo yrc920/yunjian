@@ -1,7 +1,5 @@
-# 项目用 X DevAPI 访问 MySQL：X 插件监听 33060，与传统 3306 不是同一端口
+# 项目通过经典协议（3306）访问 MySQL，X 插件不再需要，显式关闭以省掉 33060 监听
 [mysqld]
 bind-address = 0.0.0.0
-mysqlx = ON
-mysqlx-bind-address = 0.0.0.0
-mysqlx-port = 33060
+mysqlx = OFF
 default-authentication-plugin = mysql_native_password

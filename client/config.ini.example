@@ -1,4 +1,11 @@
-# 复制为 config.ini 后按本机修改：本机或本地容器用 127.0.0.1，连服务器改成公网 IP
+# 复制为 config.ini 后按本机修改：本机或本地容器用 127.0.0.1，连服务器填域名或公网 IP
+# scheme 可选 http / https；port 留空表示用协议默认端口（80 / 443）
 [GateServer]
+scheme=http
 host=127.0.0.1
 port=8080
+
+# 聊天（8090/8091）与文件（9090）通道是否走 TLS，必须与服务端证书开关一致
+# 开启后 host 必须是证书上的域名，填 IP 会因证书不匹配被拒
+[Network]
+tls=false

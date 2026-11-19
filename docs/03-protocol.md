@@ -9,6 +9,10 @@
 | TCP 自定义帧 | Client ↔ ResourceServer | 头像/文件分段传输 | 6 字节头 + JSON 体 |
 | gRPC | 服务之间 | 验证码、状态路由、跨实例消息转发 | protobuf（`server/proto/message.proto`） |
 
+前三条都支持 **TLS 传输**：配置证书后，HTTP 变成 HTTPS，两条 TCP 帧协议在握手后的加密流上跑，
+**帧格式、消息 ID、JSON 结构完全不变**。开关见 `05-configuration.md`，部署见 `14-tls-deployment.md`。
+服务间 gRPC 仍是明文（仅容器内网）。
+
 ---
 
 ## 3.1 TCP 私有协议（Client ↔ ChatServer）
@@ -431,7 +435,8 @@
 
 ### 资源服务器私有协议（Client ↔ ResourceServer）
 
-资源服务器使用同一套「ID + 长度 + JSON」思路，但长度字段扩为 4 字节，容纳文件分片。
+资源服务器用同一套 6 字节帧头，但长度字段扩为 4 字节以容纳文件分片；
+包体是「4 字节头长 + JSON 头 + 原始分片」，分片不走 Base64。
 消息 ID 仍沿用 1000 段（1037–1044），只是走另一条 TCP 连接，与聊天协议不会在同一连接上冲突：
 
 ```
@@ -446,8 +451,8 @@
 | 常量 | 值 | 说明 |
 | --- | --- | --- |
 | `HEAD_TOTAL_LEN` | 6 | 2 字节 ID + 4 字节长度 |
-| `MAX_FILE_LEN` | 2048 | 每个分片的原始字节数，两端一致 |
-| `MAX_MESSAGE_LEN` | 16384 | 单帧包体上限 |
+| `MAX_FILE_LEN` | 64 KiB | 每个分片的原始字节数，两端一致 |
+| `MAX_MESSAGE_LEN` | 128 KiB | 单帧包体上限（64 KiB 数据 + JSON 头） |
 | `MAX_FILE_SIZE` | 4GB | 单文件上限 |
 
 | ID | 名称 | 方向 | 说明 |
@@ -505,7 +510,7 @@ Base URL 由客户端 `config.ini` 的 `[GateServer] host/port` 拼成 `http://<
 2. `passwd != confirm` → `1006`；
 3. Redis `GET code_<email>` 不存在 → `1003`（验证码过期）；
 4. 与请求中的 `verifycode` 不等 → `1004`；
-5. `MysqlMgr::RegUser()` 返回 `0` 或 `-1` → `1005`（用户名或邮箱已存在）。
+5. `MysqlDao::RegUser()` 返回 `0` 或 `-1` → `1005`（用户名或邮箱已存在）。
 
 成功响应：`{"error":0, "uid":int, "email":string, "user":string, "verifycode":string}`
 

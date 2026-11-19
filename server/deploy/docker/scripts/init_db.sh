@@ -59,5 +59,4 @@ if [ "${TABLES:-0}" = "0" ] && [ -f "${SQL_FILE}" ]; then
     mysql -uroot -p"${ROOT_PWD}" xigu < "${SQL_FILE}"
 fi
 
-XPORT=$(mysql -uroot -p"${ROOT_PWD}" -N -B -e "SELECT @@mysqlx_port")
-echo "[mysql] 库已就绪，X 协议端口 ${XPORT}"
+echo "[mysql] 库已就绪，经典协议端口 3306"

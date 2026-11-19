@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSslError>
 #include <QThread>
 
 #include "usermgr.h"
@@ -15,7 +16,7 @@
 namespace {
 constexpr int FileHeadLen = 6; //2字节消息ID + 4字节包体长度
 constexpr int MaxFileLen = 64 * 1024; //与ResourceServer的MAX_FILE_LEN一致，两端切片必须同尺寸
-constexpr int MaxFileFrame = 128 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致（64KB 数据的 Base64）
+constexpr int MaxFileFrame = 128 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致（64KB 数据 + 帧头）
 constexpr int MaxCwnd = 8; //拥塞窗口：聊天图片最多8片在途，头像固定1片
 constexpr int ResourceFileNotExists = 1012; //服务器没有这次上传的进度，需要从第一片重来
 
@@ -30,11 +31,24 @@ FileTcpMgr::FileTcpMgr()
 {
     registerMetaType(); //ReqId要跨线程排队
 
-    //连接成功只负责通知业务层，具体何时登录、何时拉头像由 FileService 决定
-    QObject::connect(&_socket, &QTcpSocket::connected, this, [this]() {
+    //传输层就绪：明文是 connected，TLS 要等握手完成才算连上，否则登录帧会赶在握手前发出
+    auto on_transport_ready = [this]() {
         qDebug() << "[file-tcp] connected";
         emit sig_con_success(true); //交给FileService决定是否开始同步
+    };
+    QObject::connect(&_socket, &QTcpSocket::connected, this, [this, on_transport_ready]() {
+        if (tcp_tls_enabled)
+            return; //等 encrypted
+        on_transport_ready();
     });
+    QObject::connect(&_socket, &QSslSocket::encrypted, this, on_transport_ready);
+    QObject::connect(&_socket, &QSslSocket::sslErrors, this,
+        [this](const QList<QSslError> &errors) {
+            const QString reason = errors.isEmpty() ? QStringLiteral("TLS handshake failed")
+                                                    : errors.first().errorString();
+            qWarning() << "[file-tcp] tls error:" << reason;
+            emit sig_con_failed(reason);
+        });
 
     //RemoteHostClosedError 是对端正常断开，交给 disconnected 处理，避免重复报错
     QObject::connect(&_socket, &QAbstractSocket::errorOccurred, this,
@@ -179,7 +193,10 @@ void FileTcpMgr::slot_connect_resource(QString host, int port)
     _host = host; //地址来自登录回包的res_host
     _port = static_cast<quint16>(port); //端口来自res_port，转成16位
     slot_close_connection(); //先清掉上一个账号的缓冲与在途帧
-    _socket.connectToHost(_host, _port); //异步建连，结果由connected信号通知
+    if (tcp_tls_enabled)
+        _socket.connectToHostEncrypted(_host, _port); //加密连接：encrypted 之后才算可用
+    else
+        _socket.connectToHost(_host, _port); //异步建连，结果由connected信号通知
 }
 
 void FileTcpMgr::resetRecvState()
@@ -208,7 +225,7 @@ void FileTcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
         return;
     }
 
-    QByteArray block; //完整帧 = 2字节ID + 4字节长度 + JSON包体
+    QByteArray block; //完整帧 = 2字节ID + 4字节长度 + 包体（JSON 头 + 原始分片）
     QDataStream out(&block, QIODevice::WriteOnly);
     out.setByteOrder(QDataStream::BigEndian); //与ResourceServer的网络序一致
     out << static_cast<quint16>(reqId) << static_cast<quint32>(dataBytes.size()); //长度只算包体
@@ -280,7 +297,6 @@ void FileTcpMgr::sendWindow(const QString &md5)
         frame["trans_size"] = static_cast<double>(trans_size); //JSON用double传大整数
         frame["total_size"] = static_cast<double>(info->_total_size);
         frame["last"] = last ? 1 : 0;
-        frame["data"] = QString::fromLatin1(buffer.toBase64());
         //聊天图片带消息信息，服务器最后一片写完后回写 chat_message.status
         frame["message_id"] = static_cast<double>(info->_chat_msg_id);
         if (info->_chat_msg_id > 0) {
@@ -292,7 +308,19 @@ void FileTcpMgr::sendWindow(const QString &md5)
 
         info->_seq = seq; //已发出的序号
         info->_flighting.insert(seq); //等服务器确认
-        SendData(info->_req_id, QJsonDocument(frame).toJson(QJsonDocument::Compact));
+
+        //帧体：4 字节头长（网络序）+ JSON 头 + 原始分片
+        const QByteArray header = QJsonDocument(frame).toJson(QJsonDocument::Compact);
+        QByteArray body;
+        body.reserve(4 + header.size() + buffer.size());
+        const quint32 header_len = static_cast<quint32>(header.size());
+        body.append(static_cast<char>((header_len >> 24) & 0xFF));
+        body.append(static_cast<char>((header_len >> 16) & 0xFF));
+        body.append(static_cast<char>((header_len >> 8) & 0xFF));
+        body.append(static_cast<char>(header_len & 0xFF));
+        body.append(header);
+        body.append(buffer);
+        SendData(info->_req_id, body);
     }
     file.close();
 
@@ -460,7 +488,22 @@ void FileTcpMgr::initHandlers()
     //下载回包：seq=1 覆盖写，其余追加；写到 is_last 才通知业务层，
     //这样调用方读到的本地文件一定是完整的。
     _handlers[ID_DOWN_LOAD_FILE_RSP] = [this](ReqId, int, QByteArray data) {
-        const QJsonObject object = parseObject(data);
+        //帧体：4 字节头长 + JSON 头 + 原始分片
+        if (data.size() < 4) {
+            emit sig_download_failed(QString(), 1);
+            return;
+        }
+        const auto *raw = reinterpret_cast<const unsigned char *>(data.constData());
+        const quint32 header_len = (static_cast<quint32>(raw[0]) << 24)
+            | (static_cast<quint32>(raw[1]) << 16)
+            | (static_cast<quint32>(raw[2]) << 8)
+            | static_cast<quint32>(raw[3]);
+        if (header_len == 0 || header_len > 8192
+            || 4 + static_cast<qint64>(header_len) > data.size()) {
+            emit sig_download_failed(QString(), 1);
+            return;
+        }
+        const QJsonObject object = parseObject(data.mid(4, static_cast<int>(header_len)));
         if (object.isEmpty()) {
             emit sig_download_failed(QString(), 1);
             return;
@@ -479,8 +522,7 @@ void FileTcpMgr::initHandlers()
         }
 
         const int seq = object.value("seq").toInt(info->_seq);
-        const QByteArray chunk = QByteArray::fromBase64(
-            object.value("data").toString().toLatin1());
+        const QByteArray chunk = data.mid(4 + static_cast<int>(header_len));
 
         //本地目录可能还不存在；首片覆盖旧文件，后续分片严格按seq追加
         QDir().mkpath(QFileInfo(info->_client_path).absolutePath());

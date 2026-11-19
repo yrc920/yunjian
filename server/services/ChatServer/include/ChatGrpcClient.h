@@ -43,7 +43,6 @@ public:
 	//通知好友服务器添加好友
 	AddFriendRsp NotifyAddFriend(std::string server_ip, const AddFriendReq& req);
 	AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& req); //通知好友服务器验证好友请求
-	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
 	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip,
 		const TextChatMsgReq& req, const Json::Value& rtvalue);
 	//把某人的资料变更推给对端实例上的好友, 一次携带多个 uid

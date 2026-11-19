@@ -1,7 +1,7 @@
 #ifndef TCPMGR_H
 #define TCPMGR_H
 
-#include <QTcpSocket>
+#include <QSslSocket>
 #include <QQueue>
 #include <QThread>
 #include "singleton.h"
@@ -40,7 +40,7 @@ private:
     void registerMetaType(); //注册跨线程信号携带的自定义类型
     void resetRecvState(); //清空半包缓冲与解析游标，断开连接时必须调用
 
-    QTcpSocket _socket; //TCP套接字对象，必须与TcpMgr在同一线程
+    QSslSocket _socket; //明文与 TLS 都走它，必须与TcpMgr在同一线程
     QString _host; //服务器地址
     uint16_t _port; //服务器端口
     QByteArray _buffer; //接收数据的缓冲区

@@ -4,6 +4,7 @@
 #include "const.h"
 
 #include <boost/uuid/uuid_io.hpp>
+#include "Log.h"
 
 //context 由 gRPC 传入（本服务不使用），保留参数以符合基类签名
 grpc::Status VerifyServiceImpl::GetVerifyCode(grpc::ServerContext* /*context*/,
@@ -38,7 +39,7 @@ grpc::Status VerifyServiceImpl::GetVerifyCode(grpc::ServerContext* /*context*/,
 		response->set_error(VerifyCodes::Success);
 	}
 	catch (std::exception& e) {
-		std::cerr << "GetVerifyCode exception: " << e.what() << std::endl;
+		LOG_ERROR << "GetVerifyCode exception: " << e.what();
 		response->set_error(VerifyCodes::Exception);
 	}
 

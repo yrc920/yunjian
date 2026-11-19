@@ -14,6 +14,10 @@ class CSession;
 //文件线程只往result里填error和自己产出的字段，回包字段与业务状态由逻辑层补齐
 using ResultCallback = std::function<void(const Json::Value&)>;
 
+//下载结果回调：header 是回包字段，payload 是原始分片字节，
+//由逻辑层拼成「4 字节头长 + JSON 头 + 原始字节」的帧
+using DownloadCallback = std::function<void(const Json::Value& header, const std::string& payload)>;
+
 struct FileTask {
 	FileTask(std::shared_ptr<CSession> session, int uid, std::string path, std::string name,
 		std::string md5, int seq, long long total_size, long long trans_size, int last,
@@ -31,7 +35,7 @@ struct FileTask {
 	long long _total_size;
 	long long _trans_size; //本片写完后应达到的偏移
 	int _last;
-	std::string _data; //Base64，解码和写盘都在文件线程完成
+	std::string _data; //原始分片字节，写盘在文件线程完成
 	bool _avatar; //最后一片是否要写user.icon
 	//聊天图片的消息信息；头像与普通文件为0，最后一片写完后用它回写消息状态
 	long long _chat_msg_id = 0;
@@ -44,7 +48,7 @@ struct FileTask {
 
 struct DownloadTask {
 	DownloadTask(std::shared_ptr<CSession> session, std::string path, std::string name,
-		int seq, ResultCallback callback)
+		int seq, DownloadCallback callback)
 		: _session(std::move(session)), _path(std::move(path)), _name(std::move(name)),
 		_seq(seq), _callback(std::move(callback)) {}
 
@@ -52,5 +56,5 @@ struct DownloadTask {
 	std::string _path;
 	std::string _name;
 	int _seq;
-	ResultCallback _callback; //error、Base64数据、当前偏移、总大小、是否最后一片
+	DownloadCallback _callback; //error/当前偏移/总大小/是否最后一片 + 原始分片
 };

@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -88,7 +89,7 @@ void PasswordPool::Loop()
 		}
 		catch (std::exception& e) {
 			//单个任务失败不能带走工作线程，响应由任务自己回投
-			std::cerr << "[password] task failed: " << e.what() << std::endl;
+			LOG_ERROR << "[password] task failed: " << e.what();
 		}
 	}
 }

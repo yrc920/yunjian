@@ -7,6 +7,7 @@
 #include <cctype>
 #include <iostream>
 #include <sstream>
+#include "Log.h"
 
 namespace {
 std::string trim(std::string value)
@@ -31,14 +32,14 @@ ChatGrpcClient::ChatGrpcClient()
 		const std::string host = cfg[name]["Host"];
 		const std::string port = cfg[name]["Port"];
 		if (host.empty() || port.empty()) {
-			std::cerr << "[ResourceServer] ChatServer 实例 " << name << " 缺少 Host/Port，已跳过" << std::endl;
+			LOG_WARN << "[ResourceServer] ChatServer 实例 " << name << " 缺少 Host/Port，已跳过";
 			continue;
 		}
 		auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
 		_stubs[name] = message::ChatService::NewStub(channel);
 	}
 	if (_stubs.empty())
-		std::cerr << "[ResourceServer] [ChatServers] 未配置，图片完成通知将直接写 MySQL" << std::endl;
+		LOG_WARN << "[ResourceServer] [ChatServers] 未配置，图片完成通知将直接写 MySQL";
 }
 
 bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int receiver,
@@ -58,7 +59,7 @@ bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int rece
 
 	auto iter = _stubs.find(server_name);
 	if (iter == _stubs.end()) {
-		std::cerr << "no chatserver config for instance: " << server_name << std::endl;
+		LOG_WARN << "no chatserver config for instance: " << server_name;
 		return false;
 	}
 
@@ -78,7 +79,7 @@ bool ChatGrpcClient::NotifyImageReady(long long message_id, int sender, int rece
 	message::NotifyImageUploadedRsp response;
 	const grpc::Status status = iter->second->NotifyImageUploaded(&context, request, &response);
 	if (!status.ok()) {
-		std::cerr << "NotifyImageUploaded failed: " << status.error_message() << std::endl;
+		LOG_ERROR << "NotifyImageUploaded failed: " << status.error_message();
 		return false;
 	}
 	return response.error() == 0;
@@ -96,7 +97,7 @@ bool ChatGrpcClient::BroadcastProfileChanged(int uid)
 
 	auto iter = _stubs.find(server_name);
 	if (iter == _stubs.end()) {
-		std::cerr << "no chatserver config for instance: " << server_name << std::endl;
+		LOG_WARN << "no chatserver config for instance: " << server_name;
 		return false;
 	}
 
@@ -108,7 +109,7 @@ bool ChatGrpcClient::BroadcastProfileChanged(int uid)
 	message::BroadcastProfileRsp response;
 	const grpc::Status status = iter->second->BroadcastProfile(&context, request, &response);
 	if (!status.ok()) {
-		std::cerr << "BroadcastProfile failed: " << status.error_message() << std::endl;
+		LOG_ERROR << "BroadcastProfile failed: " << status.error_message();
 		return false;
 	}
 	return response.error() == 0;

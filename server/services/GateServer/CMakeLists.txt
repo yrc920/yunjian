@@ -3,7 +3,7 @@
 #  对外暴露 HTTP 接口，转发 gRPC 请求到后端服务
 #
 #  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
-#        + hiredis + jsoncpp + mysql-connector-cpp
+#        + hiredis + jsoncpp + Boost.MySQL
 #  产物: 单配置为 bin/GateServer/，多配置为 bin/GateServer/<配置名>/
 #        macOS/Linux 预设使用单配置 Ninja，Windows 预设使用多配置 Visual Studio
 # ============================================================
@@ -17,9 +17,8 @@ set(SERVER_NAME GateServer)
 set(SERVER_SOURCES
     src/GateServer.cpp        # 主入口：初始化配置、Redis、MySQL、服务
     src/CServer.cpp           # HTTP 服务骨架（boost::beast 监听）
-    src/HttpConnection.cpp    # 单个 HTTP 连接的处理
+    src/HttpConnection.cpp    # 单个 HTTP 连接的处理（明文与 HTTPS 共用）
     src/LogicSystem.cpp       # 业务分发：URL 路由 -> 具体处理函数
-    src/MysqlMgr.cpp          # MySQL 连接池（X DevAPI）
     src/MysqlDao.cpp          # 数据访问层（用户表查询等）
     src/StatusGrpcClient.cpp  # 调用 StatusServer 的 gRPC 客户端
     src/VerifyGrpcClient.cpp  # 调用 VerifyServer 的 gRPC 客户端
@@ -34,7 +33,6 @@ set(SERVER_HEADERS
     include/CServer.h
     include/HttpConnection.h
     include/LogicSystem.h
-    include/MysqlMgr.h
     include/MysqlDao.h
     include/StatusGrpcClient.h
     include/VerifyGrpcClient.h
@@ -59,7 +57,7 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # hiredis::hiredis:      Redis 客户端
 # JsonCpp::JsonCpp:      JSON 库
 # unofficial-sodium::sodium: 口令哈希（Argon2id）
-# unofficial::mysql-connector-cpp::connector: MySQL 连接器
+# OpenSSL 由 xiguchat_common 以 PUBLIC 传递（TlsSocket/TlsContext 在那里）
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
     xiguchat_common
@@ -71,7 +69,6 @@ target_link_libraries(${SERVER_NAME} PRIVATE
     hiredis::hiredis
     JsonCpp::JsonCpp
     unofficial-sodium::sodium
-    unofficial::mysql-connector-cpp::connector
     Threads::Threads
 )
 if(WIN32)

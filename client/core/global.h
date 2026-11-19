@@ -104,6 +104,8 @@ enum ErrorCodes{
 };
 
 extern QString gate_url_prefix; //网关服务器的URL前缀,从配置文件中读取
+//聊天与文件通道是否走 TLS：必须与服务端证书配置一致，网关协议由 gate_url_prefix 的 scheme 决定
+extern bool tcp_tls_enabled;
 
 //服务器信息结构体
 struct ServerInfo{

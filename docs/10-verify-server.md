@@ -143,7 +143,7 @@ flowchart TB
 | --- | --- |
 | 入 | GateServer 调用 `GetVerifyCode`（Stub 池 5） |
 | 出 | Redis（`SETEX`）、SMTP |
-| 不使用 | **不访问 MySQL**（因此未链接 mysql-connector-cpp，也不在顶层 zstd/lz4 补链接列表里） |
+| 不使用 | **不访问 MySQL**（因此不链接数据库客户端，只依赖 `xiguchat_common` 的配置与日志） |
 
 ## 10.7 已知问题
 

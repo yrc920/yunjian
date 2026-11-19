@@ -64,6 +64,7 @@ class RedisMgr : public Singleton<RedisMgr>
 public:
 	~RedisMgr();
 
+	bool Ping(); //连通性探测，给健康检查用
 	bool Get(const std::string& key, std::string& value); //读字符串，key 不存在返回 false
 	bool Set(const std::string& key, const std::string& value);
 	bool SetEx(const std::string& key, const std::string& value, int seconds); //SETEX，写入与过期原子完成

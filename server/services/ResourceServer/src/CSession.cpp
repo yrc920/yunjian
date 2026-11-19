@@ -3,9 +3,10 @@
 #include "LogicSystem.h"
 #include <iostream>
 #include <cstring>
+#include "Log.h"
 
-CSession::CSession(boost::asio::io_context& io_context, CServer* server)
-	: _socket(io_context), _server(server)
+CSession::CSession(boost::asio::io_context& io_context, CServer* server, std::shared_ptr<TlsContext> tls)
+	: _socket(io_context, std::move(tls)), _server(server)
 {
 	boost::uuids::uuid uuid = boost::uuids::random_generator()(); //每个连接一个独立UUID
 	_session_id = boost::uuids::to_string(uuid); //逻辑线程按它做哈希分派
@@ -16,7 +17,7 @@ CSession::~CSession() = default;
 
 tcp::socket& CSession::GetSocket()
 {
-	return _socket;
+	return _socket.LowestSocket();
 }
 
 std::string& CSession::GetSessionId()
@@ -38,9 +39,22 @@ bool CSession::BindUser(int uid)
 void CSession::Start()
 {
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self]() {
-		if (!self->IsClosed())
-			self->AsyncReadHead();
+	boost::asio::post(_socket.GetExecutor(), [self]() {
+		if (self->IsClosed())
+			return;
+		//TLS 连接先握手；明文连接这里会立即回调成功，后面只有一条路径
+		self->_socket.AsyncHandshake([self](const boost::system::error_code& ec) {
+			if (ec) {
+				if (ec != boost::asio::error::operation_aborted)
+					LOG_DEBUG << "tls handshake failed: " << ec.message();
+				//握手失败还没开始读，读回调不会再来，这里直接把会话摘掉，别等心跳超时
+				self->Close();
+				self->DealExceptionSession();
+				return;
+			}
+			if (!self->IsClosed())
+				self->AsyncReadHead();
+			});
 	});
 }
 
@@ -51,9 +65,8 @@ void CSession::Close()
 		return;
 
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self]() {
-		boost::system::error_code ec;
-		self->_socket.close(ec);
+	boost::asio::post(_socket.GetExecutor(), [self]() {
+		self->_socket.Close();
 	});
 }
 
@@ -79,7 +92,7 @@ void CSession::Send(std::string msg, std::uint16_t msgid)
 
 	auto self = shared_from_this(); //lambda持有会话，异步写期间对象不会被释放
 	//帧的组装与socket写都在IO线程进行，逻辑线程不能直接碰socket
-	boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msgid]() mutable {
+	boost::asio::post(_socket.GetExecutor(), [self, msg = std::move(msg), msgid]() mutable {
 		self->SendOnIO(std::move(msg), msgid); //进入发送队列或立即发起异步写
 	});
 }
@@ -97,7 +110,7 @@ void CSession::SendOnIO(std::string msg, std::uint16_t msgid)
 		return; //已有写操作在推进，等HandleWrite续写
 
 	auto& node = _send_que.front(); //队列空，当前就是队首
-	boost::asio::async_write(_socket, boost::asio::buffer(node->_data, node->_total_len),
+	_socket.AsyncWrite(boost::asio::buffer(node->_data, node->_total_len),
 		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_from_this())); //写完整帧
 }
 
@@ -105,7 +118,7 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 	std::shared_ptr<CSession> shared_self)
 {
 	if (error) { //写失败，连接不可继续
-		std::cout << "handle write failed, error is " << error.message() << std::endl;
+		LOG_DEBUG << "handle write failed, error is " << error.message();
 		Close(); //标记关闭并投递socket.close
 		DealExceptionSession(); //从会话表删除
 		//异步写完成前不能清空队首缓冲区，此时回调已经返回，可以释放队列
@@ -120,7 +133,7 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 
 	if (!_send_que.empty() && !IsClosed()) { //还有排队帧且连接仍开着
 		auto& node = _send_que.front();
-		boost::asio::async_write(_socket, boost::asio::buffer(node->_data, node->_total_len),
+		_socket.AsyncWrite(boost::asio::buffer(node->_data, node->_total_len),
 			std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self)); //继续下一帧
 	}
 }
@@ -162,8 +175,8 @@ void CSession::AsyncReadHead()
 
 			//先拒绝空包和超过缓冲区的长度，再分配RecvNode，避免异常长度撑爆内存
 			if (msg_id == 0 || msg_len == 0 || msg_len > MAX_MESSAGE_LEN) {
-				std::cout << "invalid header, msg_id is " << msg_id
-					<< ", msg_len is " << msg_len << std::endl;
+				LOG_WARN << "invalid header, msg_id is " << msg_id
+					<< ", msg_len is " << msg_len;
 				Close();
 				DealExceptionSession();
 				return;
@@ -173,7 +186,7 @@ void CSession::AsyncReadHead()
 			AsyncReadBody(msg_len); //继续读包体
 		}
 		catch (std::exception& e) {
-			std::cerr << "Exception in AsyncReadHead: " << e.what() << std::endl;
+			LOG_ERROR << "Exception in AsyncReadHead: " << e.what();
 		}
 	});
 }
@@ -212,7 +225,7 @@ void CSession::AsyncReadBody(std::size_t total_len)
 			AsyncReadHead(); //继续读下一帧头
 		}
 		catch (std::exception& e) {
-			std::cerr << "Exception in AsyncReadBody: " << e.what() << std::endl;
+			LOG_ERROR << "Exception in AsyncReadBody: " << e.what();
 		}
 	});
 }
@@ -228,7 +241,7 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
 {
 	auto self = shared_from_this(); //递归回调期间保持存活
-	_socket.async_read_some(boost::asio::buffer(_data + read_len, total_len - read_len),
+	_socket.AsyncReadSome(boost::asio::buffer(_data + read_len, total_len - read_len),
 		[read_len, total_len, handler = std::move(handler), self](
 			const boost::system::error_code& ec, std::size_t bytes_transferred) {
 			if (ec) { //读失败，把已读长度一起带回

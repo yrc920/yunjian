@@ -82,7 +82,7 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 | 文件 | 说明 |
 | --- | --- |
 | `httpmgr` | HTTP 短连接（`QNetworkAccessManager`），按 `Modules` 分发回包 |
-| `tcpmgr` | TCP 长连接（`QTcpSocket`）+ 自定义帧编解码 |
+| `tcpmgr` | TCP 长连接（`QSslSocket`，明文或 TLS）+ 自定义帧编解码 |
 
 ## 6.3 启动流程
 
@@ -730,9 +730,9 @@ QML 侧走 `qrc:/res/...`。
 
 | 事项 | 现状 |
 | --- | --- |
-| 密码传输 | `xorString()` 做可逆 XOR 变形（按字符串长度取模），**不是加密**，且 HTTP 未启用 TLS |
+| 密码传输 | `xorString()` 做可逆 XOR 变形（按字符串长度取模），**不是加密**；网关 HTTPS 与聊天/文件 TLS 已支持，未配证书时仍是明文，见 `14-tls-deployment.md` |
 | 本地存储 | 保存外观偏好，以及按账号隔离的头像、好友头像缓存、聊天图片、视频首帧、视频与文件，不保存密码或 token |
-| 输入注入 | HTTP 走 JSON；MySQL 走 X DevAPI 的参数化 `sql("... ?").bind()`，无字符串拼接 |
+| 输入注入 | HTTP 走 JSON；MySQL 走预处理语句与参数绑定（`sql("... ?").bind()`），无字符串拼接 |
 
 ## 6.10 客户端侧已知缺口
 

@@ -15,7 +15,8 @@ using boost::asio::ip::tcp;
 class CServer : public std::enable_shared_from_this<CServer>
 {
 public:
-	CServer(boost::asio::io_context& io_context, short port);
+	//tls 为空时客户端连接为明文 TCP；非空则每条连接先握手
+	CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<TlsContext> tls);
 	~CServer();
 	void ClearSession(const std::string&); //清除指定uuid的会话
     bool CheckValid(const std::string&); //检查指定uuid的会话是否存在
@@ -40,6 +41,7 @@ private:
 	std::map<std::string, std::shared_ptr<CSession>> _sessions; //存储所有会话
 	std::mutex _mutex; //保护_sessions的互斥锁
     boost::asio::steady_timer _timer; //定时器, 用于心跳检测、续租与实例上报
+    int _stats_tick = 0; //每两个心跳周期输出一次运行指标
     std::atomic<bool> _stopped{false}; //标记服务器是否已停止, 用于控制定时器和会话清理的行为
 
     std::string _self_name; //本实例名，状态服务据此识别心跳
@@ -51,5 +53,6 @@ private:
     bool _registered = false; //注册是否有效，续租返回 InstanceUnknown 时置回 false
     int _renew_failures = 0; //连续续租失败次数，只用于日志分级，不作为踢人依据
     bool _draining = false; //状态服务标记的下线状态
+    std::shared_ptr<TlsContext> _tls; //空 = 明文接入
 };
 

@@ -2,6 +2,7 @@
 #include "ResourceHandler.h"
 #include <iostream>
 #include "const.h"
+#include "Log.h"
 
 LogicWorker::LogicWorker()
 {
@@ -54,7 +55,7 @@ void LogicWorker::TaskCallback(std::shared_ptr<LogicNode> task)
 {
 	auto iter = _handlers.find(task->_recvnode->_msg_id); //按ID找处理器
 	if (iter == _handlers.end()) {
-		std::cout << "no handler for msg id " << task->_recvnode->_msg_id << std::endl;
+		LOG_WARN << "no handler for msg id " << task->_recvnode->_msg_id;
 		return;
 	}
 
@@ -63,7 +64,7 @@ void LogicWorker::TaskCallback(std::shared_ptr<LogicNode> task)
 		iter->second(task->_session, task->_recvnode->_msg_id, body); //执行上传/同步/下载
 	}
 	catch (std::exception& e) { //异常不能逃出线程
-		std::cerr << "Exception in logic worker: " << e.what() << std::endl;
+		LOG_ERROR << "Exception in logic worker: " << e.what();
 	}
 }
 

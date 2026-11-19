@@ -14,7 +14,7 @@
 ## 4.1 MySQL
 
 数据库：`xigu`，字符集 `utf8mb4 / utf8mb4_unicode_ci`。
-后端通过 **X DevAPI（X Protocol，默认 33060）** 访问，连接参数在各自 `config.ini` 的 `[Mysql]` 段。
+后端通过 **Boost.MySQL（经典协议，默认 3306）** 访问，连接参数在各自 `config.ini` 的 `[Mysql]` 段。
 
 ### 表 `user`
 

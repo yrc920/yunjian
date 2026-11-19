@@ -1,14 +1,14 @@
 #include "FileWorker.h"
-#include "Base64.h"
 #include "ChatGrpcClient.h"
 #include "LogicSystem.h"
-#include "MysqlMgr.h"
+#include "MysqlDao.h"
 #include "RedisMgr.h"
 #include "const.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
 #include <fstream>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -41,7 +41,7 @@ FileWorker::FileWorker()
 			if (_b_stop.load()) //停服优先，未处理的任务直接丢弃
 				break;
 
-			//取出任务后立刻解锁：Base64解码、写盘、数据库更新都不需要占着队列锁
+			//取出任务后立刻解锁：写盘与数据库更新都不需要占着队列锁
 			auto task = _task_que.front(); //先取队首
 			_task_que.pop(); //再弹出，避免拷贝
 			lock.unlock(); //后面的IO与数据库操作不占队列锁
@@ -78,16 +78,12 @@ void FileWorker::Stop()
 
 void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 {
-	std::string decoded;
-	if (!base64::Decode(task->_data, decoded) || decoded.empty()) { //分片内容非法
-		FinishTask(task, ErrorCodes::FileDataInvalid); //回错误码给逻辑线程
-		return;
-	}
-
-	//客户端按2048字节切片，偏移必须与seq对应，防止丢片后把文件写歪
+	//偏移必须与seq对应：分片为空、超长或与本片声明的 trans_size 对不上都拒收
+	const std::string& data = task->_data;
 	const long long expected_trans = static_cast<long long>(task->_seq - 1) * MAX_FILE_LEN
-		+ static_cast<long long>(decoded.size());
-	if (task->_seq < 1 || decoded.size() > MAX_FILE_LEN || expected_trans != task->_trans_size) {
+		+ static_cast<long long>(data.size());
+	if (task->_seq < 1 || data.empty() || data.size() > MAX_FILE_LEN
+		|| expected_trans != task->_trans_size) {
 		FinishTask(task, ErrorCodes::FileDataInvalid); //序号、长度、偏移任一项不符
 		return;
 	}
@@ -104,21 +100,21 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		mode |= (task->_seq == 1) ? std::ios::trunc : std::ios::app; //首片覆盖，其余追加
 		std::ofstream outfile(task->_path, mode); //打开目标文件
 		if (!outfile) { //目录权限或磁盘问题
-			std::cerr << "无法打开文件进行写入: " << task->_path << std::endl;
+			LOG_ERROR << "无法打开文件进行写入: " << task->_path;
 			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 			return;
 		}
 
-		outfile.write(decoded.data(), static_cast<std::streamsize>(decoded.size())); //写本片
+		outfile.write(data.data(), static_cast<std::streamsize>(data.size())); //写本片
 		if (!outfile) { //写满磁盘或IO错误
-			std::cerr << "写入文件失败: " << task->_path << std::endl;
+			LOG_ERROR << "写入文件失败: " << task->_path;
 			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 			return;
 		}
 		outfile.close(); //关闭后数据才真正落盘
 	}
 	catch (std::exception& e) { //文件系统异常不能逃出线程
-		std::cerr << "FileWorker exception: " << e.what() << std::endl;
+		LOG_ERROR << "FileWorker exception: " << e.what();
 		FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 		return;
 	}
@@ -133,8 +129,8 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 			boost::filesystem::remove(final_path, ec); //同名重传覆盖旧文件
 		boost::filesystem::rename(task->_path, final_path, ec);
 		if (ec) {
-			std::cerr << "rename upload failed: " << task->_path << " -> "
-				<< final_path.string() << " (" << ec.message() << ")" << std::endl;
+			LOG_ERROR << "rename upload failed: " << task->_path << " -> "
+				<< final_path.string() << " (" << ec.message() << ")";
 			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
 			return;
 		}
@@ -166,10 +162,10 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 			task->_chat_msg_id, task->_uid, task->_touid, task->_thread_id, task->_name,
 			task->_unique_id, task->_total_size, task->_thread_type);
 		if (!notified) {
-			const bool updated = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
+			const bool updated = MysqlDao::GetInstance()->UpdateChatMessageStatus(
 				task->_chat_msg_id, task->_uid, 1);
 			if (!updated)
-				std::cerr << "update chat message status failed, id: " << task->_chat_msg_id << std::endl;
+				LOG_ERROR << "update chat message status failed, id: " << task->_chat_msg_id;
 		}
 	}
 
@@ -178,12 +174,12 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 
 void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)
 {
-	if (!MysqlMgr::GetInstance()->UpdateUserIcon(uid, name)) { //先写user.icon
-		std::cerr << "update user icon failed, uid: " << uid << std::endl;
+	if (!MysqlDao::GetInstance()->UpdateUserIcon(uid, name)) { //先写user.icon
+		LOG_ERROR << "update user icon failed, uid: " << uid;
 		return;
 	}
 
-	auto user_info = MysqlMgr::GetInstance()->GetUser(uid); //取完整资料刷新缓存
+	auto user_info = MysqlDao::GetInstance()->GetUser(uid); //取完整资料刷新缓存
 	if (!user_info) {
 		return;
 	}
@@ -205,6 +201,6 @@ void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)
 	//头像文件名变了, 让 ChatServer 把新资料推给在线好友; 失败只记日志,
 	//好友下次登录仍会从 1006 回包里拿到新的 icon 文件名
 	if (!ChatGrpcClient::GetInstance()->BroadcastProfileChanged(uid)) {
-		std::cerr << "broadcast avatar change failed, uid: " << uid << std::endl;
+		LOG_WARN << "broadcast avatar change failed, uid: " << uid;
 	}
 }

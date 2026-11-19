@@ -3,6 +3,7 @@
 #include "const.h"
 #include <algorithm>
 #include <iostream>
+#include "Log.h"
 
 namespace {
 
@@ -122,7 +123,7 @@ std::map<int, std::string> SessionRouter::LookupBatch(const std::vector<int>& ui
 		std::vector<int> chunk(misses.begin() + offset, misses.begin() + end);
 		auto reply = StatusGrpcClient::GetInstance()->BatchLookupRoute(chunk);
 		if (reply.error() != ErrorCodes::Success) {
-			std::cout << "[route] batch lookup failed size=" << chunk.size() << std::endl;
+			LOG_WARN << "[route] batch lookup failed size=" << chunk.size();
 			continue;
 		}
 

@@ -69,7 +69,7 @@ flowchart TB
     end
 
     Redis[("Redis 6380")]
-    MySQL[("MySQL<br/>X Protocol 33060")]
+    MySQL[("MySQL<br/>经典协议 3306")]
     Mail["邮箱服务商<br/>SMTP 465 SSL"]
 
     Client -->|"HTTP：注册 / 登录 / 改密 / 验证码"| Gate
@@ -156,7 +156,7 @@ ChatServer 是"一套代码、配置驱动多实例"：`services/ChatServer/conf
 | --- | --- |
 | 客户端 | Qt 6.5（Core / Gui / Widgets / Network / Quick）、C++17、QML + Qt 资源系统（qrc）；Widgets 仅用于托盘集成 |
 | 服务端 | C++20、gRPC + protobuf、Boost.Asio / Boost.Beast、Boost.PropertyTree、Boost.Uuid |
-| 存储 | MySQL 8（X DevAPI / X Protocol 33060）、Redis（hiredis） |
+| 存储 | MySQL 8（Boost.MySQL / 经典协议 3306）、Redis（hiredis） |
 | 安全 | libsodium（Argon2id 口令哈希）、Poco NetSSL（SMTP over SSL） |
 | 构建 | CMake ≥ 3.21、Ninja / Visual Studio、vcpkg（manifest 模式） |
 
@@ -167,8 +167,8 @@ ChatServer 是"一套代码、配置驱动多实例"：`services/ChatServer/conf
 ### 1. 准备外部服务
 
 ```bash
-# MySQL：暴露 3306（经典协议）与 33060（X 协议，后端实际使用）
-docker run -d --name chat-mysql -p 3306:3306 -p 33060:33060 \
+# MySQL：只暴露 3306（后端与图形客户端都走经典协议）
+docker run -d --name chat-mysql -p 3306:3306 \
   -e MYSQL_ROOT_PASSWORD=123456 mysql:8
 
 # Redis：项目配置使用 6380 端口，密码 123456
@@ -249,13 +249,13 @@ cd build/macos-clang/bin
 
 | 服务 / 组件 | 协议 | 端口 | 说明 |
 | --- | --- | --- | --- |
-| GateServer | HTTP | 8080 | 客户端 HTTP 接口 |
+| GateServer | HTTP / HTTPS | 8080 | 客户端 HTTP 接口；配了证书即切换为 HTTPS |
 | VerifyServer | gRPC | 50051 | 验证码下发 |
 | StatusServer | gRPC | 50052 | 会话租约 / 实例注册 / 在线位置 |
-| ChatServer `chatserver1` | TCP + gRPC | 8090 / 50055 | TCP 面向客户端，gRPC 面向服务间 |
-| ChatServer `chatserver2` | TCP + gRPC | 8091 / 50056 | 同上 |
-| ResourceServer | TCP | 9090 | 头像/文件分段上传与下载 |
-| MySQL | 经典 / X 协议 | 3306 / 33060 | 后端使用 **X 协议 33060** |
+| ChatServer `chatserver1` | TCP（可 TLS）+ gRPC | 8090 / 50055 | TCP 面向客户端，gRPC 面向服务间 |
+| ChatServer `chatserver2` | TCP（可 TLS）+ gRPC | 8091 / 50056 | 同上 |
+| ResourceServer | TCP（可 TLS） | 9090 | 头像/文件分段上传与下载 |
+| MySQL | 经典协议 | 3306 | 后端使用 **经典协议 3306** |
 | Redis | RESP | 6380 | 密码 123456 |
 
 ---
@@ -264,7 +264,7 @@ cd build/macos-clang/bin
 
 | 依赖 | 地址 | 用途 |
 | --- | --- | --- |
-| MySQL | `127.0.0.1:33060`（X 协议） | 用户、好友、好友申请、会话与消息持久化；schema `xigu` |
+| MySQL | `127.0.0.1:3306`（经典协议） | 用户、好友、好友申请、会话与消息持久化；schema `xigu` |
 | Redis | `127.0.0.1:6380` | token、用户缓存、实例位置、连接计数、验证码 |
 
 ---
@@ -308,9 +308,12 @@ cd build/macos-clang/bin
 本项目定位为学习与工程实践项目，以下为已知的功能与安全缺口（完整清单见
 [docs/11-known-limitations.md](docs/11-known-limitations.md)）：
 
-- 密码在 HTTP 链路上为可逆 XOR 变形，非加密传输；网关未启用 TLS。
-- Token 无有效期、无刷新与吊销机制。
-- 已有客户端心跳与服务端超时扫描；尚无断线重连。服务端已持久化消息，离线消息在下次登录补拉；已读回执尚未实现。
+- 密码在 HTTP 链路上仍是可逆 XOR 变形，安全性完全依赖传输层：网关（HTTPS）、聊天与文件通道
+  （TLS）都已支持加密，**但未配证书时仍是明文**，部署时务必配置（[docs/14-tls-deployment.md](docs/14-tls-deployment.md)）。
+- 服务间 gRPC 仍是明文，仅容器内网可达。
+- Token 有效期 7 天，登出即吊销，暂无刷新机制。
+- 断线自动重连已实现（1/2/4/8/15 秒退避，最多 6 次），但不支持跨实例故障转移；
+  单聊已读回执已实现，群聊不逐条回执。
 - 单端登录：新登录用更高 epoch 顶掉旧会话，客户端收到 1021(reason=1) 后必须重新输入密码。
 
 ---

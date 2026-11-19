@@ -2,15 +2,33 @@
 #include "HttpConnection.h"
 #include "VerifyGrpcClient.h"
 #include "RedisMgr.h"
-#include "MysqlMgr.h"
+#include "MysqlDao.h"
 #include "StatusGrpcClient.h"
 #include "PasswordPool.h"
+#include <chrono>
 #include <ctime>
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include "Log.h"
 
 namespace {
+
+//日志里不留完整邮箱：保留首字符与域名，能定位账号又不会把通讯录写进日志
+std::string MaskEmail(const std::string& email)
+{
+	const auto at = email.find('@');
+	if (at == std::string::npos || at == 0)
+		return "***";
+	return email.substr(0, 1) + "***" + email.substr(at);
+}
+
+//进程启动时刻，健康检查用来回报运行时长
+std::chrono::steady_clock::time_point ProcessStartTime()
+{
+	static const auto start = std::chrono::steady_clock::now();
+	return start;
+}
 
 //取客户端地址做 IP 维度限流；取不到时返回空串，调用方跳过该维度
 std::string ClientIp(const std::shared_ptr<HttpConnection>& connection)
@@ -67,16 +85,25 @@ long long ReadCounter(const std::string& key)
 
 LogicSystem::LogicSystem() {
 	//注册一个GET请求的URL和对应的处理函数
-    RegGet("/get_test", [](std::shared_ptr<HttpConnection> connection) {
-        beast::ostream(connection->_response.body()) << "receive get_test req" << std::endl;
+    //健康检查：部署脚本与容器探针用，任一依赖不可用就回 503，
+	//响应体带上细分原因，排障时不用再登机器看日志
+	RegGet("/healthz", [](std::shared_ptr<HttpConnection> connection) {
+		const bool redis_ok = RedisMgr::GetInstance()->Ping();
+		const bool mysql_ok = MysqlDao::GetInstance()->Ping();
+		const bool healthy = redis_ok && mysql_ok;
 
-		//如果URL中有参数, 则将参数键值对写入响应内容中, 以便测试GET请求的参数解析功能
-		int i = 0; //用于计数参数的序号, 从1开始
-		for (auto& elem : connection->_get_params) {
-			i++;
-			beast::ostream(connection->_response.body()) << "param" << i << " key is " << elem.first;
-			beast::ostream(connection->_response.body()) << ", " << " value is " << elem.second << std::endl;
-		}
+		Json::Value root;
+		root["status"] = healthy ? "ok" : "degraded";
+		root["redis"] = redis_ok;
+		root["mysql"] = mysql_ok;
+		root["uptime_seconds"] = static_cast<Json::Int64>(
+			std::chrono::duration_cast<std::chrono::seconds>(
+				std::chrono::steady_clock::now() - ProcessStartTime()).count());
+
+		connection->_response.set(http::field::content_type, "application/json");
+		connection->SetResult(healthy ? http::status::ok : http::status::service_unavailable);
+		beast::ostream(connection->_response.body()) << root.toStyledString();
+		return true;
     });
 
 	//注册发送验证码的POST请求的URL和对应的处理函数
@@ -92,7 +119,7 @@ LogicSystem::LogicSystem() {
 		bool parse_success = reader.parse(body_str, src_root);
 		//请求体必须是对象，email必须是字符串；先检查类型再取值，避免数组或对象触发转换异常
 		if (!parse_success || !src_root.isObject() || !src_root["email"].isString()) {
-			std::cout << "Failed to parse JSON data!" << std::endl;
+			LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
 			std::string jsonstr = root.toStyledString();
@@ -143,7 +170,7 @@ LogicSystem::LogicSystem() {
 
 		//给验证服务发送RPC请求, 获取验证码, 将RPC调用的结果存储在rsp中
 		GetVerifyRsp rsp = VerifyGrpcClient::GetInstance()->GetVerifyCode(email);
-		std::cout << "email is " << email << std::endl;
+		LOG_DEBUG << "email is " << email;
 		root["error"] = rsp.error(); //将RPC调用结果中的error字段设置到响应的JSON数据中
 		root["email"] = src_root["email"]; //将请求中的email字段原样返回到响应中
 		//将JSON数据转换为字符串, 并写入响应内容中
@@ -168,7 +195,7 @@ LogicSystem::LogicSystem() {
 			!src_root["email"].isString() || !src_root["user"].isString() ||
 			!src_root["passwd"].isString() || !src_root["confirm"].isString() ||
 			!src_root["verifycode"].isString()) {
-            std::cout << "Failed to parse JSON data!" << std::endl;
+            LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -184,7 +211,7 @@ LogicSystem::LogicSystem() {
 
 		//检查密码和确认密码是否一致, 如果不一致则返回错误信息
 		if (pwd != confirm) {
-			std::cout << " confirm password error" << std::endl;
+			LOG_WARN << " confirm password error";
 			root["error"] = ErrorCodes::PasswdErr;
 			//将JSON数据转换为字符串, 并写入响应内容中
 			std::string jsonstr = root.toStyledString();
@@ -198,7 +225,7 @@ LogicSystem::LogicSystem() {
             Get(CODEPREFIX + email, verify_code);
 		//如果没有找到验证码或者验证码过期了, 则返回错误信息
         if (!b_get_verify) {
-            std::cout << " get verify code expired" << std::endl;
+            LOG_WARN << " get verify code expired";
 			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
             //将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -207,7 +234,7 @@ LogicSystem::LogicSystem() {
         }
 		//如果找到了验证码, 则将请求中的验证码和redis中获取到的验证码进行比较, 如果不一致则返回错误信息
         if (verify_code != src_root["verifycode"].asString()) {
-            std::cout << " verify code error" << std::endl;
+            LOG_WARN << " verify code error";
 			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -218,9 +245,9 @@ LogicSystem::LogicSystem() {
 		//注册要写库并生成哈希，同样交给口令线程池
 		PostPasswordWork(connection, [name, email, pwd]() {
 			Json::Value result;
-			const int uid = MysqlMgr::GetInstance()->RegUser(name, email, pwd);
+			const int uid = MysqlDao::GetInstance()->RegUser(name, email, pwd);
 			if (uid == 0 || uid == -1) {
-				std::cerr << " user or email exist" << std::endl;
+				LOG_WARN << " user or email exist";
 				result["error"] = ErrorCodes::UserExist;
 				return result;
 			}
@@ -228,6 +255,7 @@ LogicSystem::LogicSystem() {
 			//验证码一次性使用：注册成功后立即删除，避免同一码再用于改密
 			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
 
+			spdlog::info("register ok uid={} account={} name={}", uid, MaskEmail(email), name);
 			result["error"] = 0;
 			result["uid"] = uid;
 			result["email"] = email;
@@ -251,7 +279,7 @@ LogicSystem::LogicSystem() {
 		//改密请求必须同时提供字符串类型的邮箱、用户名、新密码和验证码，缺字段或类型不符都返回JSON错误
         if (!parse_success || !src_root.isObject() || !src_root["email"].isString() ||
             !src_root["user"].isString() || !src_root["passwd"].isString() || !src_root["verifycode"].isString()) {
-            std::cout << "Failed to parse JSON data!" << std::endl;
+            LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -270,7 +298,7 @@ LogicSystem::LogicSystem() {
 			Get(CODEPREFIX + src_root["email"].asString(), verify_code);
 		//如果没有找到验证码或者验证码过期了, 则返回错误信息
         if (!b_get_verify) {
-            std::cout << " get verify code expired" << std::endl;
+            LOG_WARN << " get verify code expired";
 			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -279,7 +307,7 @@ LogicSystem::LogicSystem() {
         }
 		//如果找到了验证码, 则将请求中的验证码和redis中获取到的验证码进行比较, 如果不一致则返回错误信息
         if (verify_code != src_root["verifycode"].asString()) {
-            std::cout << " verify code error" << std::endl;
+            LOG_WARN << " verify code error";
 			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -290,14 +318,14 @@ LogicSystem::LogicSystem() {
         //改密要写新哈希，和注册一样交给口令线程池
 		PostPasswordWork(connection, [name, email, pwd]() {
 			Json::Value result;
-			if (!MysqlMgr::GetInstance()->CheckEmail(name, email)) {
-				std::cerr << " user email not match" << std::endl;
+			if (!MysqlDao::GetInstance()->CheckEmail(name, email)) {
+				LOG_WARN << " user email not match";
 				result["error"] = ErrorCodes::EmailNotMatch;
 				return result;
 			}
 
-			if (!MysqlMgr::GetInstance()->UpdatePwd(name, pwd)) {
-				std::cerr << " update pwd failed" << std::endl;
+			if (!MysqlDao::GetInstance()->UpdatePwd(name, pwd)) {
+				LOG_ERROR << " update pwd failed";
 				result["error"] = ErrorCodes::PasswdUpFailed;
 				return result;
 			}
@@ -305,6 +333,7 @@ LogicSystem::LogicSystem() {
 			//验证码一次性使用：改密成功后立即删除，避免同一码再次改密
 			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
 
+			spdlog::info("password reset ok account={} name={}", MaskEmail(email), name);
 			result["error"] = 0;
 			result["email"] = email;
 			result["user"] = name;
@@ -327,7 +356,7 @@ LogicSystem::LogicSystem() {
 		//登录入口只接受对象形式的请求，并检查邮箱和密码类型，避免错误字段进入数据库验证流程
         if (!parse_success || !src_root.isObject() ||
             !src_root["email"].isString() || !src_root["passwd"].isString()) {
-            std::cout << "Failed to parse JSON data!" << std::endl;
+            LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
             std::string jsonstr = root.toStyledString();
@@ -361,7 +390,7 @@ LogicSystem::LogicSystem() {
 				Json::Value result;
 				UserInfo user_info;
 				bool db_error = false;
-				const bool pwd_valid = MysqlMgr::GetInstance()->CheckPwd(
+				const bool pwd_valid = MysqlDao::GetInstance()->CheckPwd(
 					email, pwd, user_info, db_error);
 				if (!pwd_valid) {
 					//数据库不可用是服务端故障，不能当成密码错误，也不能累加失败次数
@@ -373,6 +402,7 @@ LogicSystem::LogicSystem() {
 					RedisMgr::GetInstance()->IncrWithTtl(account_key, LOGIN_FAIL_WINDOW_SECONDS);
 					if (!ip_key.empty())
 						RedisMgr::GetInstance()->IncrWithTtl(ip_key, LOGIN_FAIL_WINDOW_SECONDS);
+					spdlog::warn("login rejected account={} reason=bad_password", MaskEmail(email));
 					result["error"] = ErrorCodes::PasswdInvalid;
 					return result;
 				}
@@ -384,11 +414,13 @@ LogicSystem::LogicSystem() {
 
 				const auto reply = StatusGrpcClient::GetInstance()->GetChatServer(user_info.uid);
 				if (reply.error()) {
-					std::cerr << "grpc get chat server failed, error is " << reply.error() << std::endl;
+					LOG_ERROR << "grpc get chat server failed, error is " << reply.error();
 					result["error"] = ErrorCodes::RPCFailed;
 					return result;
 				}
 
+				spdlog::info("login ok uid={} account={} chat={}:{}",
+					user_info.uid, MaskEmail(email), reply.host(), reply.port());
 				result["error"] = 0;
 				result["email"] = email;
 				result["uid"] = user_info.uid;

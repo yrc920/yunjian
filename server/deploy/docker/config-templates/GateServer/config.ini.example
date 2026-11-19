@@ -1,5 +1,10 @@
 [GateServer]
-Port = 8080
+Port = __GATE_PORT__
+# HTTPS：容器内 /etc/xiguchat/certs 下同时存在 fullchain.pem 与 privkey.pem 时由
+# start_stack.sh 填入，留空按明文 HTTP 服务
+SslCert = __TLS_CERT__
+SslKey = __TLS_KEY__
+SslReloadSeconds = 60
 [VerifyServer]
 Host = 127.0.0.1
 Port = 50051
@@ -8,7 +13,10 @@ Host = 127.0.0.1
 Port = 50052
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+# 经典协议端口（Boost.MySQL）
+Port = 3306
+# 单条查询的 deadline（毫秒），到点由 Asio 取消，连接仍可复用
+QueryTimeoutMs = 5000
 User = root
 Passwd = 123456
 Schema = xigu

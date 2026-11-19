@@ -11,6 +11,9 @@
 - 线程模型不同：资源服务没有单消费者逻辑队列，而是按会话分派到多个 `LogicWorker`，
   落盘再按文件名分派到多个 `FileWorker` / `DownloadWorker`。
 
+客户端连接支持 TLS：`[SelfServer]` 配好 `SslCert`/`SslKey` 后，握手完成才开始读第一帧，
+6 字节帧与 64 KB 分片逻辑完全不变。开关与部署见 `14-tls-deployment.md`。
+
 ---
 
 ## 13.1 进程与线程
@@ -20,8 +23,8 @@
 | 主线程 | 1 | 运行 acceptor 所在的 `io_context`，处理信号与停服 |
 | `IOContextPool` | CPU 核心数 | 每个线程一个 `io_context`，承载会话的异步收发 |
 | `LogicWorker` | 4 | 按会话 UUID 哈希分派，解析 JSON、校验 token、维护进度、投递文件任务 |
-| `FileWorker` | 4 | 按文件名哈希分派，Base64 解码、追加写盘、最后一片更新头像 |
-| `DownloadWorker` | 2 | 按文件名哈希分派，按 seq 读取分片并 Base64 编码 |
+| `FileWorker` | 4 | 按文件名哈希分派，原始分片追加写盘、最后一片更新头像 |
+| `DownloadWorker` | 2 | 按文件名哈希分派，按 seq 读取分片原始字节 |
 
 分派规则解决了两个顺序问题：
 
@@ -51,8 +54,8 @@
 | 常量 | 值 | 说明 |
 | --- | --- | --- |
 | `HEAD_TOTAL_LEN` | 6 | 2 字节 ID + 4 字节长度 |
-| `MAX_FILE_LEN` | 2048 | 每个分片的原始字节数，两端必须一致 |
-| `MAX_MESSAGE_LEN` | 16384 | 单帧包体上限；2KB 原始数据经 Base64 与 JSON 包装后仍有充足余量 |
+| `MAX_FILE_LEN` | 64 KiB | 每个分片的原始字节数，两端必须一致 |
+| `MAX_MESSAGE_LEN` | 128 KiB | 单帧包体上限：64 KiB 数据 + 几百字节 JSON 头，留出一倍余量 |
 | `MAX_FILE_SIZE` | 4GB | 单个文件上限 |
 
 客户端 `FileTcpMgr` 使用同一套 6 字节头；聊天 `TcpMgr` 仍保持 4 字节头，两者不能混用。
@@ -73,6 +76,14 @@
 
 ### 上传请求
 
+包体由三段拼成，分片不再塞进 JSON：
+
+```
++----------------+--------------------------+---------------------+
+| 4B 头长(网络序) | JSON 头（字段见下）        | 原始分片字节          |
++----------------+--------------------------+---------------------+
+```
+
 ```json
 {
   "uid": 1006,
@@ -80,21 +91,22 @@
   "md5": "32位十六进制",
   "name": "<md5>.jpg（透明图用 .png）",
   "seq": 1,
-  "trans_size": 2048,
+  "trans_size": 65536,
   "total_size": 31975,
-  "last": 0,
-  "data": "Base64 分片"
+  "last": 0
 }
 ```
+
+分片直接跟在 JSON 头后面，不经过 Base64：省掉 33% 的体积与两端各一次编解码。
 
 服务端检查：
 
 - `uid`、`token` 与 Redis `utoken_<uid>` 一致；第一个请求通过后把 uid 绑到连接，
   后续分片只校验连接身份，不再重复访问 Redis；
 - `md5` 为 32 位十六进制，`name` 不能包含 `/`、`\` 或以 `.` 开头；
-- `total_size ≤ 4GB`，`trans_size = (seq-1) × 2048 + 分片长度`；
+- `total_size ≤ 4GB`，`trans_size = (seq-1) × 65536 + 分片长度`，分片长度 1–65536；
 - `last == 1` 必须与 `trans_size == total_size` 同时成立；
-- `seq > 1` 时，服务器必须已有该 md5 的进度，且 `seq` 必须等于上一片序号 + 1。
+- `seq > 1` 时，服务器必须已有该 md5 的进度（内存或 Redis），且 `seq` 等于上一片序号 + 1。
 
 任一项不满足都会返回对应错误码，不会写盘。回包字段：
 
@@ -104,7 +116,7 @@
   "md5": "...",
   "name": "...",
   "seq": 1,
-  "trans_size": 2048,
+  "trans_size": 65536,
   "total_size": 31975,
   "last": 0,
   "uid": 1006
@@ -128,14 +140,15 @@
 
 `uid` 是请求者，用于校验 token；`owner_uid` 是文件属于谁。回包：
 
+回包包体与上传同构：`4B 头长 + JSON 头 + 原始分片`，JSON 头为：
+
 ```json
 {
   "error": 0,
   "name": "<md5>.png",
   "seq": 1,
-  "data": "Base64 分片",
   "is_last": false,
-  "current_size": 2048,
+  "current_size": 65536,
   "total_size": 31975
 }
 ```
@@ -234,7 +247,7 @@ Path = storage
 
 [Mysql]
 Host = 127.0.0.1
-XPort = 33060
+Port = 3306
 User = root
 Passwd = 123456
 Schema = xigu

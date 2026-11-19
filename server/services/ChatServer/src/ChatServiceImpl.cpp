@@ -1,12 +1,14 @@
 #include "ChatServiceImpl.h"
+#include "UserCache.h"
 #include "UserMgr.h"
 #include "CSession.h"
 #include <json/json.h>
 #include <json/value.h>
 #include <json/reader.h>
 #include "RedisMgr.h" 
-#include "MysqlMgr.h"
+#include "MysqlDao.h"
 #include "LogicSystem.h"
+#include "Log.h"
 
 ChatServiceImpl::ChatServiceImpl() {}
 
@@ -88,7 +90,7 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context,
 
 	std::string base_key = USER_BASE_INFO + std::to_string(fromuid);
 	auto user_info = std::make_shared<UserInfo>();
-	bool b_info = GetBaseInfo(base_key, fromuid, user_info);
+	bool b_info = usercache::GetBaseInfo(base_key, fromuid, user_info);
 	if (b_info) {
 		rtvalue["name"] = user_info->name;
 		rtvalue["nick"] = user_info->nick;
@@ -148,50 +150,6 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	return Status::OK;
 }
 
-
-bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
-{
-	//优先查redis中查询用户信息
-	std::string info_str = "";
-	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
-	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		userinfo->uid = root["uid"].asInt();
-		userinfo->name = root["name"].asString();
-		userinfo->email = root["email"].asString();
-		userinfo->nick = root["nick"].asString();
-		userinfo->desc = root["desc"].asString();
-		userinfo->sex = root["sex"].asInt();
-		userinfo->icon = root["icon"].asString();
-        std::cout << "user uid is " << uid << std::endl;
-	}
-	else {
-		//redis中没有则查询mysql
-		//查询数据库
-		std::shared_ptr<UserInfo> user_info = nullptr;
-		user_info = MysqlMgr::GetInstance()->GetUser(uid);
-		if (user_info == nullptr) {
-			return false;
-		}
-
-		userinfo = user_info;
-
-		//将数据库内容写入redis缓存
-		Json::Value redis_root;
-		redis_root["uid"] = uid;
-		redis_root["name"] = userinfo->name;
-		redis_root["email"] = userinfo->email;
-		redis_root["nick"] = userinfo->nick;
-		redis_root["desc"] = userinfo->desc;
-		redis_root["sex"] = userinfo->sex;
-		redis_root["icon"] = userinfo->icon;
-		RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
-	}
-	return true;
-}
-
 Status ChatServiceImpl::KickSession(::grpc::ServerContext* context,
     const KickSessionReq* request, KickSessionRsp* reply)
 {
@@ -244,24 +202,24 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
     //资源类型、原始文件名与视频首帧都在落库时写好了，这里以库里的记录为准，
     //不依赖上传请求再带一遍，接收方拿到的通知就能直接渲染卡片
     ChatMessageInfo message;
-    if (!MysqlMgr::GetInstance()->GetChatMessage(request->message_id(), message)
+    if (!MysqlDao::GetInstance()->GetChatMessage(request->message_id(), message)
         || message.sender_id != request->sender()) {
         response->set_error(ErrorCodes::RPCFailed);
         return Status::OK;
     }
 
     //聊天图片/视频/文件全部落盘后，把消息从“未上传”改成“已上传”
-    const bool ok = MysqlMgr::GetInstance()->UpdateChatMessageStatus(
+    const bool ok = MysqlDao::GetInstance()->UpdateChatMessageStatus(
         message.message_id, message.sender_id, 1);
     response->set_error(ok ? ErrorCodes::Success : ErrorCodes::RPCFailed);
 
     //接收方在本实例在线时立即推送；资源服务器已向状态服务查好目标实例。
     //群聊没有单一接收方：按成员列表广播，发送者自己已经看到消息，跳过
     if (ok) {
-        const int thread_type = MysqlMgr::GetInstance()->GetThreadTypeCached(message.thread_id);
+        const int thread_type = MysqlDao::GetInstance()->GetThreadTypeCached(message.thread_id);
         if (thread_type == static_cast<int>(ThreadType::Group)) {
             std::vector<int> members;
-            if (MysqlMgr::GetInstance()->GetGroupMemberIds(message.thread_id, members)) {
+            if (MysqlDao::GetInstance()->GetGroupMemberIds(message.thread_id, members)) {
                 Json::Value payload;
                 payload["error"] = ErrorCodes::Success;
                 payload["thread_id"] = Json::Int64(message.thread_id);

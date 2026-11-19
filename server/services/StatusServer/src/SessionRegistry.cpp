@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include "const.h"
+#include "Log.h"
 
 namespace {
 
@@ -163,7 +164,7 @@ bool SessionRegistry::Allocate(int uid, const std::string& session_id,
 	auto* reply = RedisMgr::GetInstance()->Eval(kAllocateScript, keys, args);
 	if (!reply || reply->type != REDIS_REPLY_ARRAY || reply->elements < 4) {
 		freeReplyObject(reply);
-		std::cout << "[session] allocate failed uid=" << uid << " redis_error" << std::endl;
+		LOG_ERROR << "[session] allocate failed uid=" << uid << " redis_error";
 		return false;
 	}
 
@@ -175,7 +176,7 @@ bool SessionRegistry::Allocate(int uid, const std::string& session_id,
 
 	if (code < 0) {
 		rate_limited = true;
-		std::cout << "[session] allocate rate limited uid=" << uid << std::endl;
+		LOG_WARN << "[session] allocate rate limited uid=" << uid;
 		return false;
 	}
 	return true;

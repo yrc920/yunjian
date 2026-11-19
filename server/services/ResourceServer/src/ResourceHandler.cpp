@@ -2,7 +2,7 @@
 #include "ConfigMgr.h"
 #include "FileSystem.h"
 #include "LogicSystem.h"
-#include "MysqlMgr.h"
+#include "MysqlDao.h"
 #include "RedisMgr.h"
 #include "const.h"
 #include <boost/filesystem.hpp>
@@ -13,8 +13,52 @@
 #include <iostream>
 #include <mutex>
 #include <unordered_map>
+#include "Log.h"
 
 namespace {
+
+//上传与下载的帧体：4 字节头长（网络序）+ JSON 头 + 原始分片。
+//分片直接跟在头后面，JSON 头只剩几百字节，两端都不必再做 Base64
+bool SplitFrame(const std::string& body, Json::Value& header, const char*& payload,
+	std::size_t& payload_len)
+{
+	if (body.size() < 4)
+		return false;
+	const auto* bytes = reinterpret_cast<const unsigned char*>(body.data());
+	const std::uint32_t header_len = (static_cast<std::uint32_t>(bytes[0]) << 24)
+		| (static_cast<std::uint32_t>(bytes[1]) << 16)
+		| (static_cast<std::uint32_t>(bytes[2]) << 8)
+		| static_cast<std::uint32_t>(bytes[3]);
+	//头部是固定字段组成的对象，正常不超过 1 KB；上限拦住畸形帧。
+	//先减后比，避免 header_len 接近 UINT32_MAX 时 4 + header_len 溢出绕过检查
+	if (header_len == 0 || header_len > 8192 || header_len > body.size() - 4)
+		return false;
+	Json::Reader reader;
+	if (!reader.parse(body.substr(4, header_len), header) || !header.isObject())
+		return false;
+	payload = body.data() + 4 + header_len;
+	payload_len = body.size() - 4 - header_len;
+	return true;
+}
+
+std::string BuildFrame(const Json::Value& header, const char* payload, std::size_t payload_len)
+{
+	Json::StreamWriterBuilder builder;
+	builder["indentation"] = ""; //紧凑输出，头部只有几百字节
+	const std::string text = Json::writeString(builder, header);
+
+	std::string frame;
+	frame.reserve(4 + text.size() + payload_len);
+	const auto len = static_cast<std::uint32_t>(text.size());
+	frame.push_back(static_cast<char>((len >> 24) & 0xFF));
+	frame.push_back(static_cast<char>((len >> 16) & 0xFF));
+	frame.push_back(static_cast<char>((len >> 8) & 0xFF));
+	frame.push_back(static_cast<char>(len & 0xFF));
+	frame += text;
+	if (payload_len > 0)
+		frame.append(payload, payload_len);
+	return frame;
+}
 
 bool ParseJson(const std::string& data, Json::Value& root)
 {
@@ -121,8 +165,8 @@ bool CheckQuota(int uid, const std::string& name, long long incoming)
 	if (used + incoming <= limit)
 		return true;
 
-	std::cerr << "[resource] quota exceeded uid=" << uid << " used=" << used
-		<< " incoming=" << incoming << " limit=" << limit << std::endl;
+	LOG_WARN << "[resource] quota exceeded uid=" << uid << " used=" << used
+		<< " incoming=" << incoming << " limit=" << limit;
 	return false;
 }
 
@@ -148,7 +192,7 @@ bool AccessAllowed(int requester, int owner, const std::string& name)
 			return iter->second.allowed;
 	}
 
-	const bool allowed = MysqlMgr::GetInstance()->CanAccessResource(requester, owner, name);
+	const bool allowed = MysqlDao::GetInstance()->CanAccessResource(requester, owner, name);
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		if (cache.size() > 4096)
@@ -181,13 +225,15 @@ void SendUploadResponse(const std::shared_ptr<CSession>& session, bool avatar, i
 void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string& data, bool avatar)
 {
 	Json::Value root;
-	if (!ParseJson(data, root)) { //不是合法JSON对象
+	const char* payload = nullptr;
+	std::size_t payload_len = 0;
+	if (!SplitFrame(data, root, payload, payload_len)) { //帧头不合法
 		SendUploadResponse(session, avatar, ErrorCodes::Error_Json, "", "", 0, 0, 0, 0, 0);
 		return;
 	}
 
 	//类型必须逐项检查：JsonCpp的asInt()会把字符串转成0，不能先取值再判断
-	if (!root["md5"].isString() || !root["name"].isString() || !root["data"].isString() ||
+	if (!root["md5"].isString() || !root["name"].isString() ||
 		!root["seq"].isInt() || !root["trans_size"].isInt64() || !root["total_size"].isInt64() ||
 		!root["last"].isInt() || !root["uid"].isInt() || !root["token"].isString()) {
 		SendUploadResponse(session, avatar, ErrorCodes::Error_Json, "", "", 0, 0, 0, 0, 0);
@@ -233,6 +279,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 
 	//trans_size必须与seq对应的偏移一致；last只能出现在最后一片
 	if (seq < 1 || trans_size <= 0 || trans_size > total_size ||
+		payload_len == 0 || payload_len > MAX_FILE_LEN ||
 		(last == 1) != (trans_size == total_size)) {
 		SendUploadResponse(session, avatar, ErrorCodes::FileDataInvalid, md5, name, seq,
 			total_size, trans_size, last, uid);
@@ -336,7 +383,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 
 	auto task = std::make_shared<FileTask>(
 		session, uid, file_path.string(), name, md5, seq, total_size, trans_size, last,
-		root["data"].asString(), avatar, std::move(callback));
+		std::string(payload, payload_len), avatar, std::move(callback));
 	task->_chat_msg_id = chat_msg_id;
 	task->_touid = touid;
 	task->_thread_id = chat_thread_id;
@@ -391,15 +438,30 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
 }
 
+namespace {
+
+//下载回包统一走二进制帧：错误也只有 JSON 头、没有分片。
+//name 与 seq 能确定时一并回传，客户端据此找回本次下载并显示对应错误
+void SendDownloadError(const std::shared_ptr<CSession>& session, int error,
+	const std::string& name = std::string(), int seq = 0)
+{
+	Json::Value header;
+	header["error"] = error;
+	if (!name.empty())
+		header["name"] = name;
+	if (seq > 0)
+		header["seq"] = seq;
+	session->Send(BuildFrame(header, nullptr, 0), ID_DOWN_LOAD_FILE_RSP);
+}
+
+} // namespace
+
 void resource::HandleDownload(std::shared_ptr<CSession> session, const std::string& data)
 {
 	Json::Value root;
-	Json::Value rtvalue;
-	rtvalue["error"] = ErrorCodes::Error_Json;
-
 	if (!ParseJson(data, root) || !root["uid"].isInt() || !root["token"].isString() ||
 		!root["owner_uid"].isInt() || !root["name"].isString() || !root["seq"].isInt()) {
-		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP); //字段不全
+		SendDownloadError(session, ErrorCodes::Error_Json); //字段不全，连名字都没有
 		return;
 	}
 
@@ -410,36 +472,34 @@ void resource::HandleDownload(std::shared_ptr<CSession> session, const std::stri
 	const int seq = root["seq"].asInt(); //要第几片
 
 	if (!IsSafeName(name) || owner_uid <= 0 || seq < 1) {
-		rtvalue["error"] = ErrorCodes::FileNameInvalid; //文件名/归属/序号非法
-		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
+		SendDownloadError(session, ErrorCodes::FileNameInvalid, name, seq); //文件名/归属/序号非法
 		return;
 	}
 
 	const int auth_error = EnsureSessionUser(session, uid, token);
 	if (auth_error != ErrorCodes::Success) {
-		rtvalue["error"] = auth_error; //未认证、uid无效或换了uid
-		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
+		SendDownloadError(session, auth_error, name, seq); //未认证、uid无效或换了uid
 		return;
 	}
 
 	//只有本人、共用会话的成员，或对方当前头像可以下载
 	if (!AccessAllowed(uid, owner_uid, name)) {
-		std::cerr << "[resource] download denied requester=" << uid
-			<< " owner=" << owner_uid << " name=" << name << std::endl;
+		LOG_WARN << "[resource] download denied requester=" << uid
+			<< " owner=" << owner_uid << " name=" << name;
 		//对外与"文件不存在"一致，不向非成员暴露该文件是否存在
-		rtvalue["error"] = ErrorCodes::FileNotExists;
-		session->Send(rtvalue.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
+		SendDownloadError(session, ErrorCodes::FileNotExists, name, seq);
 		return;
 	}
 
 	//上传与下载统一按归属用户分目录，owner_uid就是上传时的uid
 	auto path = ConfigMgr::Inst().GetStoragePath() / std::to_string(owner_uid) / name;
-	auto callback = [session, name, seq](const Json::Value& result) {
-		//错误时只有error，成功时带data/is_last/current_size/total_size
+	auto callback = [session, name, seq](const Json::Value& result, const std::string& payload) {
+		//错误时只有error，成功时带 is_last / current_size / total_size 与原始分片
 		Json::Value response = result;
 		response["name"] = name; //客户端按资源名找回本次下载
 		response["seq"] = seq;
-		session->Send(response.toStyledString(), ID_DOWN_LOAD_FILE_RSP);
+		session->Send(BuildFrame(response, payload.data(), payload.size()),
+			ID_DOWN_LOAD_FILE_RSP);
 	};
 
 	FileSystem::GetInstance()->PostDownloadTask(std::make_shared<DownloadTask>(

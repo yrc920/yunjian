@@ -4,7 +4,7 @@
 #   · 工具链  GCC 11 + CMake 3.31 + Ninja + vcpkg（依赖版本由 vcpkg.json 的
 #     builtin-baseline 锁定）
 #   · 依赖    vcpkg 第三方库已预编译到 /opt/xiguchat/vcpkg_installed
-#   · 存储    MySQL 8（开放 X 协议 33060）+ Redis
+#   · 存储    MySQL 8（经典协议 3306）+ Redis
 #   · 脚本    取代码 / 建库 / 编译 / 启动，见 deploy/docker/scripts
 #
 # 依赖之所以预编译：vcpkg 需从 GitHub 拉取依赖源码编译，耗时约 1 小时，
@@ -84,8 +84,8 @@ RUN --mount=type=cache,target=/opt/vcpkg/downloads \
  && rm -rf /opt/vcpkg/packages
 
 # ---------- 5. MySQL 8 ----------
-# 项目用 X DevAPI 连接 MySQL（33060 端口），需要 X 插件。Ubuntu 仓库的 mysql-server
-# 不含该插件，因此从 MySQL 官方 APT 源安装；官方包把 X 插件编进了 mysqld，无需单独加载。
+# 从 MySQL 官方 APT 源安装（X 插件随之编入但已在 mysql.cnf 里关闭，只监听 3306）。
+# 用官方源是为了固定小版本行为，Ubuntu 仓库的 mysql-server 也可替换，但需重新验证初始化。
 # 安装后清空数据目录：首次启动由 init_db.sh 以空口令初始化，避免包初始化时的随机口令。
 COPY deploy/docker/mysql.cnf /etc/mysql/conf.d/xigu.cnf
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
@@ -117,6 +117,7 @@ COPY deploy/docker/scripts /opt/xiguchat/scripts
 COPY deploy/docker/config-templates /opt/xiguchat/config-templates
 RUN chmod +x /opt/xiguchat/scripts/*.sh \
  && mkdir -p /var/log/xigu /workspace /var/run/mysqld /var/lib/redis /var/lib/xiguchat/storage \
+              /etc/xiguchat/certs \
  && ccache -M 2G
 
 # ---------- 8. 编译校验 + 预热 ccache ----------

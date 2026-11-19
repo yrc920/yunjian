@@ -64,7 +64,6 @@ public:
     Status NotifyGroupEvent(ServerContext* context,
         const GroupEventReq* request, GroupEventRsp* response) override;
 
-    bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo); //获取用户基本信息
     void RegisterServer(std::shared_ptr<CServer> pServer); //注册CServer对象，方便在处理请求时访问服务器相关功能
 
 private:
