@@ -63,11 +63,11 @@ public:
 
 private:
     void SendOnIO(std::string msg, std::uint16_t msgid); //只在 socket 所属 IO 线程中执行
-	//读取完整长度
-	void asyncReadFull(std::size_t maxLength,
+	//读取完整长度，直接写进 out
+	void asyncReadFull(char* out, std::size_t maxLength,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
 	//读取指定字节数
-	void asyncReadLen(std::size_t  read_len, std::size_t total_len,
+	void asyncReadLen(char* out, std::size_t read_len, std::size_t total_len,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
 	//处理写操作完成后的回调函数
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
@@ -76,7 +76,6 @@ private:
 	std::string _session_id; //连接的 UUID；与登录 token 分开使用
     std::atomic<int> _user_uid; //当前绑定的用户ID，0表示未认证，允许逻辑线程和清理线程读取
     std::atomic<long long> _epoch{0}; //登录租约的 epoch，清理时用它判断租约是否还属于本连接
-	char _data[MAX_LENGTH]; //接收缓冲区
 	CServer* _server; //指向服务器对象的指针
 	std::atomic<bool> _b_close; //会话是否关闭
 	std::queue<std::shared_ptr<SendNode> > _send_que; //仅由所属IO线程访问，队首是正在异步发送的消息

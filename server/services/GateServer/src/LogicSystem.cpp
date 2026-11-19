@@ -1,4 +1,5 @@
 #include "LogicSystem.h"
+#include "JsonUtil.h"
 #include "HttpConnection.h"
 #include "VerifyGrpcClient.h"
 #include "RedisMgr.h"
@@ -53,7 +54,7 @@ void PostPasswordWork(const std::shared_ptr<HttpConnection>& connection,
 			Json::Value response = work();
 			boost::asio::post(connection->GetSocket().get_executor(),
 				[connection, response]() {
-					connection->SendDeferred(response.toStyledString());
+					connection->SendDeferred(JsonToCompact(response));
 				});
 		});
 	if (queued)
@@ -61,7 +62,7 @@ void PostPasswordWork(const std::shared_ptr<HttpConnection>& connection,
 
 	Json::Value busy;
 	busy["error"] = ErrorCodes::ServiceUnavailable;
-	connection->SendDeferred(busy.toStyledString());
+	connection->SendDeferred(JsonToCompact(busy));
 }
 
 //登录限流键统一小写：MySQL 的邮箱比较不区分大小写，Redis 键区分，
@@ -102,7 +103,7 @@ LogicSystem::LogicSystem() {
 
 		connection->_response.set(http::field::content_type, "application/json");
 		connection->SetResult(healthy ? http::status::ok : http::status::service_unavailable);
-		beast::ostream(connection->_response.body()) << root.toStyledString();
+		beast::ostream(connection->_response.body()) << JsonToCompact(root);
 		return true;
     });
 
@@ -122,7 +123,7 @@ LogicSystem::LogicSystem() {
 			LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = JsonToCompact(root);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -138,7 +139,7 @@ LogicSystem::LogicSystem() {
 		if (cooldown <= 0) {
 			root["error"] = cooldown < 0 ? ErrorCodes::RPCFailed : ErrorCodes::VerifyTooFrequent;
 			root["email"] = email;
-			beast::ostream(connection->_response.body()) << root.toStyledString();
+			beast::ostream(connection->_response.body()) << JsonToCompact(root);
 			return true;
 		}
 
@@ -164,7 +165,7 @@ LogicSystem::LogicSystem() {
 		if (rate_error != 0) {
 			root["error"] = rate_error;
 			root["email"] = email;
-			beast::ostream(connection->_response.body()) << root.toStyledString();
+			beast::ostream(connection->_response.body()) << JsonToCompact(root);
 			return true;
 		}
 
@@ -174,7 +175,7 @@ LogicSystem::LogicSystem() {
 		root["error"] = rsp.error(); //将RPC调用结果中的error字段设置到响应的JSON数据中
 		root["email"] = src_root["email"]; //将请求中的email字段原样返回到响应中
 		//将JSON数据转换为字符串, 并写入响应内容中
-		std::string jsonstr = root.toStyledString();
+		std::string jsonstr = JsonToCompact(root);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 	});
@@ -198,7 +199,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -214,7 +215,7 @@ LogicSystem::LogicSystem() {
 			LOG_WARN << " confirm password error";
 			root["error"] = ErrorCodes::PasswdErr;
 			//将JSON数据转换为字符串, 并写入响应内容中
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = JsonToCompact(root);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -228,7 +229,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << " get verify code expired";
 			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
             //将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -237,7 +238,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << " verify code error";
 			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -282,7 +283,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -301,7 +302,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << " get verify code expired";
 			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -310,7 +311,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << " verify code error";
 			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -359,7 +360,7 @@ LogicSystem::LogicSystem() {
             LOG_WARN << "Failed to parse JSON data!";
 			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
 			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = root.toStyledString();
+            std::string jsonstr = JsonToCompact(root);
             beast::ostream(connection->_response.body()) << jsonstr;
             return true;
         }
@@ -380,7 +381,7 @@ LogicSystem::LogicSystem() {
 		const long long ip_fails = ip_key.empty() ? 0 : ReadCounter(ip_key);
 		if (account_fails >= LOGIN_ACCOUNT_FAIL_LIMIT || ip_fails >= LOGIN_IP_FAIL_LIMIT) {
 			root["error"] = ErrorCodes::TooManyRequests;
-			beast::ostream(connection->_response.body()) << root.toStyledString();
+			beast::ostream(connection->_response.body()) << JsonToCompact(root);
 			return true;
 		}
 

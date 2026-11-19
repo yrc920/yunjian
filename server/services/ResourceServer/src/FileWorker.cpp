@@ -4,6 +4,7 @@
 #include "MysqlDao.h"
 #include "RedisMgr.h"
 #include "const.h"
+#include "JsonUtil.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
 #include <fstream>
@@ -193,10 +194,10 @@ void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)
 	base_root["sex"] = user_info->sex;
 	base_root["icon"] = user_info->icon; //新头像文件名
 	RedisMgr::GetInstance()->Set(USER_BASE_INFO + std::to_string(uid),
-		base_root.toStyledString()); //按uid缓存
+		JsonToCompact(base_root)); //按uid缓存
 
 	Json::Value name_root = base_root; //用户名索引缓存内容相同
-	RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, name_root.toStyledString());
+	RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, JsonToCompact(name_root));
 
 	//头像文件名变了, 让 ChatServer 把新资料推给在线好友; 失败只记日志,
 	//好友下次登录仍会从 1006 回包里拿到新的 icon 文件名

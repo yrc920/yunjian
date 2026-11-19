@@ -40,6 +40,7 @@ set(SERVER_HEADERS
     include/LogicSystem.h
     include/LogicWorker.h
     include/ResourceHandler.h
+    include/ResourceFrame.h    # 帧编码与文件名约束（纯函数，单元测试直接覆盖）
     include/StorageJanitor.h   # 清理线程
     include/FileSystem.h
     include/FileWorker.h

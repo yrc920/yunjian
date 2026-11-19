@@ -373,8 +373,7 @@ void FileService::SetUploadPaused(bool paused)
         frame["uid"] = UserMgr::GetInstance()->GetUid();
         frame["token"] = UserMgr::GetInstance()->GetToken();
         frame["md5"] = _uploadMd5;
-        FileTcpMgr::GetInstance()->SendData(ID_SYNC_FILE_REQ,
-            QJsonDocument(frame).toJson(QJsonDocument::Compact)); //让服务器回seq/trans_size
+        FileTcpMgr::GetInstance()->SendJson(ID_SYNC_FILE_REQ, frame); //让服务器回seq/trans_size
     }
     emit uploadStateChanged();
 }
@@ -406,8 +405,7 @@ bool FileService::ResumeResourceUpload(const QString &name)
     frame["uid"] = UserMgr::GetInstance()->GetUid();
     frame["token"] = UserMgr::GetInstance()->GetToken();
     frame["md5"] = info->_md5;
-    FileTcpMgr::GetInstance()->SendData(ID_SYNC_FILE_REQ,
-        QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    FileTcpMgr::GetInstance()->SendJson(ID_SYNC_FILE_REQ, frame);
     return true;
 }
 

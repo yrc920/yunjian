@@ -141,8 +141,8 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 void CSession::AsyncReadHead()
 {
 	auto self = shared_from_this(); //回调期间保持会话存活
-	asyncReadFull(HEAD_TOTAL_LEN, [self, this](const boost::system::error_code& ec,
-		std::size_t bytes_transferred) {
+	asyncReadFull(_recv_head_node->_data, HEAD_TOTAL_LEN,
+		[self, this](const boost::system::error_code& ec, std::size_t bytes_transferred) {
 		try {
 			if (ec) { //连接已断
 				Close();
@@ -162,9 +162,7 @@ void CSession::AsyncReadHead()
 				return;
 			}
 
-			_recv_head_node->Clear(); //清掉上一帧残留
-			memcpy(_recv_head_node->_data, _data, bytes_transferred); //把头部拷到独立缓冲
-
+			//头部已经直接读进 _recv_head_node，读满 6 字节即完全覆盖，不必再清残留
 			std::uint16_t msg_id = 0;
 			memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN); //前2字节是ID
 			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id); //转主机序
@@ -194,7 +192,7 @@ void CSession::AsyncReadHead()
 void CSession::AsyncReadBody(std::size_t total_len)
 {
 	auto self = shared_from_this(); //回调持有会话
-	asyncReadFull(total_len, [self, this, total_len](
+	asyncReadFull(_recv_msg_node->_data, total_len, [self, this, total_len](
 		const boost::system::error_code& ec, std::size_t bytes_transferred) {
 		try {
 			if (ec) { //连接断开
@@ -214,7 +212,6 @@ void CSession::AsyncReadBody(std::size_t total_len)
 				return;
 			}
 
-			memcpy(_recv_msg_node->_data, _data, bytes_transferred); //把包体拷进消息节点
 			_recv_msg_node->_cur_len = bytes_transferred; //记录实际长度
 			_recv_msg_node->_data[_recv_msg_node->_total_len] = '\0'; //补字符串结尾
 
@@ -230,19 +227,20 @@ void CSession::AsyncReadBody(std::size_t total_len)
 	});
 }
 
-void CSession::asyncReadFull(std::size_t max_length,
+void CSession::asyncReadFull(char* out, std::size_t max_length,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
 {
-	memset(_data, 0, max_length); //清掉上一帧残留
-	asyncReadLen(0, max_length, std::move(handler)); //从0开始补齐
+	//直接写进目标缓冲：RecvNode 分配时已零初始化，头部节点每次读之前也会 Clear，
+	//省掉一块会话级中转缓冲和每帧一次整片拷贝
+	asyncReadLen(out, 0, max_length, std::move(handler)); //从0开始补齐
 }
 
-void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
+void CSession::asyncReadLen(char* out, std::size_t read_len, std::size_t total_len,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
 {
 	auto self = shared_from_this(); //递归回调期间保持存活
-	_socket.AsyncReadSome(boost::asio::buffer(_data + read_len, total_len - read_len),
-		[read_len, total_len, handler = std::move(handler), self](
+	_socket.AsyncReadSome(boost::asio::buffer(out + read_len, total_len - read_len),
+		[out, read_len, total_len, handler = std::move(handler), self](
 			const boost::system::error_code& ec, std::size_t bytes_transferred) {
 			if (ec) { //读失败，把已读长度一起带回
 				handler(ec, read_len + bytes_transferred);
@@ -254,7 +252,7 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 				return;
 			}
 
-			self->asyncReadLen(read_len + bytes_transferred, total_len, handler); //继续读剩余部分
+			self->asyncReadLen(out, read_len + bytes_transferred, total_len, handler); //继续读剩余部分
 		});
 }
 

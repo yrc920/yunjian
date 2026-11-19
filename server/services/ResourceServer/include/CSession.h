@@ -40,11 +40,11 @@ public:
 
 private:
 	void SendOnIO(std::string msg, std::uint16_t msgid); //只在socket所属IO线程执行
-	//循环补齐到指定长度，处理TCP拆包
-	void asyncReadFull(std::size_t max_length,
+	//循环补齐到指定长度，处理TCP拆包；直接读进 out，不经过会话级中转缓冲
+	void asyncReadFull(char* out, std::size_t max_length,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
 	//递归读取剩余字节
-	void asyncReadLen(std::size_t read_len, std::size_t total_len,
+	void asyncReadLen(char* out, std::size_t read_len, std::size_t total_len,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
 	//异步写完成：继续队首或清理失败队列
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
@@ -52,7 +52,6 @@ private:
 	TlsSocket _socket; //明文或 TLS 的统一封装，与CSession同属一个IO线程
 	std::string _session_id; //逻辑线程按它做哈希分派
 	std::atomic<int> _user_uid{0}; //0表示尚未通过token校验，非0后不再允许换人
-	char _data[MAX_MESSAGE_LEN]; //一次只处理一帧，头部和包体都复用这块缓冲
 	CServer* _server; //会话表由CServer持有，ClearSession回调用
 	std::atomic<bool> _b_close{false}; //关闭意图，避免重复投递close
 	std::queue<std::shared_ptr<SendNode>> _send_que; //只在IO线程访问

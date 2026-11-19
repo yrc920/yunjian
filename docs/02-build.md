@@ -306,7 +306,45 @@ cd build/macos-clang/bin
 > 两个 ChatServer 实例用的是**同一个可执行文件**，区别只在各自目录下的 `config.ini`
 > （`[SelfServer]` 的 Name/Port/RPCPort 与 `[PeerServer]` 指向）。
 
-## 2.9 平台与生成器差异速查
+## 2.9 测试（CTest）
+
+后端带两层测试，全部是 C++：不引入脚本语言，也不用第三方断言框架
+（`tests/TestSupport.h` 约一百行，够用且没有新增依赖）。
+
+| 层 | 用例 | 依赖 | 耗时 |
+|---|---|---|---|
+| `unit` | `request_validation` / `resource_frame` / `protocol_limits` | 无：不连网络、不读 `config.ini` | < 0.1s |
+| `integration` | `chat_flow` / `group_flow` / `resource_flow` | 本地全栈 + 库里的测试账号 | 约 3s |
+
+```bash
+cd server
+
+ctest --preset macos-clang              # 全部
+ctest --preset macos-clang -L unit      # 只跑单元测试，随时可跑
+ctest --preset macos-clang -R resource  # 按名字过滤
+ctest --preset macos-clang -j 4         # 并行（集成测试之间有互斥锁，不会互相顶号）
+ctest --preset macos-clang --rerun-failed
+```
+
+CTest 只看退出码：0 通过，非 0 失败，**77 记为 Skipped**。集成测试在网关或资源服务
+没监听时返回 77，因此「忘记启动本地栈」在报告里是 Skipped 而不是失败。
+
+三条集成用例共用同一个账号，靠 `RESOURCE_LOCK` 串行——同一账号并发登录会互相顶号。
+账号与地址可在 configure 时覆盖：
+
+```bash
+cmake --preset macos-clang \
+  -DXIGU_TEST_EMAIL=456@456.com -DXIGU_TEST_PASSWD=745230 \
+  -DXIGU_TEST_GATE=127.0.0.1:8080 -DXIGU_TEST_RESOURCE=127.0.0.1:9090
+```
+
+`passwd` 是客户端 xor 之后的形态（`123456` → `745230`），不是界面输入的明文。
+`-DBUILD_TESTING=OFF` 配置时不生成任何测试目标，部署构建用这个开关。
+
+各用例覆盖了什么、为什么这么分层，写在 `server/tests/CMakeLists.txt` 与两个子目录的
+头注释里；新增用例照着 `xigu_unit_test()` / `xigu_integration_test()` 加一行即可。
+
+## 2.10 平台与生成器差异速查
 
 | 维度 | Windows | macOS | Linux |
 | --- | --- | --- | --- |
@@ -319,7 +357,7 @@ cd build/macos-clang/bin
 | libsodium autotools 前置 | 不需要 | 需要 | 需要 |
 | 系统 CA bundle | 通常无（OpenSSL 默认目录兜底） | `/etc/ssl/cert.pem` | `/etc/ssl/certs/ca-certificates.crt` |
 
-## 2.10 常见问题
+## 2.11 常见问题
 
 | 现象 | 原因与处理 |
 | --- | --- |
@@ -333,11 +371,36 @@ cd build/macos-clang/bin
 
 ### protobuf 配置警告
 
-当前 baseline 的 protobuf 端口通过 feature 映射向上游 CMake 传入
-`protobuf_BUILD_TARGET_LIBPROTOC`。这是端口内部的判断变量，上游 protobuf 33.4
-使用的是 `protobuf_BUILD_LIBPROTOC`，因此会提示前者未被使用。
-端口同时传入了真正的构建选项，这条警告本身不表示 libprotoc 构建失败。
+首次配置或依赖重新安装时会出现这条警告：
 
-Xcode 升级导致依赖重新配置时可能重新看到这条警告；它不来自项目的 CMakeLists。
-无需给项目添加同名变量，也不应修改 `build/` 下自动生成的 vcpkg 文件。
-上游端口修复并更新 baseline 后可消除；依赖最终是否成功仍以构建结果为准。
+```
+CMake Warning ... (message):
+The following variables are not used in CMakeLists.txt:
+protobuf_BUILD_TARGET_LIBPROTOC
+```
+
+它来自 **vcpkg 的 protobuf 端口**，不是本项目的 CMakeLists：
+
+1. protobuf 33.x 把上游变量从 `protobuf_BUILD_TARGET_LIBPROTOC` 改名为
+   `protobuf_BUILD_LIBPROTOC`（`cmake/install.cmake` 里读的是新名）。
+2. vcpkg 端口的 feature 映射仍用旧名（`vcpkg_check_features(... libprotoc
+   protobuf_BUILD_TARGET_LIBPROTOC)`），这笔 `-D` 会随 `${FEATURE_OPTIONS}` 一起传进去。
+3. `vcpkg_cmake_configure` 会核对「传进去的 `-D` 变量有没有被顶层 CMakeLists 读到」，
+   读不到就提示——只提示，不中断。
+
+同一份 portfile 里另外传了正确的新名（`-Dprotobuf_BUILD_LIBPROTOC=${...}`），所以
+**产物完全正常**：`vcpkg_installed/<triplet>/tools/protobuf/protoc --version` 应输出
+`libprotoc 33.4`，`lib/libprotoc.a` 也存在。这条警告不影响 `protoc` 代码生成，
+也不影响项目构建。
+
+想验证「真的无害」，配置完成后看两处：
+
+```bash
+build/<preset>/vcpkg_installed/arm64-osx/tools/protobuf/protoc --version   # 有版本即正常
+build/<preset>/proto/generated/message.pb.cc                               # 生成代码在即正常
+```
+
+处理方式：**忽略**。项目侧无法消除——变量是端口传给上游的，本项目 CMakeLists 里
+grep 不到这个名字，加同名变量也没用。升级 vcpkg 也不行：当前 `builtin-baseline`
+（`b8b8df22`）就是本地仓库的 HEAD，端口尚未修复。真要消掉只能做 overlay port，
+把 `libprotoc` 那行改成新变量名，代价是自己维护一份 portfile 并跟随 vcpkg 更新。

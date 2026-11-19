@@ -7,7 +7,7 @@
 | # | 文档 | 内容 |
 | --- | --- | --- |
 | 01 | [架构设计](01-architecture.md) | 系统分层、进程与线程模型、核心时序、消息路由策略、容错边界 |
-| 02 | [构建与部署](02-build.md) | CMake 预设、vcpkg manifest、proto 代码生成、ChatServer 多实例机制、产物布局、三平台差异 |
+| 02 | [构建与部署](02-build.md) | CMake 预设、vcpkg manifest、proto 代码生成、ChatServer 多实例机制、产物布局、CTest、三平台差异 |
 | 03 | [通信协议](03-protocol.md) | TCP 私有协议帧格式、HTTP 接口清单、gRPC 接口清单、错误码总表 |
 | 04 | [数据模型](04-data-model.md) | MySQL 表结构与 `reg_user` 存储过程、Redis 键空间、缓存读写策略 |
 | 05 | [配置参考](05-configuration.md) | 各服务 `config.ini` 段落字段说明与常见变更场景 |
@@ -20,8 +20,6 @@
 | 12 | [QML 界面约定](12-qml-guide.md) | 目录结构、页面与代码的对应关系、bridge 契约、QML 编码规范 |
 | 13 | [ResourceServer](13-resource-server.md) | 资源服务器：6 字节帧、逻辑/文件线程池、Redis 续传进度、头像上传下载 |
 | 14 | [域名与 HTTPS 部署](14-tls-deployment.md) | 腾讯云域名解析、ICP 备案、免费证书申请、部署与续期、本地怎么测、常见错误 |
-| 15 | [数据库层现状与重构评估](15-db-layer-status.md) | 驱动迁移后的分层快照、冗余清单（转发层/死代码/借还样板）、分三步的重构方案 |
-| 16 | [优化后的整体复核](16-optimization-audit.md) | 计划完成度、四个修复（下载错误帧/帧长溢出/语句缓存/池计数）、边界用例与结构判断 |
 
 ## 建议阅读路径
 

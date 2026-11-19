@@ -1,4 +1,5 @@
 #include "CSession.h"
+#include "JsonUtil.h"
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
@@ -195,7 +196,7 @@ void CSession::AsyncReadBody(int total_len)
 {
 	auto self = shared_from_this();
 	//异步读取消息体数据，当读取完成后会调用回调函数进行处理
-	asyncReadFull(total_len, [self, this, total_len](
+	asyncReadFull(_recv_msg_node->_data, total_len, [self, this, total_len](
 		const boost::system::error_code& ec, std::size_t bytes_transfered) {
 			try {
 				//如果发生错误，关闭连接并清除会话
@@ -225,7 +226,6 @@ void CSession::AsyncReadBody(int total_len)
                     return;
                 }
 
-				memcpy(_recv_msg_node->_data, _data, bytes_transfered); //将读取到的数据复制到消息节点内
 				_recv_msg_node->_cur_len += bytes_transfered; //更新消息节点的当前长度
 				//在消息数据末尾添加字符串结束符，确保消息数据可以被正确解析为字符串
 				_recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
@@ -248,8 +248,8 @@ void CSession::AsyncReadHead(int /*total_len*/)
 {
 	auto self = shared_from_this();
 	//异步读取头部数据，当读取完成后会调用回调函数进行处理
-	asyncReadFull(HEAD_TOTAL_LEN, [self, this](const boost::system::error_code& ec,
-		std::size_t bytes_transfered) {
+	asyncReadFull(_recv_head_node->_data, HEAD_TOTAL_LEN,
+		[self, this](const boost::system::error_code& ec, std::size_t bytes_transfered) {
 		try {
 			//如果发生错误，关闭连接并清除会话
 			if (ec) {
@@ -279,16 +279,14 @@ void CSession::AsyncReadHead(int /*total_len*/)
                 return;
             }
 
-			_recv_head_node->Clear(); //清空头部节点数据
-			memcpy(_recv_head_node->_data, _data, bytes_transfered); //将读取到的数据复制到头部节点内
-
+			//头部已直接读进 _recv_head_node，读满 4 字节即完全覆盖
 			//获取头部MSGID数据
 			std::uint16_t msg_id = 0;
 			memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN); //从头部数据中提取消息ID
 			//网络字节序转化为本地字节序
 			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
             //这里先限制消息ID的数值范围，具体ID是否注册了处理函数由LogicSystem判断
-			if (msg_id == 0 || msg_id > MAX_LENGTH) {
+			if (msg_id == 0 || msg_id > MAX_REQUEST_ID) {
 				LOG_WARN << "invalid msg_id is " << msg_id;
 				Close();
                 DealExceptionSession(); //关闭并清理异常连接
@@ -327,7 +325,7 @@ void CSession::NotifyOffline(int uid, int reason)
     rtvalue["uid"] = uid;
     rtvalue["reason"] = reason; //客户端按原因选择提示语，不能一律显示"网络断开"
 
-    std::string return_str = rtvalue.toStyledString(); //将Json对象转换为字符串形式
+    std::string return_str = JsonToCompact(rtvalue); //将Json对象转换为字符串形式
     Send(return_str, ID_NOTIFY_OFF_LINE_REQ); //调用Send函数发送离线通知消息给客户端
     return;
 }
@@ -347,7 +345,7 @@ void CSession::NotifyImageRecv(long long message_id, int from_uid, int to_uid,
     rtvalue["name"] = name;
     rtvalue["total_size"] = Json::Int64(total_size);
     rtvalue["time"] = Json::Int64(created_at); //落库时间，接收方时间条与列表排序都用它
-    Send(rtvalue.toStyledString(), ID_NOTIFY_IMG_CHAT_MSG_REQ);
+    Send(JsonToCompact(rtvalue), ID_NOTIFY_IMG_CHAT_MSG_REQ);
 }
 
 //视频/文件的通知与图片共用消息标识，额外带类型和落库时的元数据；
@@ -368,25 +366,26 @@ void CSession::NotifyResourceRecv(long long message_id, int from_uid, int to_uid
     rtvalue["msg_type"] = msg_type;
     rtvalue["content"] = content;
     rtvalue["time"] = Json::Int64(created_at); //落库时间，接收方时间条与列表排序都用它
-    Send(rtvalue.toStyledString(), ID_NOTIFY_RESOURCE_CHAT_MSG_REQ);
+    Send(JsonToCompact(rtvalue), ID_NOTIFY_RESOURCE_CHAT_MSG_REQ);
 }
 
 //读取完整长度
-void CSession::asyncReadFull(std::size_t maxLength,
+void CSession::asyncReadFull(char* out, std::size_t maxLength,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
 {
-	::memset(_data, 0, MAX_LENGTH); //清空接收缓冲区
-	asyncReadLen(0, maxLength, handler); //调用asyncReadLen函数保证读取到指定长度的数据
+	//直接读进目标缓冲：RecvNode 分配时已零初始化，省掉会话级中转和每帧一次拷贝；
+	//原先每次读头部都要清 2KB，读 4 字节的代价被放大了几百倍
+	asyncReadLen(out, 0, maxLength, handler); //保证读满指定长度
 }
 
 //读取指定字节数
-void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
+void CSession::asyncReadLen(char* out, std::size_t read_len, std::size_t total_len,
 	std::function<void(const boost::system::error_code&, std::size_t)> handler)
 {
 	auto self = shared_from_this();
-	//异步读取数据到接收缓冲区中
-	_socket.AsyncReadSome(boost::asio::buffer(_data + read_len, total_len - read_len),
-		[read_len, total_len, handler, self](
+	//异步读取数据到调用方给定的缓冲
+	_socket.AsyncReadSome(boost::asio::buffer(out + read_len, total_len - read_len),
+		[out, read_len, total_len, handler, self](
 			const boost::system::error_code& ec, std::size_t  bytesTransfered) {
 			//如果发生错误
 			if (ec) {
@@ -406,7 +405,7 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 			}
 
 			//没有错误，且长度不足则继续读取
-			self->asyncReadLen(read_len + bytesTransfered, total_len, handler);
+			self->asyncReadLen(out, read_len + bytesTransfered, total_len, handler);
 		});
 }
 

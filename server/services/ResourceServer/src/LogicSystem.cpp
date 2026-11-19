@@ -1,4 +1,5 @@
 #include "LogicSystem.h"
+#include "JsonUtil.h"
 #include "LogicWorker.h"
 #include "RedisMgr.h"
 #include <boost/filesystem.hpp>
@@ -125,7 +126,7 @@ void LogicSystem::SaveFileInfo(const std::shared_ptr<FileInfo>& info)
 	root["avatar"] = info->_avatar; //是否头像
 
 	if (!RedisMgr::GetInstance()->SetEx(FILE_INFO_PREFIX + info->_md5,
-		root.toStyledString(), FILE_INFO_EXPIRE)) { //一小时过期
+		JsonToCompact(root), FILE_INFO_EXPIRE)) { //一小时过期
 		LOG_WARN << "save file progress to redis failed, md5: " << info->_md5;
 	}
 

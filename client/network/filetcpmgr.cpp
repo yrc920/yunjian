@@ -25,6 +25,43 @@ QJsonObject parseObject(const QByteArray &data)
     const QJsonDocument document = QJsonDocument::fromJson(data);
     return document.isObject() ? document.object() : QJsonObject{};
 }
+
+//资源包体统一是「4 字节头长 + JSON 头 + 数据段」：上传与下载带分片，
+//续传同步与下载请求只有头。收发各只有一套拼装/拆解逻辑
+QByteArray buildBody(const QJsonObject &header, const QByteArray &payload = QByteArray())
+{
+    const QByteArray json = QJsonDocument(header).toJson(QJsonDocument::Compact);
+    QByteArray body;
+    body.reserve(4 + json.size() + payload.size());
+    const quint32 header_len = static_cast<quint32>(json.size());
+    body.append(static_cast<char>((header_len >> 24) & 0xFF));
+    body.append(static_cast<char>((header_len >> 16) & 0xFF));
+    body.append(static_cast<char>((header_len >> 8) & 0xFF));
+    body.append(static_cast<char>(header_len & 0xFF));
+    body.append(json);
+    body.append(payload);
+    return body;
+}
+
+//拆帧失败说明流已经错位或服务端回了非法帧
+bool splitFrame(const QByteArray &data, QJsonObject &header, QByteArray &payload)
+{
+    if (data.size() < 4)
+        return false;
+    const auto *raw = reinterpret_cast<const unsigned char *>(data.constData());
+    const quint32 header_len = (static_cast<quint32>(raw[0]) << 24)
+        | (static_cast<quint32>(raw[1]) << 16)
+        | (static_cast<quint32>(raw[2]) << 8)
+        | static_cast<quint32>(raw[3]);
+    if (header_len == 0 || header_len > 8192
+        || 4 + static_cast<qint64>(header_len) > data.size())
+        return false;
+    header = parseObject(data.mid(4, static_cast<int>(header_len)));
+    if (header.isEmpty())
+        return false;
+    payload = data.mid(4 + static_cast<int>(header_len));
+    return true;
+}
 }
 
 FileTcpMgr::FileTcpMgr()
@@ -309,18 +346,8 @@ void FileTcpMgr::sendWindow(const QString &md5)
         info->_seq = seq; //已发出的序号
         info->_flighting.insert(seq); //等服务器确认
 
-        //帧体：4 字节头长（网络序）+ JSON 头 + 原始分片
-        const QByteArray header = QJsonDocument(frame).toJson(QJsonDocument::Compact);
-        QByteArray body;
-        body.reserve(4 + header.size() + buffer.size());
-        const quint32 header_len = static_cast<quint32>(header.size());
-        body.append(static_cast<char>((header_len >> 24) & 0xFF));
-        body.append(static_cast<char>((header_len >> 16) & 0xFF));
-        body.append(static_cast<char>((header_len >> 8) & 0xFF));
-        body.append(static_cast<char>(header_len & 0xFF));
-        body.append(header);
-        body.append(buffer);
-        SendData(info->_req_id, body);
+        //请求体：4 字节头长（网络序）+ JSON 头 + 原始分片
+        SendData(info->_req_id, buildBody(frame, buffer));
     }
     file.close();
 
@@ -345,6 +372,11 @@ void FileTcpMgr::slot_start_upload(QString md5)
     sendWindow(md5); //先填满窗口
 }
 
+void FileTcpMgr::SendJson(const ReqId &id, const QJsonObject &header)
+{
+    SendData(id, buildBody(header)); //与带分片的请求同一种包体，只是数据段为空
+}
+
 void FileTcpMgr::sendDownloadRequest(const QString &name, int seq)
 {
     auto info = UserMgr::GetInstance()->GetDownloadFile(name); //按资源名取本地下载状态
@@ -357,7 +389,7 @@ void FileTcpMgr::sendDownloadRequest(const QString &name, int seq)
     frame["owner_uid"] = info->_owner_uid; //文件归属者，服务器据此拼<uid>/<name>路径
     frame["name"] = info->_name; //资源名，回包按它找回这条记录
     frame["seq"] = seq > 0 ? seq : info->_seq; //期望的分片序号，服务器按偏移读取
-    SendData(ID_DOWN_LOAD_FILE_REQ, QJsonDocument(frame).toJson(QJsonDocument::Compact)); //投递到网络线程
+    SendData(ID_DOWN_LOAD_FILE_REQ, buildBody(frame)); //投递到网络线程
 }
 
 void FileTcpMgr::slot_start_download(QString name)
@@ -381,8 +413,9 @@ void FileTcpMgr::initHandlers()
     //上传回包：服务器已经写盘，trans_size 可以直接作为下一片的起点。
     //头像和通用文件共用同一处理，响应ID不同但字段一致。
     auto uploadResponse = [this](ReqId, int, QByteArray data) {
-        const QJsonObject object = parseObject(data);
-        if (object.isEmpty()) {
+        QJsonObject object;
+        QByteArray payload;
+        if (!splitFrame(data, object, payload)) {
             emit sig_upload_failed(QString(), 1);
             return;
         }
@@ -438,8 +471,9 @@ void FileTcpMgr::initHandlers()
 
     //续传同步回包：暂停/重连后先确认服务器实际写到哪一片，再决定从哪继续
     _handlers[ID_SYNC_FILE_RSP] = [this](ReqId, int, QByteArray data) {
-        const QJsonObject object = parseObject(data);
-        if (object.isEmpty()) {
+        QJsonObject object;
+        QByteArray payload;
+        if (!splitFrame(data, object, payload)) {
             emit sig_upload_failed(QString(), 1);
             return;
         }
@@ -488,23 +522,9 @@ void FileTcpMgr::initHandlers()
     //下载回包：seq=1 覆盖写，其余追加；写到 is_last 才通知业务层，
     //这样调用方读到的本地文件一定是完整的。
     _handlers[ID_DOWN_LOAD_FILE_RSP] = [this](ReqId, int, QByteArray data) {
-        //帧体：4 字节头长 + JSON 头 + 原始分片
-        if (data.size() < 4) {
-            emit sig_download_failed(QString(), 1);
-            return;
-        }
-        const auto *raw = reinterpret_cast<const unsigned char *>(data.constData());
-        const quint32 header_len = (static_cast<quint32>(raw[0]) << 24)
-            | (static_cast<quint32>(raw[1]) << 16)
-            | (static_cast<quint32>(raw[2]) << 8)
-            | static_cast<quint32>(raw[3]);
-        if (header_len == 0 || header_len > 8192
-            || 4 + static_cast<qint64>(header_len) > data.size()) {
-            emit sig_download_failed(QString(), 1);
-            return;
-        }
-        const QJsonObject object = parseObject(data.mid(4, static_cast<int>(header_len)));
-        if (object.isEmpty()) {
+        QJsonObject object;
+        QByteArray chunk;
+        if (!splitFrame(data, object, chunk)) {
             emit sig_download_failed(QString(), 1);
             return;
         }
@@ -522,7 +542,6 @@ void FileTcpMgr::initHandlers()
         }
 
         const int seq = object.value("seq").toInt(info->_seq);
-        const QByteArray chunk = data.mid(4 + static_cast<int>(header_len));
 
         //本地目录可能还不存在；首片覆盖旧文件，后续分片严格按seq追加
         QDir().mkpath(QFileInfo(info->_client_path).absolutePath());

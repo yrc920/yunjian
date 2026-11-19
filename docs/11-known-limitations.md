@@ -18,9 +18,8 @@
 | # | 问题 | 影响 | 改进方向 |
 | --- | --- | --- | --- |
 | R1 | 心跳检测粒度 30s | 客户端 10s 发一次心跳，服务端每 30s 扫一次过期会话，超时阈值 20s 加扫描延迟，半开连接约 50s 回收；期间实例负载略高于实际 | 保持 30s，或在会话表上按 uid 分片并行扫描 |
-| R2 | 客户端无断线重连 | 网络抖动后只提示「已离线」并回到登录页，需重新输入密码 | `TcpMgr` 增加重连退避与自动重新登录（复用 token） |
 | R3 | 离线消息只能登录补拉 | 目标离线时消息已写入 `chat_message`，下次登录同步可见；没有上线推送或后台重投 | 增加离线队列/上线通知，缩短补拉延迟 |
-| R4 | 无已读回执 | 1018 回执驱动“发送中 / 已发送 / 失败”；“未读 / 已读”目前只是 UI 占位，`chat_message.status` 没有读取/更新闭环 | 增加 `message_read` 表与已读上报，持久化 status |
+| R4 | 已读按会话游标，不是逐条回执 | `conversation_member.last_read_message_id` 记录读到哪一条，对方把单勾改成双勾；群聊里看不到「这条有几个人读过」 | 需要逐条统计时再加 `message_read` 表，按 message_id 记录 |
 | R5 | 跨实例 RPC 失败即丢弃 | 对端实例不可达时消息静默丢失 | 失败重试 + 降级为离线消息 |
 | R6 | 实例探活依赖心跳 TTL | 实例崩溃后 90 秒内仍可能被分配到，新客户端会连接失败并重试 | 缩短 `inst_` TTL 到 45 秒，或由 StatusServer 主动探活 |
 | R7 | 断连释放是异步尽力通知 | 状态服务不可用时释放失败，租约要等 90 秒 TTL 过期；期间重新登录会直接覆盖，不影响用户 | 本地增加释放重试队列，恢复后补发 |
@@ -35,17 +34,15 @@
 | P1 | GateServer 的 HTTP handler **同步阻塞**：业务处理（gRPC + MySQL）直接在 IO 线程执行 | 并发吞吐受限于 `IOContextPool` 线程数 | 把阻塞操作投递到独立线程池，或改为异步链路 |
 | P2 | ChatServer 逻辑层**单线程串行** | 单实例消息处理吞吐有上限；慢查询会阻塞整个队列 | 按 uid 分片多队列 + 多消费者（`UserMgr` 已有互斥锁，仍需保证跨操作一致性） |
 | P3 | 每次选路先 `SMEMBERS` 再对每个实例 `HGETALL` | O(n) 次 Redis 往返，实例数少时可接受 | 实例表在 StatusServer 内存缓存 1~2 秒，注册变更时失效 |
-| P4 | MySQL 访问未体现批量/预编译复用 | 单次请求开销偏大 | 视需要引入批量查询与语句缓存 |
+| P4 | 列表类查询仍逐条拼装 | 会话列表、群成员按行组装对象，没有批量聚合查询 | 数据量上来后再考虑一次查询取全字段 |
 | P5 | 用户搜索返回邮箱等完整资料 | 无用字段传输与缓存 | 拆分"搜索结果"与"完整资料"两套结构 |
 
 ## 11.4 代码结构类
 
 | # | 问题 | 位置 | 改进方向 |
 | --- | --- | --- | --- |
-| C1 | `GetBaseInfo` 逻辑在 **三处重复** | `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient`（ChatServer） | 收敛到 `UserMgr` 或独立的 `UserCache` 组件 |
 | C2 | `ErrorCodes` 枚举在 GateServer / StatusServer / ChatServer **各自复制一份**（1001–1009，ChatServer 多 1010/1011） | 三处 `include/const.h` | 抽到公共头，避免漏改导致语义漂移 |
 | C3 | ~~基础模块在各服务逐份复制~~：`ConfigMgr` / `RedisMgr` / `IOContextPool` / `Log` / MySQL 访问层已收敛到 `xiguchat_common`；`MysqlDao` 按服务保留（表集合不同，合并只会产出一个巨型类） | `services/*/MysqlDao.*` | 结构性冗余已消除；`MysqlDao` 的分服务保留是设计选择 |
-| C9 | `GetBaseInfo` 仍在 `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient` 三处重复 | ChatServer | 收敛到 `UserMgr` 或独立的 `UserCache` |
 | C10 | StatusServer 只有一个进程实例，进程级故障期间新登录不可用 | `services/StatusServer/` | 需要 HA 时按 uid 分片多活，或加主备与领导者租约；接口已预留 `device_class` 与批量查询 |
 | C8 | `LogicSystem` handler 返回值 `bool` 未被使用 | GateServer | 接口简化或真正使用返回值表达"是否成功" |
 

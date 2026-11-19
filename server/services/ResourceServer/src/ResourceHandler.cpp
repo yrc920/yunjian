@@ -1,4 +1,5 @@
 #include "ResourceHandler.h"
+#include "ResourceFrame.h"
 #include "ConfigMgr.h"
 #include "FileSystem.h"
 #include "LogicSystem.h"
@@ -7,7 +8,6 @@
 #include "const.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
-#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -17,79 +17,14 @@
 
 namespace {
 
-//上传与下载的帧体：4 字节头长（网络序）+ JSON 头 + 原始分片。
-//分片直接跟在头后面，JSON 头只剩几百字节，两端都不必再做 Base64
-bool SplitFrame(const std::string& body, Json::Value& header, const char*& payload,
-	std::size_t& payload_len)
-{
-	if (body.size() < 4)
-		return false;
-	const auto* bytes = reinterpret_cast<const unsigned char*>(body.data());
-	const std::uint32_t header_len = (static_cast<std::uint32_t>(bytes[0]) << 24)
-		| (static_cast<std::uint32_t>(bytes[1]) << 16)
-		| (static_cast<std::uint32_t>(bytes[2]) << 8)
-		| static_cast<std::uint32_t>(bytes[3]);
-	//头部是固定字段组成的对象，正常不超过 1 KB；上限拦住畸形帧。
-	//先减后比，避免 header_len 接近 UINT32_MAX 时 4 + header_len 溢出绕过检查
-	if (header_len == 0 || header_len > 8192 || header_len > body.size() - 4)
-		return false;
-	Json::Reader reader;
-	if (!reader.parse(body.substr(4, header_len), header) || !header.isObject())
-		return false;
-	payload = body.data() + 4 + header_len;
-	payload_len = body.size() - 4 - header_len;
-	return true;
-}
+using namespace resource_frame; //帧编码与文件名约束在 ResourceFrame.h，可被单元测试直接调用
 
-std::string BuildFrame(const Json::Value& header, const char* payload, std::size_t payload_len)
+//资源通道的请求与回包共用同一种包体：4 字节头长 + JSON 头 + 数据段。
+//上传与下载带分片，续传同步只是数据段为空；两端各只有一套拆帧逻辑
+void SendResponse(const std::shared_ptr<CSession>& session, const Json::Value& header,
+	std::uint16_t msg_id)
 {
-	Json::StreamWriterBuilder builder;
-	builder["indentation"] = ""; //紧凑输出，头部只有几百字节
-	const std::string text = Json::writeString(builder, header);
-
-	std::string frame;
-	frame.reserve(4 + text.size() + payload_len);
-	const auto len = static_cast<std::uint32_t>(text.size());
-	frame.push_back(static_cast<char>((len >> 24) & 0xFF));
-	frame.push_back(static_cast<char>((len >> 16) & 0xFF));
-	frame.push_back(static_cast<char>((len >> 8) & 0xFF));
-	frame.push_back(static_cast<char>(len & 0xFF));
-	frame += text;
-	if (payload_len > 0)
-		frame.append(payload, payload_len);
-	return frame;
-}
-
-bool ParseJson(const std::string& data, Json::Value& root)
-{
-	Json::Reader reader;
-	if (!reader.parse(data, root))
-		return false;
-	return root.isObject();
-}
-
-bool IsMd5(const std::string& md5)
-{
-	if (md5.size() != 32)
-		return false;
-	for (char ch : md5) {
-		if (!std::isxdigit(static_cast<unsigned char>(ch)))
-			return false;
-	}
-	return true;
-}
-
-bool IsSafeName(const std::string& name)
-{
-	if (name.empty() || name.size() > 128)
-		return false;
-	if (name == "." || name == "..")
-		return false;
-	if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos)
-		return false;
-	if (name.front() == '.')
-		return false;
-	return boost::filesystem::path(name).filename().string() == name;
+	session->Send(BuildFrame(header, nullptr, 0), msg_id);
 }
 
 //返回ErrorCodes，用来区分“uid没有登录令牌”和“令牌不匹配”
@@ -216,8 +151,7 @@ void SendUploadResponse(const std::shared_ptr<CSession>& session, bool avatar, i
 	rtvalue["last"] = last;
 	rtvalue["uid"] = uid;
 
-	session->Send(rtvalue.toStyledString(),
-		avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
+	SendResponse(session, rtvalue, avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
 }
 
 }
@@ -370,8 +304,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		response["trans_size"] = Json::Int64(trans_size);
 		response["last"] = last;
 		response["uid"] = uid;
-		session->Send(response.toStyledString(),
-			avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
+		SendResponse(session, response, avatar ? ID_UPLOAD_HEAD_ICON_RSP : ID_UPLOAD_FILE_RSP);
 
 		//成功收尾才清进度；失败保留记录，客户端重试仍可续传
 		if (result["error"].asInt() == ErrorCodes::Success && last == 1) {
@@ -398,9 +331,13 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Error_Json;
 
-	if (!ParseJson(data, root) || !root["md5"].isString() || !root["uid"].isInt() ||
-		!root["token"].isString()) {
-		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP); //字段不全直接回错误
+	//请求与回包同一种包体：续传同步没有数据段，多带字节说明客户端拼错了
+	const char* payload = nullptr;
+	std::size_t payload_len = 0;
+	if (!SplitFrame(data, root, payload, payload_len) || payload_len != 0
+		|| !root["md5"].isString() || !root["uid"].isInt()
+		|| !root["token"].isString()) {
+		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP); //字段不全直接回错误
 		return;
 	}
 
@@ -410,14 +347,14 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 
 	if (!IsMd5(md5)) {
 		rtvalue["error"] = ErrorCodes::FileDataInvalid; //续传键格式不对
-		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
+		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 		return;
 	}
 
 	const int auth_error = EnsureSessionUser(session, uid, token);
 	if (auth_error != ErrorCodes::Success) {
 		rtvalue["error"] = auth_error; //uid没有令牌或与连接身份不符
-		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
+		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 		return;
 	}
 
@@ -425,7 +362,7 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	if (!LogicSystem::GetInstance()->LoadFileInfo(md5, file_info)) { //内存/Redis都没有
 		rtvalue["error"] = ErrorCodes::FileNotExists;
 		rtvalue["md5"] = md5;
-		session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
+		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 		return;
 	}
 
@@ -435,7 +372,7 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	rtvalue["seq"] = file_info->_seq; //最后落盘分片
 	rtvalue["trans_size"] = Json::Int64(file_info->_trans_size); //已落盘字节数
 	rtvalue["total_size"] = Json::Int64(file_info->_total_size); //总大小
-	session->Send(rtvalue.toStyledString(), ID_SYNC_FILE_RSP);
+	SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 }
 
 namespace {
@@ -459,8 +396,12 @@ void SendDownloadError(const std::shared_ptr<CSession>& session, int error,
 void resource::HandleDownload(std::shared_ptr<CSession> session, const std::string& data)
 {
 	Json::Value root;
-	if (!ParseJson(data, root) || !root["uid"].isInt() || !root["token"].isString() ||
-		!root["owner_uid"].isInt() || !root["name"].isString() || !root["seq"].isInt()) {
+	//下载请求同样带头长，数据段必须为空
+	const char* payload = nullptr;
+	std::size_t payload_len = 0;
+	if (!SplitFrame(data, root, payload, payload_len) || payload_len != 0
+		|| !root["uid"].isInt() || !root["token"].isString()
+		|| !root["owner_uid"].isInt() || !root["name"].isString() || !root["seq"].isInt()) {
 		SendDownloadError(session, ErrorCodes::Error_Json); //字段不全，连名字都没有
 		return;
 	}

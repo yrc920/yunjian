@@ -1,4 +1,5 @@
 #include "UserCache.h"
+#include "JsonUtil.h"
 #include "MysqlDao.h"
 #include "RedisMgr.h"
 #include "data.h"
@@ -40,6 +41,6 @@ bool usercache::GetBaseInfo(const std::string& base_key, int uid,
 	root["desc"] = userinfo->desc;
 	root["sex"] = userinfo->sex;
 	root["icon"] = userinfo->icon;
-	RedisMgr::GetInstance()->Set(base_key, root.toStyledString());
+	RedisMgr::GetInstance()->Set(base_key, JsonToCompact(root));
 	return true;
 }

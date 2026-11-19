@@ -30,6 +30,7 @@ public:
     void MoveToThread(QThread *thread); //对象与成员socket一起迁移
     void ConnectToServer(const QString &host, int port);
     void SendData(ReqId reqId, const QByteArray &data);
+    void SendJson(const ReqId &id, const QJsonObject &header); //只有头部的请求，数据段为空
     void CloseConnectionAsync();
     void StartUpload(const QString &md5); //按md5取UploadFileInfo开始/续传
     void StartDownload(const QString &name); //按资源名取DownloadFileInfo开始下载

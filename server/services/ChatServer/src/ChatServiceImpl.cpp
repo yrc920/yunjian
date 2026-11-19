@@ -1,4 +1,5 @@
 #include "ChatServiceImpl.h"
+#include "JsonUtil.h"
 #include "UserCache.h"
 #include "UserMgr.h"
 #include "CSession.h"
@@ -38,7 +39,7 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context,
 	rtvalue["icon"] = request->icon();
 	rtvalue["sex"] = request->sex();
 	rtvalue["nick"] = request->nick();
-	std::string return_str = rtvalue.toStyledString(); //将json数据转换为字符串
+	std::string return_str = JsonToCompact(rtvalue); //将json数据转换为字符串
 
 	session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ); //发送通知对方
 	return Status::OK;
@@ -101,7 +102,7 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context,
 		rtvalue["error"] = ErrorCodes::UidInvalid;
 	}
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = JsonToCompact(rtvalue);
 
 	session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
 	return Status::OK;
@@ -144,7 +145,7 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	}
 	rtvalue["text_array"] = text_array;
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = JsonToCompact(rtvalue);
 
 	session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 	return Status::OK;
@@ -293,7 +294,7 @@ Status ChatServiceImpl::NotifyProfileChanged(ServerContext* context,
     rtvalue["desc"] = request->desc();
     rtvalue["icon"] = request->icon();
     rtvalue["sex"] = request->sex();
-    const std::string notify_text = rtvalue.toStyledString();
+    const std::string notify_text = JsonToCompact(rtvalue);
 
     for (int i = 0; i < request->touids_size(); ++i) {
         auto session = UserMgr::GetInstance()->GetSession(request->touids(i));
@@ -324,11 +325,11 @@ Status ChatServiceImpl::NotifyChatEvent(ServerContext* context,
     rtvalue["message_id"] = Json::Int64(request->message_id());
     if (request->event() == 1) {
         rtvalue["uid"] = request->fromuid(); //读取者
-        session->Send(rtvalue.toStyledString(), ID_NOTIFY_MSG_READ);
+        session->Send(JsonToCompact(rtvalue), ID_NOTIFY_MSG_READ);
     }
     else if (request->event() == 2) {
         rtvalue["fromuid"] = request->fromuid(); //撤回者
-        session->Send(rtvalue.toStyledString(), ID_NOTIFY_MSG_RECALLED);
+        session->Send(JsonToCompact(rtvalue), ID_NOTIFY_MSG_RECALLED);
     }
     return Status::OK;
 }

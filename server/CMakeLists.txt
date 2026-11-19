@@ -106,3 +106,12 @@ add_subdirectory(services/ChatServer)
 add_subdirectory(services/VerifyServer)
 add_subdirectory(services/ResourceServer)
 
+# ---------- 测试 ----------
+# include(CTest) 会定义 BUILD_TESTING 开关并打开 enable_testing()；
+# 关掉它（-DBUILD_TESTING=OFF）就不生成任何测试目标，部署构建用得上。
+# 测试分两层：单元测试不依赖运行环境，集成测试真连本地栈，说明见 tests/CMakeLists.txt
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+

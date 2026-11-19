@@ -3,6 +3,7 @@
 #include "StatusGrpcClient.h"
 #include "MysqlDao.h"
 #include "const.h"
+#include "JsonUtil.h"
 #include "RedisMgr.h"
 #include "UserMgr.h"
 #include "ChatGrpcClient.h"
@@ -168,7 +169,7 @@ void LogicSystem::PostMsgToQue(std::shared_ptr<LogicNode> msg)
 		LOG_WARN << "[logic] queue full, reject msg id=" << id << " shard=" << shard;
 		Json::Value response;
 		response["error"] = ErrorCodes::ServiceUnavailable;
-		session->Send(response.toStyledString(), static_cast<std::uint16_t>(id + 1));
+		session->Send(JsonToCompact(response), static_cast<std::uint16_t>(id + 1));
 		return;
 	}
 
@@ -211,7 +212,7 @@ void LogicSystem::DealMsg(std::size_t shard) {
             || id == ID_RESOURCE_CHAT_MSG_REQ) && !session->AllowMessage()) {
             Json::Value busy;
             busy["error"] = ErrorCodes::TooManyRequests;
-            session->Send(busy.toStyledString(), static_cast<std::uint16_t>(id + 1));
+            session->Send(JsonToCompact(busy), static_cast<std::uint16_t>(id + 1));
             continue;
         }
         try {
@@ -230,7 +231,7 @@ void LogicSystem::DealMsg(std::size_t shard) {
             if (error != Success) {
                 Json::Value response;
                 response["error"] = error;
-                session->Send(response.toStyledString(), id + 1); //已注册的请求，其响应ID均为请求ID加1
+                session->Send(JsonToCompact(response), id + 1); //已注册的请求，其响应ID均为请求ID加1
                 continue;
             }
             handler->second(session, id, data);
@@ -316,7 +317,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
 	Defer defer([this, &rtvalue, session]() {
 		//将Json值对象转换为字符串形式，准备发送给客户端
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = JsonToCompact(rtvalue);
 		//通过会话对象发送消息给客户端, 消息ID为用户登陆回包
 		session->Send(return_str, MSG_CHAT_LOGIN_RSP);
 		});
@@ -483,7 +484,7 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session,
 	Json::Value rtvalue; //创建Json值对象，用于存储返回给客户端的数据
 	Defer defer([this, &rtvalue, session]() {
 		//将Json值对象转换为字符串形式，准备发送给客户端
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = JsonToCompact(rtvalue);
 		//通过会话对象发送消息给客户端, 消息ID为搜索用户回包
 		session->Send(return_str, ID_SEARCH_USER_RSP);
 		});
@@ -530,7 +531,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 	rtvalue["error"] = ErrorCodes::Success; //默认返回成功状态码
 	Defer defer([this, &rtvalue, session]() {
 		//将Json值对象转换为字符串形式，准备发送给客户端
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = JsonToCompact(rtvalue);
 		//通过会话对象发送消息给客户端, 消息ID为申请添加好友回包
 		session->Send(return_str, ID_ADD_FRIEND_RSP);
 		});
@@ -569,7 +570,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 				notify["sex"] = apply_info->sex;
 				notify["nick"] = apply_info->nick;
 			}
-			std::string return_str = notify.toStyledString();
+			std::string return_str = JsonToCompact(notify);
 			//通过会话对象发送消息给目标用户, 消息ID为通知添加好友请求
 			session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
 		}
@@ -622,7 +623,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = JsonToCompact(rtvalue);
 		session->Send(return_str, ID_AUTH_FRIEND_RSP);
 		});
 
@@ -745,7 +746,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 			}
 
 
-			std::string return_str = notify.toStyledString();
+			std::string return_str = JsonToCompact(notify);
 			session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
 		}
 		return;
@@ -801,7 +802,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		rtvalue["text_array"].append(response_item);
 	}
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_TEXT_CHAT_MSG_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_TEXT_CHAT_MSG_RSP);
 	});
 	std::vector<std::pair<std::string, std::string>> contents;
 	for (const auto& item : arrays) contents.emplace_back(item["msgid"].asString(), item["content"].asString());
@@ -888,7 +889,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		if (to_ip_value == ConfigMgr::Inst()["SelfServer"]["Name"]) {
 			auto peer_session = UserMgr::GetInstance()->GetSession(touid);
 			if (peer_session)
-				peer_session->Send(notify.toStyledString(), ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+				peer_session->Send(JsonToCompact(notify), ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 			return;
 		}
 
@@ -944,7 +945,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	if (!saved_ok) {
 		response["error"] = ErrorCodes::RPCFailed;
 		response["group_invalid"] = group;
-		session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
+		session->Send(JsonToCompact(response), ID_IMG_CHAT_MSG_RSP);
 		return;
 	}
 
@@ -953,7 +954,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	response["message_id"] = Json::Int64(saved.message_id);
 	response["status"] = 0; //资源尚未上传; 接收方通知留到资源完成后的章节
 	response["time"] = Json::Int64(saved.created_at);
-	session->Send(response.toStyledString(), ID_IMG_CHAT_MSG_RSP);
+	session->Send(JsonToCompact(response), ID_IMG_CHAT_MSG_RSP);
 }
 
 //视频/文件消息只落库，资源本体由客户端收到回执后上传；视频首帧是独立资源，
@@ -1011,7 +1012,7 @@ void LogicSystem::DealResourceChatMsg(std::shared_ptr<CSession> session,
 	if (!saved_ok) {
 		response["error"] = ErrorCodes::RPCFailed;
 		response["group_invalid"] = group;
-		session->Send(response.toStyledString(), ID_RESOURCE_CHAT_MSG_RSP);
+		session->Send(JsonToCompact(response), ID_RESOURCE_CHAT_MSG_RSP);
 		return;
 	}
 
@@ -1020,7 +1021,7 @@ void LogicSystem::DealResourceChatMsg(std::shared_ptr<CSession> session,
 	response["message_id"] = Json::Int64(saved.message_id);
 	response["status"] = 0; //资源尚未上传，等 ResourceServer 完成通知
 	response["time"] = Json::Int64(saved.created_at);
-	session->Send(response.toStyledString(), ID_RESOURCE_CHAT_MSG_RSP);
+	session->Send(JsonToCompact(response), ID_RESOURCE_CHAT_MSG_RSP);
 }
 
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session,
@@ -1048,7 +1049,7 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session,
 			response["sex"] = peer->sex;
 		}
 	}
-	session->Send(response.toStyledString(), ID_CREATE_PRIVATE_CHAT_RSP);
+	session->Send(JsonToCompact(response), ID_CREATE_PRIVATE_CHAT_RSP);
 }
 
 void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
@@ -1072,7 +1073,7 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session,
 	response["load_more"] = has_more;
 	for (const auto& thread : threads)
 		response["thread_list"].append(BuildThreadItem(thread));
-	session->Send(response.toStyledString(), ID_LOAD_CHAT_THREAD_RSP);
+	session->Send(JsonToCompact(response), ID_LOAD_CHAT_THREAD_RSP);
 }
 
 void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
@@ -1114,7 +1115,7 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session,
 		item["status"] = message.sender_id == uid ? 1 : 3;
 		response["text_array"].append(item);
 	}
-	session->Send(response.toStyledString(), ID_LOAD_CHAT_MSG_RSP);
+	session->Send(JsonToCompact(response), ID_LOAD_CHAT_MSG_RSP);
 }
 
 void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session,
@@ -1124,7 +1125,7 @@ void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session,
     //3000 在线、10 秒一次心跳时，每秒 300 次无意义的解析与日志会被省掉
     Json::Value rtvalue;
     rtvalue["error"] = ErrorCodes::Success;
-    session->Send(rtvalue.toStyledString(), ID_HEARTBEAT_RSP);
+    session->Send(JsonToCompact(rtvalue), ID_HEARTBEAT_RSP);
 }
 
 //主动登出：先让状态服务按 sid + epoch 吊销租约与令牌，再摘除本地登记并关闭连接。
@@ -1148,7 +1149,7 @@ void LogicSystem::LogoutHandler(std::shared_ptr<CSession> session,
 	}
 
 	//先回包再摘除本地登记：ClearSession 之后这条连接不再接收业务消息
-	session->Send(rsp.toStyledString(), ID_LOGOUT_RSP);
+	session->Send(JsonToCompact(rsp), ID_LOGOUT_RSP);
 	_p_server->ClearSession(session->GetSessionId());
 	session->CloseSoon(200);
 }
@@ -1164,7 +1165,7 @@ void LogicSystem::UpdateProfile(std::shared_ptr<CSession> session,
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_UPDATE_PROFILE_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_UPDATE_PROFILE_RSP);
 		});
 
 	//操作者只认会话绑定的uid, 请求体里不带uid, 客户端伪造就改不到别人的资料
@@ -1200,8 +1201,8 @@ void LogicSystem::UpdateProfile(std::shared_ptr<CSession> session,
 		base_root["sex"] = user_info->sex;
 		base_root["icon"] = user_info->icon;
 		RedisMgr::GetInstance()->Set(USER_BASE_INFO + std::to_string(uid),
-			base_root.toStyledString());
-		RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, base_root.toStyledString());
+			JsonToCompact(base_root));
+		RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, JsonToCompact(base_root));
 	}
 
 	//回包带完整结果, 客户端据此刷新本地资料页与侧栏, 不必再发一次搜索
@@ -1238,7 +1239,7 @@ void LogicSystem::NotifyFriendsProfileChanged(int uid)
 	notify["desc"] = user_info->desc;
 	notify["sex"] = user_info->sex;
 	notify["icon"] = user_info->icon;
-	const std::string notify_text = notify.toStyledString();
+	const std::string notify_text = JsonToCompact(notify);
 
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
 	//一次批量查询好友位置，避免好友数 × 一次 Redis/RPC
@@ -1286,7 +1287,7 @@ void LogicSystem::UpdateFriendRemark(std::shared_ptr<CSession> session,
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_UPDATE_FRIEND_REMARK_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_UPDATE_FRIEND_REMARK_RSP);
 		});
 
 	const int self_uid = session->GetUserId();
@@ -1338,7 +1339,7 @@ void LogicSystem::GetProfile(std::shared_ptr<CSession> session,
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_GET_PROFILE_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_GET_PROFILE_RSP);
 		});
 
 	//只查公开资料, 不返回邮箱与密码; 目标不是好友也允许, 搜索结果同样需要
@@ -1394,11 +1395,11 @@ void LogicSystem::PushChatEventNow(int from_uid, int to_uid, long long thread_id
 		if (event == 1) {
 			//已读：客户端按 uid 确认是哪位好友读的
 			notify["uid"] = from_uid;
-			peer->Send(notify.toStyledString(), ID_NOTIFY_MSG_READ);
+			peer->Send(JsonToCompact(notify), ID_NOTIFY_MSG_READ);
 		}
 		else {
 			notify["fromuid"] = from_uid;
-			peer->Send(notify.toStyledString(), ID_NOTIFY_MSG_RECALLED);
+			peer->Send(JsonToCompact(notify), ID_NOTIFY_MSG_RECALLED);
 		}
 		return;
 	}
@@ -1425,7 +1426,7 @@ void LogicSystem::MarkMessagesRead(std::shared_ptr<CSession> session,
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_MARK_READ_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_MARK_READ_RSP);
 		});
 
 	const int uid = session->GetUserId();
@@ -1477,7 +1478,7 @@ void LogicSystem::RecallMessage(std::shared_ptr<CSession> session,
 	Json::Value rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_RECALL_MSG_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_RECALL_MSG_RSP);
 		});
 
 	const int uid = session->GetUserId();
@@ -1531,7 +1532,7 @@ void LogicSystem::DeleteFriend(std::shared_ptr<CSession> session,
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = touid; //失败时也带回来，客户端才能把乐观移除的那一行恢复
 	Defer defer([&rtvalue, session]() {
-		session->Send(rtvalue.toStyledString(), ID_DELETE_FRIEND_RSP);
+		session->Send(JsonToCompact(rtvalue), ID_DELETE_FRIEND_RSP);
 		});
 
 	const int uid = session->GetUserId();
@@ -1570,7 +1571,7 @@ void LogicSystem::BroadcastGroupEventNow(long long thread_id, const std::vector<
 {
 	if (members.empty())
 		return;
-	const std::string text = payload.toStyledString();
+	const std::string text = JsonToCompact(payload);
 	const std::string self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
 	//一次批量查询所有成员的在线位置：群上限 200，避免 200 次单点查询
 	const auto routes = SessionRouter::Inst().LookupBatch(members);
@@ -1685,7 +1686,7 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 	bool replied = false; //成功路径会先回包再广播，错误路径仍由 Defer 兜底
 	Defer defer([&response, session, &replied]() {
 		if (!replied)
-			session->Send(response.toStyledString(), ID_CREATE_GROUP_RSP);
+			session->Send(JsonToCompact(response), ID_CREATE_GROUP_RSP);
 	});
 
 	const int uid = session->GetUserId();
@@ -1761,7 +1762,7 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 	}
 
 	//先回包再广播：创建者如果先收到 1068/1019，客户端还没有这个会话，系统消息会被丢掉
-	session->Send(response.toStyledString(), ID_CREATE_GROUP_RSP);
+	session->Send(JsonToCompact(response), ID_CREATE_GROUP_RSP);
 	replied = true;
 
 	//其他成员：把群资料与成员一起推过去，客户端据此立刻出现会话
@@ -1803,7 +1804,7 @@ void LogicSystem::GetGroupInfo(std::shared_ptr<CSession> session,
 	Json::Value response;
 	response["error"] = ErrorCodes::Success;
 	Defer defer([&response, session]() {
-		session->Send(response.toStyledString(), ID_GET_GROUP_INFO_RSP);
+		session->Send(JsonToCompact(response), ID_GET_GROUP_INFO_RSP);
 	});
 
 	const int uid = session->GetUserId();
@@ -1859,7 +1860,7 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 	Json::Value response;
 	response["error"] = ErrorCodes::Success;
 	Defer defer([&response, session]() {
-		session->Send(response.toStyledString(), ID_UPDATE_GROUP_RSP);
+		session->Send(JsonToCompact(response), ID_UPDATE_GROUP_RSP);
 	});
 
 	const int uid = session->GetUserId();
@@ -1957,7 +1958,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 	Json::Value response;
 	response["error"] = ErrorCodes::Success;
 	Defer defer([&response, session]() {
-		session->Send(response.toStyledString(), ID_GROUP_MEMBER_OP_RSP);
+		session->Send(JsonToCompact(response), ID_GROUP_MEMBER_OP_RSP);
 	});
 
 	const int uid = session->GetUserId();
@@ -2208,7 +2209,7 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
 	redis_root["desc"] = user_info->desc;
 	redis_root["sex"] = user_info->sex;
 	redis_root["icon"] = user_info->icon;
-	RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString()); //将用户基本信息写入Redis缓存
+	RedisMgr::GetInstance()->Set(base_key, JsonToCompact(redis_root)); //将用户基本信息写入Redis缓存
 
 	//返回数据
 	rtvalue["uid"] = user_info->uid;
@@ -2267,7 +2268,7 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 	redis_root["nick"] = user_info->nick;
 	redis_root["desc"] = user_info->desc;
 	redis_root["sex"] = user_info->sex;
-	RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString()); //将用户基本信息写入Redis缓存
+	RedisMgr::GetInstance()->Set(base_key, JsonToCompact(redis_root)); //将用户基本信息写入Redis缓存
 
 	//返回数据
 	rtvalue["uid"] = user_info->uid;

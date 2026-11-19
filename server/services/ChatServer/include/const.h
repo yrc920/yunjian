@@ -35,6 +35,9 @@ enum ErrorCodes {
 #include "Defer.h"
 
 #define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
+//请求 ID 的上限：协议 ID 都在 1000 段，与包体长度无关。
+//早期用 MAX_LENGTH 兼作 ID 上限，将来 ID 涨过 2KB 会被误判成非法请求
+constexpr int MAX_REQUEST_ID = 2000;
 
 //消息可撤回时间：超过这个秒数只能留在记录里，与常见 IM 的 2 分钟一致
 constexpr int RECALL_WINDOW_SECONDS = 120;
