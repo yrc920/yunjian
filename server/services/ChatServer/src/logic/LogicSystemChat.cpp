@@ -88,11 +88,10 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		}
 	}
 	else if (!MysqlDao::GetInstance()->SaveChatMessages(uid, touid, thread_id, contents, saved)) {
-		rtvalue["error"] = ErrorCodes::RPCFailed;
-		//写库失败最常见的原因是关系不完整（任何一方删了好友），
-		//单独标出来，客户端才能提示"你们已不是好友"而不是笼统的发送失败
-		if (!MysqlDao::GetInstance()->IsMutualFriend(uid, touid))
-			rtvalue["not_friend"] = true;
+		//写库失败最常见的原因是关系不完整（任何一方删了好友）：
+		//回明确的错误码，客户端按"已不是好友"提示，其余情况才是服务端故障
+		rtvalue["error"] = MysqlDao::GetInstance()->IsMutualFriend(uid, touid)
+			? ErrorCodes::RPCFailed : ErrorCodes::NotFriend;
 		return;
 	}
 	//thread_id 可能是0(客户端还没建会话), 以写库结果为准回填

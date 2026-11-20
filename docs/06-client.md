@@ -89,9 +89,9 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 `main.cpp`：
 
 1. 创建 `QGuiApplication`，设置应用名 `xiguchat`、组织名 `XiguChat`，供本地外观设置使用；
-2. 按平台设置字体：macOS 用苹方 / Helvetica Neue，Windows 用 Microsoft YaHei UI / Segoe UI，Linux 用 Noto Sans CJK SC / Noto Sans；
+2. 按平台设置字体：macOS 用苹方 / Helvetica Neue，Windows 用 Microsoft YaHei UI / Segoe UI；
 3. `setWindowIcon(QIcon(":/res/xiguchat.png"))`
-   （Windows/Linux 显示在标题栏与任务栏；macOS 标题栏不显示图标，Dock 图标来自 bundle 内的 `.icns`）；
+   （Windows 显示在标题栏与任务栏；macOS 标题栏不显示图标，Dock 图标来自 bundle 内的 `.icns`）；
 4. 用 `QSettings` 读可执行文件同目录的 `config.ini`，拼出 `gate_url_prefix = "http://host:port"`；
 5. `QQmlApplicationEngine::load("qrc:/qt/qml/XiguChat/qml/Main.qml")`。
 
@@ -227,6 +227,24 @@ QML 负责布局、焦点、动画和弹窗的临时表单状态；业务状态�
 
 路径由 `UserMgr::AccountRootPath()` 统一生成，`ChatService` 与 `ComposerBridge` 不再各自拼目录。
 目录只按 uid 分层：uid 就是账号身份，本地测试和正式部署上的同名 uid 视为同一个账号，不做网关区分。
+
+### 本地缓存库与日志
+
+| 路径 | 内容 |
+| --- | --- |
+| `users/<uid>/chat.db` | 会话、消息、好友、群与成员的 SQLite 缓存（schema v4，WAL） |
+| `logs/client.log` | 运行日志，单文件 8 MiB，保留 `client.1.log`–`client.3.log` |
+
+**本地缓存**只保存“已经拿到过的数据”，权威在服务端；目录 0700、库文件 0600，Unix 上同机其他账号读不到。
+`PRAGMA secure_delete = ON` 保证“清除聊天记录”后正文不会残留可恢复副本，清空全部记录时再执行一次 `VACUUM`。
+缓存是明文 SQLite：Qt 自带的 QSQLITE 驱动不含 SQLCipher，介质加密由操作系统负责（FileVault / BitLocker）。
+共享电脑或要求退出不留痕时，把 `config.ini` 的 `[Storage] localCache` 设为 `false`，客户端不再落盘。
+取舍与升级路径见 [15-本地数据安全](15-local-data-security.md)。
+
+**日志**通过 Qt 日志类别分三路：`xc.net`（连接与帧）、`xc.store`（本地库）、`xc.app`（业务与会话）。
+每行格式为 `时间 [级别] [uid=…] [类别] 正文`，登录后自动带上 uid。`[Log]` 段控制级别、控制台输出与
+Qt 过滤规则；Debug 构建默认 `debug` + 控制台，Release 默认 `info` 且只写文件。
+令牌、密码与消息正文不写日志，排查时用消息号、线程号与错误码定位。
 
 ### 登录的两阶段握手
 
@@ -415,7 +433,7 @@ data URL 避免同路径图片缓存导致显示旧图。再次登录会恢复�
 取消、读图失败或写盘失败均不发布新头像；编辑期间切换账号时拒绝保存。
 
 桌面选图交给 Qt 的平台文件对话框，平台未提供原生实现时使用 Qt 回退界面。
-只读取用户选择的文件，不调用相册或相机接口，也不请求全盘访问权限；Windows / macOS / Linux
+只读取用户选择的文件，不调用相册或相机接口，也不请求全盘访问权限；Windows / macOS
 的文件权限由系统处理，读取拒绝、目录不可写或磁盘空间不足时在编辑框内提示。
 正式沙箱打包时还需按发行方式配置用户所选文件的读取权限。
 保存后由资源服务器上传新头像并更新 `user.icon`；换设备登录时会下载同一份头像，服务端不可用时仍保留本机文件。
@@ -741,7 +759,7 @@ QML 侧走 `qrc:/res/...`。
 - 消息状态已有“发送中 / 已发送 / 失败”；未读/已读的展示与已读回执尚未闭环。
 - 图片、视频、文件均已打通落库、资源上传、接收方通知与下载：图片自动补拉并生成缩略图，
   视频自动补首帧、本体手动下载，文件手动下载；聊天资源支持单条暂停/继续，查看器支持图片缩放与视频播放。
-- 视频首帧依赖 QtMultimedia 后端（Windows 为 WMF，macOS 为 AVFoundation，Linux 需 GStreamer 插件）；
+- 视频首帧依赖 QtMultimedia 后端（Windows 为 WMF，macOS 为 AVFoundation）；
   无解码器或容器不受支持时卡片退化为通用视频图标，视频仍可正常传输与播放。
 - 右键菜单目前是基础版：复制、另存为、打开/定位与传输控制，暂无转发、删除、多选。
 - 查看器只串联当前会话的图片与已下载视频，未下载的视频需先下载后才能加入播放序列。

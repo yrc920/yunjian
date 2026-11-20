@@ -1,3 +1,4 @@
+#include "log.h"
 #include "usermgr.h"
 
 #include "global.h"
@@ -1130,7 +1131,7 @@ void UserMgr::AppendChatMsgs(const ConversationRef &conv,
     std::shared_ptr<ChatThreadData> thread;
     ChatThreadKind kind = ChatThreadKind::Private;
     if (!resolveConversation(conv, thread, kind) || !thread) {
-        qDebug() << "append chat msg, thread" << conv._thread_id << "not found";
+        qCDebug(lcApp) << "append chat msg, thread" << conv._thread_id << "not found";
         return;
     }
     if (conv._thread_id > 0)
@@ -2243,7 +2244,10 @@ void UserMgr::UpsertGroupThread(const QJsonObject &item)
     if (item.contains("my_role"))
         group->_left_state = 0;
     group->_muted = item.value("muted").toBool();
-    group->_at_me = item.value("at_me").toBool();
+    //服务端会话列表暂不下发 at_me：字段缺省时保留本地记录，
+    //否则每次登录都会把"[有人@我]"清掉，未读还在但提醒没了
+    if (item.contains("at_me"))
+        group->_at_me = item.value("at_me").toBool();
     group->_last_time = item.value("time").toVariant().toLongLong();
     group->_chat_thread->_thread_id = thread_id;
 

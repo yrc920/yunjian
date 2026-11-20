@@ -1,3 +1,4 @@
+#include "log.h"
 #include "sessionservice.h"
 
 #include <QJsonDocument>
@@ -38,7 +39,7 @@ SessionService::SessionService() : _ready(false)
     connect(&_heartbeat_watchdog, &QTimer::timeout, this, [this] {
         if (!_ready)
             return;
-        qWarning() << "[session] heartbeat timeout, reconnect";
+        qCWarning(lcApp) << "[session] heartbeat timeout, reconnect";
         _ready = false;
         _heartbeat.stop();
         UserMgr::GetInstance()->FailPendingMessages();
@@ -553,6 +554,7 @@ void SessionService::closeSession()
     _connecting = false;
     _current = {};
     _pending = {};
+    Log::SetUser(0);
     TcpMgr::GetInstance()->CloseConnectionAsync();
     FileService::GetInstance()->CloseResource();
 }
@@ -616,6 +618,8 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     }
     const bool was_reconnecting = _reconnecting;
     auto *mgr = UserMgr::GetInstance().get();
+    //之后每行日志都带 uid，支持同学不必再按登录时间对账
+    Log::SetUser(_pending.Uid);
     _history_pages = 0;
     //重连时 2002 会重新下发完整快照：分页状态与"本次出现过的群"必须重新统计，
     //否则上一次登录的 _seen_threads 会把已解散的群误判成还在

@@ -1,3 +1,4 @@
+#include "log.h"
 #include "chatservice.h"
 
 #include <QBuffer>
@@ -317,15 +318,16 @@ bool ChatService::sendText(const ConversationRef &conv, const QString &text,
         QByteArray payload;
         QString content;
 
-        // 服务端接收上限为 2048 字节。按 JSON 编码后的字节数分帧，
-        // 预留转发时的 error 字段与格式化开销；UTF-16 代理对不可拆开。
+        // 服务端单帧请求上限 8KB。按 JSON 编码后的字节数分帧，
+        // 留出 1KB 余量给转发字段与格式化；UTF-16 代理对不可拆开。
+        // content 为空时强制接收第一个字符，否则单字符加头部就超限会让 offset 不前进
         while (offset < text.size()) {
             const qsizetype count = text.at(offset).isHighSurrogate()
                 && offset + 1 < text.size() && text.at(offset + 1).isLowSurrogate() ? 2 : 1;
             const QString next = content + text.mid(offset, count);
             frame["text_array"] = QJsonArray{QJsonObject{{"msgid", msgId}, {"content", next}}};
             const QByteArray encoded = QJsonDocument(frame).toJson(QJsonDocument::Compact);
-            if (encoded.size() > 1800)
+            if (encoded.size() > 7000 && !content.isEmpty())
                 break;
             content = next;
             payload = encoded;
@@ -524,13 +526,13 @@ bool ChatService::sendImage(const ConversationRef &conv, const QString &thumbnai
     //缓存失败就不发消息，保留输入区让用户重试，避免本地只剩缩略图
     const QString cache = ImageCachePath(name);
     if (cache.isEmpty()) {
-        qWarning() << "[chat] local image cache unavailable";
+        qCWarning(lcApp) << "[chat] local image cache unavailable";
         return false;
     }
     QDir().mkpath(QFileInfo(cache).absolutePath());
     QFile::remove(cache);
     if (!QFile::copy(uploadPath, cache)) {
-        qWarning() << "[chat] cache outgoing image failed:" << cache;
+        qCWarning(lcApp) << "[chat] cache outgoing image failed:" << cache;
         return false;
     }
     EnsureImageThumbnail(name); //气泡缩略图放在 thumbs 下，不覆盖这份压缩图
@@ -591,12 +593,12 @@ bool ChatService::sendVideo(const ConversationRef &conv, const QString &path,
 
     const QFileInfo source(path);
     if (!source.isFile() || source.size() <= 0) {
-        qWarning() << "[chat] video source unavailable:" << path;
+        qCWarning(lcApp) << "[chat] video source unavailable:" << path;
         return false;
     }
     const QString md5 = fileMd5(path);
     if (md5.isEmpty()) {
-        qWarning() << "[chat] video md5 failed:" << path;
+        qCWarning(lcApp) << "[chat] video md5 failed:" << path;
         return false;
     }
     const QString original = fileName.trimmed().isEmpty() ? source.fileName() : fileName.trimmed();
@@ -604,18 +606,18 @@ bool ChatService::sendVideo(const ConversationRef &conv, const QString &path,
     const QString name = uniqueResourceName(ChatMsgType::Video, path, original, source.size(), md5);
     const QString cache = ResourcePath(ChatMsgType::Video, name);
     if (cache.isEmpty()) {
-        qWarning() << "[chat] video cache path unavailable";
+        qCWarning(lcApp) << "[chat] video cache path unavailable";
         return false;
     }
 
     if (!QDir().mkpath(QFileInfo(cache).absolutePath())) {
-        qWarning() << "[chat] create video dir failed:" << cache;
+        qCWarning(lcApp) << "[chat] create video dir failed:" << cache;
         return false;
     }
     if (!QFileInfo::exists(cache) || QFileInfo(cache).size() != source.size()) {
         QFile::remove(cache);
         if (!QFile::copy(path, cache)) {
-            qWarning() << "[chat] cache video failed:" << path << cache;
+            qCWarning(lcApp) << "[chat] cache video failed:" << path << cache;
             return false;
         }
     }
@@ -728,12 +730,12 @@ bool ChatService::sendFile(const ConversationRef &conv, const QString &path,
 
     const QFileInfo source(path);
     if (!source.isFile() || source.size() <= 0) {
-        qWarning() << "[chat] file source unavailable:" << path;
+        qCWarning(lcApp) << "[chat] file source unavailable:" << path;
         return false;
     }
     const QString md5 = fileMd5(path);
     if (md5.isEmpty()) {
-        qWarning() << "[chat] file md5 failed:" << path;
+        qCWarning(lcApp) << "[chat] file md5 failed:" << path;
         return false;
     }
     const QString original = fileName.trimmed().isEmpty() ? source.fileName() : fileName.trimmed();
@@ -741,18 +743,18 @@ bool ChatService::sendFile(const ConversationRef &conv, const QString &path,
     const QString name = uniqueResourceName(ChatMsgType::File, path, original, source.size(), md5);
     const QString cache = ResourcePath(ChatMsgType::File, name);
     if (cache.isEmpty()) {
-        qWarning() << "[chat] file cache path unavailable";
+        qCWarning(lcApp) << "[chat] file cache path unavailable";
         return false;
     }
 
     if (!QDir().mkpath(QFileInfo(cache).absolutePath())) {
-        qWarning() << "[chat] create file dir failed:" << cache;
+        qCWarning(lcApp) << "[chat] create file dir failed:" << cache;
         return false;
     }
     if (!QFileInfo::exists(cache) || QFileInfo(cache).size() != source.size()) {
         QFile::remove(cache);
         if (!QFile::copy(path, cache)) {
-            qWarning() << "[chat] cache file failed:" << path << cache;
+            qCWarning(lcApp) << "[chat] cache file failed:" << path << cache;
             return false;
         }
     }

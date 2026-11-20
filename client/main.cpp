@@ -13,6 +13,7 @@
 #include "fileservice.h"
 #include "friendservice.h"
 #include "httpmgr.h"
+#include "log.h"
 #include "sessionservice.h"
 #include "usermgr.h"
 #include "localstore.h"
@@ -28,6 +29,9 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("xiguchat"));
     QGuiApplication::setOrganizationName(QStringLiteral("XiguChat"));
+    QGuiApplication::setApplicationVersion(QStringLiteral("1.1.1"));
+    //日志要在其它单例之前就绪：启动阶段的失败同样要落到文件里
+    Log::Init();
     QFont font = app.font();
 #if defined(Q_OS_WIN)
     font.setFamilies({QStringLiteral("Microsoft YaHei UI"), QStringLiteral("Segoe UI")});
@@ -93,5 +97,6 @@ int main(int argc, char *argv[])
     TcpMgr::Destroy();
     FileTcpMgr::Destroy();
     UserMgr::Destroy();
+    Log::Shutdown();
     return exitCode;
 }

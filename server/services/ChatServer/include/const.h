@@ -7,7 +7,7 @@
 
 #include "Defer.h"
 
-#define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
+#define MAX_LENGTH (1024 * 8) //客户端请求体最大字节数；4 字节包头单独读取
 
 //消息可撤回时间：超过这个秒数只能留在记录里，与常见 IM 的 2 分钟一致
 constexpr int RECALL_WINDOW_SECONDS = 120;

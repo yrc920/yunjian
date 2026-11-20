@@ -291,6 +291,7 @@ cd build/macos-clang/bin
 | [10-VerifyServer](docs/10-verify-server.md) | 验证码服务与 SMTP 发信 |
 | [11-已知限制](docs/11-known-limitations.md) | 技术债与改进方向 |
 | [13-ResourceServer](docs/13-resource-server.md) | 资源服务器协议、线程模型、断点续传与头像同步 |
+| [15-本地数据安全](docs/15-local-data-security.md) | 本地缓存权限与清理、明文库取舍、SQLCipher 升级路径 |
 | [14-域名与 HTTPS 部署](docs/14-tls-deployment.md) | 域名解析、证书申请与续期、部署与排错 |
 
 ---

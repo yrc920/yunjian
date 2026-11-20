@@ -97,6 +97,7 @@ endif()
 # ------------------------------------------------------------
 set(CORE_SOURCES
     core/global.cpp
+    core/log.cpp
     core/userdata.cpp
     core/usermgr.cpp
     core/store/localstore.cpp
@@ -113,6 +114,7 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
     core/global.h
+    core/log.h
     core/singleton.h
     core/userdata.h
     core/usermgr.h

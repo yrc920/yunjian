@@ -1,3 +1,4 @@
+#include "log.h"
 #include "authservice.h"
 
 #include <QJsonDocument>
@@ -147,7 +148,7 @@ void AuthService::onLoginResponse(ReqId id, QString res, ErrorCodes err)
     info.ResHost = obj["res_host"].toString();
     info.ResPort = obj["res_port"].toString();
 
-    qDebug() << "[auth] login ok, uid =" << info.Uid
+    qCDebug(lcApp) << "[auth] login ok, uid =" << info.Uid
              << "host =" << info.Host << "port =" << info.Port
              << "resource =" << info.ResHost << info.ResPort;
 

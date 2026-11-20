@@ -21,6 +21,7 @@
 | 12 | [QML 界面约定](12-qml-guide.md) | 目录结构、页面与代码的对应关系、bridge 契约、QML 编码规范 |
 | 13 | [ResourceServer](13-resource-server.md) | 资源服务器：6 字节帧、逻辑/文件线程池、Redis 续传进度、头像上传下载 |
 | 14 | [域名与 HTTPS 部署](14-tls-deployment.md) | 腾讯云域名解析、ICP 备案、免费证书申请、部署与续期、本地怎么测、常见错误 |
+| 15 | [本地数据安全](15-local-data-security.md) | 本地缓存受什么保护、为什么不做字段加密、SQLCipher 升级路径、运维检查单 |
 
 ## 建议阅读路径
 

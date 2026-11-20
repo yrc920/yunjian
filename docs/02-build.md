@@ -9,8 +9,9 @@
 | 客户端 | `client/` | C++17 | 系统 Qt 6.5（`QT_ROOT` 或 Qt Kit） |
 | 服务端 | `server/` | C++20 | vcpkg manifest（`server/vcpkg.json`） |
 
-两者均使用 CMakePresets（version 6）描述三平台 × Debug/Release 组合，
-命令行、VSCode、Qt Creator、Visual Studio 共用同一份预设。
+两者均使用 CMakePresets（version 6）描述 Debug/Release 组合，命令行、VSCode、Qt Creator、
+Visual Studio 共用同一份预设。平台范围不同：**服务端要求 Windows / macOS / Linux 三平台可构建**，
+**客户端只支持 Windows 与 macOS**；Linux 上的客户端预设保留但不属于验收范围。
 
 ## 2.2 前置条件
 
@@ -351,9 +352,9 @@ cmake --preset macos-clang \
 | 后端生成器 | Visual Studio（多配置） | Ninja（单配置） | Ninja（单配置） |
 | 后端 triplet | `x64-windows`（动态） | `arm64-osx`（静态） | `x64-linux`（静态） |
 | 依赖部署 | 需拷贝 DLL（applocal + `TARGET_RUNTIME_DLLS`） | 静态链接 / rpath | 静态链接 / rpath |
-| 客户端编译器 | Qt 配套 MinGW 11.2 | AppleClang | GCC |
-| 客户端 Qt 部署 | `windeployqt` | 系统路径 | 系统路径 |
-| 客户端产物 | `bin/xiguchat.exe` | `bin/xiguchat.app` | `bin/xiguchat` |
+| 客户端编译器 | Qt 配套 MinGW 11.2 | AppleClang | 不在支持范围 |
+| 客户端 Qt 部署 | `windeployqt` | 系统路径 | 不在支持范围 |
+| 客户端产物 | `bin/xiguchat.exe` | `bin/xiguchat.app` | 不在支持范围 |
 | libsodium autotools 前置 | 不需要 | 需要 | 需要 |
 | 系统 CA bundle | 通常无（OpenSSL 默认目录兜底） | `/etc/ssl/cert.pem` | `/etc/ssl/certs/ca-certificates.crt` |
 

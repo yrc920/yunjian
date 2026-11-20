@@ -36,13 +36,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	std::string token_key = USERTOKENPREFIX + uid_str;
 	std::string token_value = "";
 	bool success = RedisMgr::GetInstance()->Get(token_key, token_value); //从Redis中获取用户token
-	//如果Redis中没有用户token，说明用户ID无效，返回uid无效错误码
-	if (!success) {
-		rtvalue["error"] = ErrorCodes::UidInvalid;
-		return;
-	}
-	//如果Redis中的用户token与客户端提供的token不匹配，说明token无效，返回token无效错误码
-	if (token_value != token) {
+	//没有令牌与令牌不匹配返回同一个错误：登出后、过期后都按"凭证失效"处理。
+	//两者分开还会暴露某个 uid 是否存在，登录入口不需要这个信息
+	if (!success || token_value != token) {
 		rtvalue["error"] = ErrorCodes::TokenInvalid;
 		return;
 	}
@@ -141,8 +137,11 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 	auto lease = StatusGrpcClient::GetInstance()->AllocateSession(
 		uid, token, session->GetSessionId(), server_name);
 	if (lease.error() != ErrorCodes::Success) {
-		//状态服务不可用时按失败处理：客户端可以重试，已有会话不受影响
-		rtvalue["error"] = lease.error();
+		//状态服务不可用时按失败处理：客户端可以重试，已有会话不受影响。
+		//上面已经填好完整快照，失败回包必须只带错误码，不能把好友与会话列表一起下发
+		Json::Value failed;
+		failed["error"] = lease.error();
+		rtvalue = failed;
 		return;
 	}
 

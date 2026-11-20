@@ -119,7 +119,13 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
         });
         //发送失败且原因是关系已不存在：给一句明确提示，别让用户猜"为什么发不出去"
         connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [this](const QJsonObject &data) {
-            if (!data.value("not_friend").toBool())
+            //群已解散或自己已被移出：服务端用 group_invalid 标记，消息没有落库
+            if (data.value("group_invalid").toBool()) {
+                _chatNotice = tr("你已不在该群，消息未发送");
+                emit chatNoticeChanged();
+                return;
+            }
+            if (data.value("error").toInt() != server_error::NotFriend)
                 return;
             //顶部横条已经常驻说明原因，这里不再弹一次性提示，避免同一句话出现两次
             _notFriendUid = data.value("touid").toInt();

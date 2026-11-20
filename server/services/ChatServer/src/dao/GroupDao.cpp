@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <unordered_map>
+#include <unordered_set>
 #include "Log.h"
 
 //群系统消息的 client_msg_id：同一秒内可能连续写多条（建群 + 邀请），
@@ -72,12 +73,28 @@ long long MysqlDao::CreateGroup(int owner_id, const std::string& group_name,
 		return 0;
 	}
 	try {
-		for (int uid : invite) {
-			auto row = con->sql(
-				"SELECT COUNT(*) FROM friend WHERE (self_id = ? AND friend_id = ?) "
-				"OR (self_id = ? AND friend_id = ?)")
-				.bind(owner_id).bind(uid).bind(uid).bind(owner_id).execute().fetchOne();
-			if (row.isNull() || row[0].get<int>() != 2) {
+		//一次查完所有被邀请人的双向关系：50 人建群原先要 50 次往返。
+		//双向好友在 friend 表里是两行，行数必须正好是邀请人数的两倍；
+		//只拉自己一个人的群没有这条校验，空 IN 列表会变成语法错误
+		if (!invite.empty()) {
+			std::string placeholders;
+			for (std::size_t i = 0; i < invite.size(); ++i) {
+				if (i > 0)
+					placeholders += ',';
+				placeholders += '?';
+			}
+			auto friend_row = con->sql(
+				"SELECT COUNT(*) FROM friend WHERE (self_id = ? AND friend_id IN ("
+				+ placeholders + ")) OR (self_id IN (" + placeholders
+				+ ") AND friend_id = ?)")
+				.bind(owner_id);
+			for (int uid : invite)
+				friend_row.bind(uid);
+			for (int uid : invite)
+				friend_row.bind(uid);
+			auto checked = friend_row.bind(owner_id).execute().fetchOne();
+			if (checked.isNull()
+				|| checked[0].get<int>() != static_cast<int>(invite.size()) * 2) {
 				error = ErrorCodes::NotFriend;
 				return 0;
 			}
@@ -98,10 +115,19 @@ long long MysqlDao::CreateGroup(int owner_id, const std::string& group_name,
 		con->sql(
 			"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 2)")
 			.bind(thread_id).bind(owner_id).execute();
-		for (int uid : invite) {
-			con->sql(
-				"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 0)")
-				.bind(thread_id).bind(uid).execute();
+		//成员一次性写入：条数在 50 以内，一条 INSERT 比逐条往返快一个量级
+		if (!invite.empty()) {
+			std::string member_sql =
+				"INSERT INTO conversation_member (thread_id, uid, role) VALUES ";
+			for (std::size_t i = 0; i < invite.size(); ++i) {
+				if (i > 0)
+					member_sql += ',';
+				member_sql += "(?, ?, 0)";
+			}
+			auto member_insert = con->sql(member_sql);
+			for (int uid : invite)
+				member_insert.bind(thread_id).bind(uid);
+			member_insert.execute();
 		}
 		con->commit();
 
@@ -240,44 +266,80 @@ int MysqlDao::InviteGroupMembers(long long thread_id, int operator_uid,
 		if (member_count >= MAX_GROUP_MEMBER)
 			return ErrorCodes::GroupFull;
 
-		//先过滤掉已经在群里的，避免把"已存在"当成错误中断整批邀请
+		//一次性取回群内已有成员：逐个 COUNT 会把 50 人邀请放大成 50 次往返
+		std::unordered_set<int> existing;
+		{
+			auto rows = con->sql("SELECT uid FROM conversation_member WHERE thread_id = ?")
+				.bind(thread_id).execute();
+			auto row = rows.fetchOne();
+			while (!row.isNull()) {
+				existing.insert(row[0].get<int>());
+				row = rows.fetchOne();
+			}
+		}
+		//去重、跳过群主自己与已在群里的人，保留调用方给的顺序
 		std::vector<int> candidates;
 		for (int uid : members) {
-			if (uid <= 0 || uid == operator_uid)
+			if (uid <= 0 || uid == operator_uid || existing.count(uid) > 0)
 				continue;
 			if (std::find(candidates.begin(), candidates.end(), uid) != candidates.end())
-				continue;
-			auto exists = con->sql(
-				"SELECT COUNT(*) FROM conversation_member WHERE thread_id = ? AND uid = ?")
-				.bind(thread_id).bind(uid).execute().fetchOne();
-			if (!exists.isNull() && exists[0].get<int>() > 0)
 				continue;
 			candidates.push_back(uid);
 		}
 		if (candidates.empty())
 			return ErrorCodes::Success;
 
-		con->startTransaction();
+		//一条 SQL 取出候选人里与操作者互为好友的那部分
+		std::string placeholders;
+		for (std::size_t i = 0; i < candidates.size(); ++i) {
+			if (i > 0)
+				placeholders += ',';
+			placeholders += '?';
+		}
+		std::unordered_set<int> mutual;
+		{
+			auto check = con->sql(
+				"SELECT f.friend_id FROM friend f WHERE f.self_id = ? "
+				"AND f.friend_id IN (" + placeholders + ") "
+				"AND EXISTS (SELECT 1 FROM friend r "
+				"WHERE r.self_id = f.friend_id AND r.friend_id = ?)")
+				.bind(operator_uid);
+			for (int uid : candidates)
+				check.bind(uid);
+			auto rows = check.bind(operator_uid).execute();
+			auto row = rows.fetchOne();
+			while (!row.isNull()) {
+				mutual.insert(row[0].get<int>());
+				row = rows.fetchOne();
+			}
+		}
+
+		std::vector<int> accepted;
 		for (int uid : candidates) {
-			auto friend_row = con->sql(
-				"SELECT COUNT(*) FROM friend WHERE (self_id = ? AND friend_id = ?) "
-				"OR (self_id = ? AND friend_id = ?)")
-				.bind(operator_uid).bind(uid).bind(uid).bind(operator_uid).execute().fetchOne();
-			if (friend_row.isNull() || friend_row[0].get<int>() != 2)
+			if (mutual.count(uid) == 0)
 				continue; //不是好友的人静默跳过，由调用方按 added 结果决定提示
 			if (member_count >= MAX_GROUP_MEMBER)
 				break;
-			con->sql(
-				"INSERT INTO conversation_member (thread_id, uid, role) VALUES (?, ?, 0)")
-				.bind(thread_id).bind(uid).execute();
-			added.push_back(uid);
+			accepted.push_back(uid);
 			++member_count;
 		}
-		if (added.empty()) {
-			con->rollback();
+		if (accepted.empty())
 			return ErrorCodes::NotFriend;
+
+		con->startTransaction();
+		std::string insert_sql =
+			"INSERT INTO conversation_member (thread_id, uid, role) VALUES ";
+		for (std::size_t i = 0; i < accepted.size(); ++i) {
+			if (i > 0)
+				insert_sql += ',';
+			insert_sql += "(?, ?, 0)";
 		}
+		auto insert = con->sql(insert_sql);
+		for (int uid : accepted)
+			insert.bind(thread_id).bind(uid);
+		insert.execute();
 		con->commit();
+		added = accepted;
 		return ErrorCodes::Success;
 	}
 	catch (MysqlError& e) {

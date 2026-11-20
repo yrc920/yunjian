@@ -101,8 +101,11 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 
 	//目标用户未在线时不推送：申请已经写入数据库，对方登录后能在申请列表里看到
 	std::string to_ip_value;
-	if (!SessionRouter::Inst().Lookup(touid, to_ip_value))
+	if (!SessionRouter::Inst().Lookup(touid, to_ip_value)) {
+		LOG_DEBUG << "[friend] apply stored, target offline uid=" << touid;
 		return;
+	}
+	LOG_DEBUG << "[friend] apply uid=" << uid << " target=" << touid << " route=" << to_ip_value;
 
 	//从配置文件中获取自身服务器的名称
 	auto& cfg = ConfigMgr::Inst();
@@ -115,22 +118,26 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 	if (to_ip_value == self_name) {
 		auto session = UserMgr::GetInstance()->GetSession(touid); //从UserMgr中获取目标用户的会话对象
 		//如果目标用户的会话对象存在，说明目标用户在线，直接发送通知给对方
-		if (session) {
-			//在内存中则直接发送通知对方
-			Json::Value notify; //创建Json值对象，用于存储通知信息
-			notify["error"] = ErrorCodes::Success;
-			notify["applyuid"] = uid;
-			notify["name"] = b_info ? apply_info.name : std::to_string(uid);
-			notify["desc"] = welcome;
-			if (b_info) {
-				notify["icon"] = apply_info.icon;
-				notify["sex"] = apply_info.sex;
-				notify["nick"] = apply_info.nick;
-			}
-			std::string return_str = JsonToCompact(notify);
-			//通过会话对象发送消息给目标用户, 消息ID为通知添加好友请求
-			session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+		if (!session) {
+			//路由说有会话、本机却找不到：缓存与真实状态不一致，失效后下次重新问
+			LOG_DEBUG << "[friend] route hit but session missing uid=" << touid;
+			SessionRouter::Inst().Invalidate(touid);
+			return;
 		}
+		Json::Value notify; //创建Json值对象，用于存储通知信息
+		notify["error"] = ErrorCodes::Success;
+		notify["applyuid"] = uid;
+		notify["name"] = b_info ? apply_info.name : std::to_string(uid);
+		notify["desc"] = welcome;
+		if (b_info) {
+			notify["icon"] = apply_info.icon;
+			notify["sex"] = apply_info.sex;
+			notify["nick"] = apply_info.nick;
+		}
+		std::string return_str = JsonToCompact(notify);
+		//通过会话对象发送消息给目标用户, 消息ID为通知添加好友请求
+		LOG_DEBUG << "[friend] notify local uid=" << touid;
+		session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
 		return;
 	}
 

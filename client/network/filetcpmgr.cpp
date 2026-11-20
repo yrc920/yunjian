@@ -1,3 +1,4 @@
+#include "log.h"
 #include "filetcpmgr.h"
 
 #include <QAbstractSocket>
@@ -70,7 +71,7 @@ FileTcpMgr::FileTcpMgr()
 
     //传输层就绪：明文是 connected，TLS 要等握手完成才算连上，否则登录帧会赶在握手前发出
     auto on_transport_ready = [this]() {
-        qDebug() << "[file-tcp] connected";
+        qCDebug(lcNet) << "[file-tcp] connected";
         emit sig_con_success(true); //交给FileService决定是否开始同步
     };
     QObject::connect(&_socket, &QTcpSocket::connected, this, [this, on_transport_ready]() {
@@ -83,7 +84,7 @@ FileTcpMgr::FileTcpMgr()
         [this](const QList<QSslError> &errors) {
             const QString reason = errors.isEmpty() ? QStringLiteral("TLS handshake failed")
                                                     : errors.first().errorString();
-            qWarning() << "[file-tcp] tls error:" << reason;
+            qCWarning(lcNet) << "[file-tcp] tls error:" << reason;
             emit sig_con_failed(reason);
         });
 
@@ -92,7 +93,7 @@ FileTcpMgr::FileTcpMgr()
         [this](QAbstractSocket::SocketError err) {
             if (err == QAbstractSocket::RemoteHostClosedError)
                 return; //正常断开不算连接失败
-            qWarning() << "[file-tcp] connect error:" << err << _socket.errorString();
+            qCWarning(lcNet) << "[file-tcp] connect error:" << err << _socket.errorString();
             emit sig_con_failed(_socket.errorString()); //界面显示具体原因
         });
 
@@ -113,7 +114,7 @@ FileTcpMgr::FileTcpMgr()
 
                 //资源帧允许64KB分片，长度字段是4字节；超过上限说明流已经错位，直接断开
                 if (_message_len == 0 || _message_len > MaxFileFrame) {
-                    qWarning() << "[file-tcp] invalid frame length" << _message_len;
+                    qCWarning(lcNet) << "[file-tcp] invalid frame length" << _message_len;
                     slot_close_connection();
                     return;
                 }
@@ -258,7 +259,7 @@ void FileTcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
 {
     //只在本线程碰socket；未连接或包体超限时直接丢弃，不排队等重连
     if (_socket.state() != QAbstractSocket::ConnectedState || dataBytes.size() > MaxFileFrame) {
-        qWarning() << "[file-tcp] cannot send frame" << reqId;
+        qCWarning(lcNet) << "[file-tcp] cannot send frame" << reqId;
         return;
     }
 
@@ -296,7 +297,7 @@ void FileTcpMgr::sendWindow(const QString &md5)
 
     QFile file(info->_path);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "[file-tcp] open upload file failed:" << info->_path;
+        qCWarning(lcNet) << "[file-tcp] open upload file failed:" << info->_path;
         UserMgr::GetInstance()->RemoveUploadFile(md5);
         emit sig_upload_failed(info->_name, 1); //文件被删或权限变化，按失败收尾
         return;
@@ -580,7 +581,7 @@ void FileTcpMgr::handleMsg(ReqId id, int len, QByteArray data)
 {
     auto iter = _handlers.find(id); //按消息ID找回调表
     if (iter == _handlers.end()) { //未知ID只记日志，不影响后续帧解析
-        qDebug() << "[file-tcp] no handler for id" << id;
+        qCDebug(lcNet) << "[file-tcp] no handler for id" << id;
         return;
     }
     iter.value()(id, len, data); //len仅作校验提示，包体已由接收循环完整切出

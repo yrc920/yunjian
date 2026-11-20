@@ -1,8 +1,11 @@
+#include "log.h"
 #include "localstore.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QSettings>
 #include <QFile>
 #include <QHash>
 #include <QSqlError>
@@ -51,7 +54,47 @@ QVariant textValue(const QString &value)
     return QVariant(value.isNull() ? QStringLiteral("") : value);
 }
 
+//缓存里是完整聊天记录，同机其它账号不该读到：
+//Unix 上收紧到 0700/0600，Windows 依赖用户目录 ACL 默认继承
+void RestrictPermissions(const QString &path, bool directory)
+{
+#if defined(Q_OS_UNIX)
+    QFile::Permissions permissions = QFile::ReadOwner | QFile::WriteOwner;
+    if (directory)
+        permissions |= QFile::ExeOwner;
+    QFile::setPermissions(path, permissions);
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(directory);
+#endif
 }
+
+//SQLite 文件头固定 16 字节。带口令的库（SQLCipher）头部是随机盐，
+//这里只用于启动时如实记录"当前是明文库"，不做任何推断
+//共享电脑或合规要求"不留痕"时可以在配置里关掉本地缓存：
+//关掉后所有读写都按"库没打开"处理，界面仍可用，只是重启不再恢复历史
+bool CacheEnabled()
+{
+    QSettings settings(QDir(QCoreApplication::applicationDirPath())
+                           .filePath(QStringLiteral("config.ini")),
+                       QSettings::IniFormat);
+    const QString text = settings.value(QStringLiteral("Storage/localCache"),
+                                        QStringLiteral("true"))
+                             .toString().trimmed().toLower();
+    return !(text == QStringLiteral("false") || text == QStringLiteral("0")
+             || text == QStringLiteral("no") || text == QStringLiteral("off"));
+}
+
+bool IsPlaintextDatabase(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray head = file.read(16);
+    return head == QByteArrayLiteral("SQLite format 3\0");
+}
+
+} // namespace
 
 LocalStore::LocalStore() = default;
 
@@ -64,7 +107,7 @@ LocalStore::~LocalStore()
 //把旧文件挪到 .bak 后重建一份，服务端会在下次登录把历史补齐
 bool LocalStore::Open(int uid)
 {
-    if (uid <= 0)
+    if (uid <= 0 || !CacheEnabled())
         return false;
     if (_ready && _uid == uid && _db.isOpen())
         return true;
@@ -84,9 +127,9 @@ bool LocalStore::Open(int uid)
     QFile::remove(broken + QStringLiteral("-wal"));
     QFile::remove(broken + QStringLiteral("-shm"));
     if (!QFile::rename(broken, backup))
-        qWarning() << "[store] 旧库备份失败" << broken;
+        qCWarning(lcStore) << "[store] 旧库备份失败" << broken;
     else
-        qWarning() << "[store] 本地库不可用，已备份到" << backup;
+        qCWarning(lcStore) << "[store] 本地库不可用，已备份到" << backup;
 
     if (!openAt(uid) || !migrate()) {
         Close();
@@ -101,16 +144,17 @@ bool LocalStore::openAt(int uid)
 {
     const QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (root.isEmpty()) {
-        qWarning() << "[store] 无法定位应用数据目录，本地缓存不可用";
+        qCWarning(lcStore) << "[store] 无法定位应用数据目录，本地缓存不可用";
         return false;
     }
     const QString dir = QDir(root).filePath(QStringLiteral("users/%1").arg(uid));
     if (!QDir().mkpath(dir)) {
-        qWarning() << "[store] 创建账号目录失败" << dir;
+        qCWarning(lcStore) << "[store] 创建账号目录失败" << dir;
         return false;
     }
+    RestrictPermissions(dir, true);
     if (!QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
-        qWarning() << "[store] 缺少 QSQLITE 驱动，本地缓存不可用";
+        qCWarning(lcStore) << "[store] 缺少 QSQLITE 驱动，本地缓存不可用";
         return false;
     }
 
@@ -120,7 +164,7 @@ bool LocalStore::openAt(int uid)
                                     QString::fromLatin1(kConnectionName));
     _db.setDatabaseName(_path);
     if (!_db.open()) {
-        qWarning() << "[store] 打开数据库失败" << _path << _db.lastError().text();
+        qCWarning(lcStore) << "[store] 打开数据库失败" << _path << _db.lastError().text();
         _db = QSqlDatabase();
         QSqlDatabase::removeDatabase(QString::fromLatin1(kConnectionName));
         _uid = 0;
@@ -128,6 +172,13 @@ bool LocalStore::openAt(int uid)
         return false;
     }
     applyPragmas();
+    //WAL 与 SHM 由上面的 journal_mode 建出来，权限要和主库一起收紧
+    RestrictPermissions(_path, false);
+    RestrictPermissions(_path + QStringLiteral("-wal"), false);
+    RestrictPermissions(_path + QStringLiteral("-shm"), false);
+    if (IsPlaintextDatabase(_path))
+        qCInfo(lcStore, "local cache=%s (plain sqlite, protected by disk encryption and owner-only permissions)",
+               _path.toUtf8().constData());
     return true;
 }
 
@@ -169,6 +220,9 @@ void LocalStore::applyPragmas()
     query.exec(QStringLiteral("PRAGMA foreign_keys = ON")); //默认关闭，删会话要靠它级联
     query.exec(QStringLiteral("PRAGMA busy_timeout = 5000"));
     query.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
+    //删除时清零空闲页：否则"清除聊天记录"只是把行从索引里摘掉，
+    //正文仍留在文件里，用 strings 就能读出来
+    query.exec(QStringLiteral("PRAGMA secure_delete = ON"));
 }
 
 //user_version 阶梯：新库从 0 一级级走到当前版本，升级只加步骤不改历史
@@ -183,7 +237,7 @@ bool LocalStore::migrate()
     query.finish();
 
     if (version > kSchemaVersion) {
-        qWarning() << "[store] 库版本高于程序" << version << kSchemaVersion;
+        qCWarning(lcStore) << "[store] 库版本高于程序" << version << kSchemaVersion;
         return false;
     }
     while (version < kSchemaVersion) {
@@ -352,13 +406,13 @@ bool LocalStore::upgradeSchemaV4()
 
 void LocalStore::logError(const QString &sql) const
 {
-    qWarning() << "[store]" << (_db.isValid() ? _db.lastError().text() : QString())
+    qCWarning(lcStore) << "[store]" << (_db.isValid() ? _db.lastError().text() : QString())
                << sql;
 }
 
 void LocalStore::logError(const QSqlQuery &query) const
 {
-    qWarning() << "[store]" << query.lastError().text() << query.lastQuery();
+    qCWarning(lcStore) << "[store]" << query.lastError().text() << query.lastQuery();
 }
 
 // ---- 会话 ----
@@ -764,7 +818,7 @@ void LocalStore::DeleteMessages(qint64 thread_id, const QVector<qint64> &server_
         return;
 
     if (!_db.transaction()) {
-        qWarning() << "[localstore] delete transaction failed" << _db.lastError().text();
+        qCWarning(lcStore) << "[localstore] delete transaction failed" << _db.lastError().text();
         return;
     }
 
@@ -805,7 +859,7 @@ void LocalStore::DeleteMessages(qint64 thread_id, const QVector<qint64> &server_
         return;
     }
     if (!_db.commit()) {
-        qWarning() << "[localstore] delete commit failed" << _db.lastError().text();
+        qCWarning(lcStore) << "[localstore] delete commit failed" << _db.lastError().text();
         return;
     }
     RefreshThreadPreview(thread_id);
@@ -870,6 +924,15 @@ void LocalStore::ClearAllMessages()
         _db.commit();
     else
         _db.rollback();
+
+    //"清除全部聊天记录"是用户主动的隐私操作：空闲页会被复用，但旧内容仍留在文件里，
+    //提交后整理一次文件，删掉的数据不再有可恢复的副本
+    if (ok) {
+        QSqlQuery compact(_db);
+        if (!compact.exec(QStringLiteral("VACUUM")))
+            logError(compact);
+        compact.exec(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)"));
+    }
 }
 
 //最新一页：未回执的消息排在末尾（与内存里的排序规则一致），再整体反转成升序
