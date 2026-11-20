@@ -21,8 +21,8 @@ int main()
 	try {
 		auto pool = IOContextPool::GetInstance(); //获取IOContextPool单例实例
 
-		//启动时把数据库连接池建好: tags 补列这类一次性 DDL 在启动阶段完成,
-		//不落到第一个登录请求上, 失败也能在启动日志里看到
+		//启动时把数据库连接池建好：连接失败能在启动日志里直接看到，
+		//不会拖到第一个登录请求才暴露
 		MysqlDao::GetInstance();
 	    Defer derfer ([]() {
                 RedisMgr::GetInstance()->Close();

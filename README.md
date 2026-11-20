@@ -114,7 +114,7 @@ flowchart TB
 xiguchat
 ├── README.md                   # 项目入口（本文件）
 ├── LICENSE                     # GPL-3.0
-├── backup/                     # 数据库备份（含建表与 reg_user 存储过程，可直接复现库结构）
+├── backup/                     # 数据库备份（7 张表结构与种子数据，可直接洗库）
 ├── client/                     # 客户端：Qt 6 桌面程序
 │   ├── CMakeLists.txt
 │   ├── CMakePresets.json       # windows-mingw / macos-clang / linux-gcc × Debug/Release
@@ -138,6 +138,8 @@ xiguchat
 │       ├── GateServer/         # HTTP 网关
 │       ├── StatusServer/       # 状态路由
 │       ├── ChatServer/         # 长连接消息服务（一套代码多实例）
+│       │   ├── src/logic/      # 业务处理：会话、好友、消息、群聊
+│       │   ├── src/dao/        # 数据访问：用户、好友、消息、群聊
 │       │   └── config/         # 每份 *.ini 对应一个运行实例
 │       ├── VerifyServer/       # 验证码服务
 │       └── ResourceServer/     # 头像/文件断点续传（逻辑线程池 + 文件线程池）
@@ -177,7 +179,7 @@ docker run -d --name chat-redis -p 6380:6379 -v redis-data:/data \
 ```
 
 创建 schema `xigu` 后直接导入仓库自带的 `backup/xigu.sql`，即可一次性得到
-全部表结构、`reg_user` 存储过程与初始数据，无需手工建表：
+全部表结构与种子数据，无需手工建表：
 
 ```bash
 docker exec -i chat-mysql mysql -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS xigu
@@ -276,6 +278,7 @@ cd build/macos-clang/bin
 | 文档 | 内容 |
 | --- | --- |
 | [docs/README.md](docs/README.md) | 文档索引与阅读路径 |
+| [00-项目导览](docs/00-tour.md) | 五个进程、一次登录的代码路径、日志与按症状排查 |
 | [01-架构设计](docs/01-architecture.md) | 分层、线程模型、三条核心流程时序、消息路由 |
 | [02-构建与部署](docs/02-build.md) | CMake 预设、vcpkg、多实例机制、产物布局、跨平台差异 |
 | [03-通信协议](docs/03-protocol.md) | TCP 私有协议、HTTP 接口、gRPC 接口、错误码总表 |
@@ -288,6 +291,7 @@ cd build/macos-clang/bin
 | [10-VerifyServer](docs/10-verify-server.md) | 验证码服务与 SMTP 发信 |
 | [11-已知限制](docs/11-known-limitations.md) | 技术债与改进方向 |
 | [13-ResourceServer](docs/13-resource-server.md) | 资源服务器协议、线程模型、断点续传与头像同步 |
+| [14-域名与 HTTPS 部署](docs/14-tls-deployment.md) | 域名解析、证书申请与续期、部署与排错 |
 
 ---
 
@@ -314,7 +318,7 @@ cd build/macos-clang/bin
 - Token 有效期 7 天，登出即吊销，暂无刷新机制。
 - 断线自动重连已实现（1/2/4/8/15 秒退避，最多 6 次），但不支持跨实例故障转移；
   单聊已读回执已实现，群聊不逐条回执。
-- 单端登录：新登录用更高 epoch 顶掉旧会话，客户端收到 1021(reason=1) 后必须重新输入密码。
+- 单端登录：新登录用更高 epoch 顶掉旧会话，客户端收到 2007(reason=1) 后必须重新输入密码。
 
 ---
 

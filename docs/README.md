@@ -6,10 +6,11 @@
 
 | # | 文档 | 内容 |
 | --- | --- | --- |
+| 00 | [项目导览](00-tour.md) | 五个进程、一次登录走哪些代码、日志与按症状排查、本地最小启动 |
 | 01 | [架构设计](01-architecture.md) | 系统分层、进程与线程模型、核心时序、消息路由策略、容错边界 |
 | 02 | [构建与部署](02-build.md) | CMake 预设、vcpkg manifest、proto 代码生成、ChatServer 多实例机制、产物布局、CTest、三平台差异 |
 | 03 | [通信协议](03-protocol.md) | TCP 私有协议帧格式、HTTP 接口清单、gRPC 接口清单、错误码总表 |
-| 04 | [数据模型](04-data-model.md) | MySQL 表结构与 `reg_user` 存储过程、Redis 键空间、缓存读写策略 |
+| 04 | [数据模型](04-data-model.md) | 7 张表结构、索引设计、Redis 键空间、缓存策略与本地 SQLite |
 | 05 | [配置参考](05-configuration.md) | 各服务 `config.ini` 段落字段说明与常见变更场景 |
 | 06 | [客户端](06-client.md) | Qt/QML 客户端分层、网络层、QML 层设计、bridge 契约、资源与已知缺口 |
 | 07 | [GateServer](07-gate-server.md) | HTTP 网关：Beast 连接管理、URL 路由、四个接口的完整逻辑 |

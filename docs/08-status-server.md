@@ -65,13 +65,13 @@ sequenceDiagram
     G->>S: GetChatServer(uid)
     S-->>G: host / port / token（写 utoken_, TTL 7 天）
     G-->>C: 登录成功，返回连接地址与 token
-    C->>H: TCP 连接 + MSG_CHAT_LOGIN(1005)
+    C->>H: TCP 连接 + MSG_CHAT_LOGIN(2001)
     H->>H: 读 utoken_ 快速校验；加载资料、好友与会话列表
     H->>S: AllocateSession(uid, token, session_id, instance)
     S->>S: 校验 token、写 sess_<uid>、epoch+1
     S-->>H: epoch、lease_seconds、被顶替的实例与 session_id
     S-)H2: KickSession(旧 sid, 新 epoch)（异步，尽力通知）
-    H-->>C: 1006 登录成功
+    H-->>C: 2002 登录成功
 ```
 
 租约申请放在资料加载**之后**：新设备登录失败时不会把旧设备踢掉。
@@ -83,7 +83,7 @@ sequenceDiagram
   这个请求同时刷新 `inst_<name>` 的 TTL，因此**没有会话时也要发**，否则实例会从可选列表消失。
 - 续租时租约不存在（状态服务故障期间过期）→ **重新授予新 epoch**，返回 `status=1`，
   ChatServer 更新本地 session 的 epoch。这样状态服务重启不会让在线用户掉线。
-- 续租时 `sid` 不同 → `status=2`（Fenced），ChatServer 发 1021(reason=1) 后 300ms 断开。
+- 续租时 `sid` 不同 → `status=2`（Fenced），ChatServer 发 2007(reason=1) 后 300ms 断开。
   踢人通知丢失时，这是兜底路径，最迟一个续租周期内生效。
 - `ReleaseSession` 只有 `sid` 与 `epoch` 都匹配才删除；旧连接的清理永远删不掉新会话。
 - 主动登出走 `LogoutSession`：同一个 Lua 脚本先校验 `sid + epoch`，再删除租约和令牌；

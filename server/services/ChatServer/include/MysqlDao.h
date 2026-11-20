@@ -38,9 +38,6 @@ public:
 	//修改自己给好友设的备注与标签: 返回 1 已更新, 0 不是好友, -1 数据库错误
 	int UpdateFriendRemark(int self_id, int friend_id, const std::string& remark,
 		const std::vector<std::string>& tags);
-	//好友表与申请表各有一个 tags 列: 启动时幂等补列, 不需要部署环境手工建表
-	//启动时补齐后加的列（好友标签、消息已读/撤回），已存在则跳过
-
 	std::shared_ptr<UserInfo> GetUser(int uid); //根据用户ID获取用户信息
 	std::shared_ptr<UserInfo> GetUser(const std::string& name); //根据用户名获取用户信息
 	//获取好友申请列表, 根据起始id和限制条数返回列表
@@ -88,7 +85,7 @@ public:
 	//资源上传完成后按消息ID取类型与内容, 用于给接收方拼通知
 	bool GetChatMessage(long long message_id, ChatMessageInfo& message);
 	//资源服务器通知: 把指定消息的状态改成已上传; sender 用于确认消息归属
-	bool UpdateChatMessageStatus(long long message_id, int sender, int status);
+	bool UpdateChatMessageStatus(long long message_id, int sender, int upload_state);
 	//会话类型: 1 单聊 / 2 群聊; 不存在返回 false
 	bool GetThreadType(long long thread_id, int& thread_type);
 	//会话类型缓存：业务线程与 gRPC 线程都会读；未命中查库，查询失败按单聊返回
@@ -116,9 +113,9 @@ public:
 		int& member_count);
 	//设置或取消管理员: 只有群主可以操作, 目标必须是群成员
 	int SetGroupAdmin(long long thread_id, int operator_uid, int target_uid, bool admin);
-	//退群: 群主不能直接退群(需先解散); dismissed 恒为 false, 保留字段供上层扩展
-	int LeaveGroup(long long thread_id, int uid, bool& dismissed);
-	//解散: 只有群主可以操作; 删 conversation 时消息与成员按外键级联清理
+	//退群: 群主不能直接退群(需先解散)
+	int LeaveGroup(long long thread_id, int uid);
+	//解散: 只有群主可以操作; 只把 conversation 标记为 state=1, 成员与消息保留
 	int DismissGroup(long long thread_id, int uid);
 	//写入一条群系统消息(msg_type=4), 用于建群、邀请、移除、退群、改名等提示
 	bool AddGroupSystemMessage(long long thread_id, int actor, const std::string& content,

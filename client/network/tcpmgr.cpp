@@ -10,6 +10,8 @@ namespace {
 //服务端 CSession::Send 用 2 字节长度字段，包体上限 65531；
 //两端都按 uint16 处理，超过这个值的响应会被服务端拒绝并回错误包
 constexpr quint16 MaxChatFrame = std::numeric_limits<quint16>::max() - 4;
+//服务端接收上限（ChatServer MAX_LENGTH）：4 字节头之外最多 2KB 包体
+constexpr int MaxChatRequest = 2048;
 }
 
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0)
@@ -85,7 +87,6 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recv_pending(false), _message_id(0), 
             _b_recv_pending = false; //重置标志，准备接收下一条消息
             //读取消息体
             const QByteArray messageBody = _buffer.left(_message_len);
-            qDebug() << "receive body msg is " << messageBody ;
             _buffer.remove(0, _message_len); //原地移除已处理的包体，剩余数据继续解析
             //调用消息处理函数，根据消息ID分发到对应的处理函数
             handleMsg(ReqId(_message_id), _message_len, messageBody);
@@ -199,7 +200,6 @@ void TcpMgr::initHandlers()
     //注册处理登录响应的消息处理函数
     _handlers.insert(ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
-        qDebug() << "handle id is " << id << " data is " << data;
 
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data); //将QByteArray转换为QJsonDocument
 
@@ -350,7 +350,6 @@ void TcpMgr::initHandlers()
     //注册处理用户搜索响应的消息处理函数
     _handlers.insert(ID_SEARCH_USER_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
-        qDebug()<< "handle id is "<< id << " data is " << data;
 
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data); //将QByteArray转换为QJsonDocument
 
@@ -392,7 +391,6 @@ void TcpMgr::initHandlers()
     //失败回包同样要交给上层，界面才能提示“申请没有发出去”
     _handlers.insert(ID_ADD_FRIEND_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
 
         const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
         if (!jsonDoc.isObject()) {
@@ -406,7 +404,6 @@ void TcpMgr::initHandlers()
     //注册处理添加好友申请通知的消息处理函数
     _handlers.insert(ID_NOTIFY_ADD_FRIEND_REQ, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len); //表示这个参数在函数体内未使用，避免编译器警告
-        qDebug() << "handle id is " << id << " data is " << data;
 
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data); //将QByteArray转换为QJsonDocument
 
@@ -448,7 +445,6 @@ void TcpMgr::initHandlers()
     //注册处理好友申请认证通知的消息处理函数(申请人同意了我的好友申请))
     _handlers.insert(ID_NOTIFY_AUTH_FRIEND_REQ, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -477,7 +473,7 @@ void TcpMgr::initHandlers()
         QString icon = jsonObj["icon"].toString();
         int sex = jsonObj["sex"].toInt();
 
-        //1015 是"对方通过我的申请"：用 AuthRsp 交给会话层，走和 1014 同一套装配，
+        //3008 是"对方通过我的申请"：用 AuthRsp 交给会话层，走和 3007 同一套装配，
         //否则通过语不会计未读、顶部关系提示也不会清
         auto auth_info = std::make_shared<AuthRsp>(from_uid, name, nick, icon, sex,
             jsonObj["thread_id"].toVariant().toLongLong());
@@ -507,7 +503,6 @@ void TcpMgr::initHandlers()
     //注册处理好友申请认证通知的消息处理函数(我同意了对方的好友申请，对方收到通知)
     _handlers.insert(ID_AUTH_FRIEND_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -559,7 +554,6 @@ void TcpMgr::initHandlers()
 
     _handlers.insert(ID_TEXT_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -592,7 +586,6 @@ void TcpMgr::initHandlers()
 
     _handlers.insert(ID_NOTIFY_TEXT_CHAT_MSG_REQ, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -626,7 +619,6 @@ void TcpMgr::initHandlers()
 
     _handlers.insert(ID_NOTIFY_OFF_LINE_REQ,[this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -667,7 +659,6 @@ void TcpMgr::initHandlers()
 
     _handlers.insert(ID_HEARTBEAT_RSP,[this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << " data is " << data;
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
@@ -724,8 +715,8 @@ void TcpMgr::slot_tcp_connect(ServerInfo info)
 
 void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
 {
-    if (_socket.state() != QAbstractSocket::ConnectedState || dataBytes.size() > 2048) {
-        qWarning() << "Cannot send frame: disconnected or payload exceeds 2048 bytes";
+    if (_socket.state() != QAbstractSocket::ConnectedState || dataBytes.size() > MaxChatRequest) {
+        qWarning() << "Cannot send frame: disconnected or payload exceeds" << MaxChatRequest << "bytes";
         return;
     }
 

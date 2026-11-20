@@ -15,21 +15,22 @@ enum class Flow { Login, Register, Reset };
 QString codeText(int code, Flow flow)
 {
     switch (code) {
-    case 1001: return QStringLiteral("请求数据不完整，请重试");
-    case 1002: return QStringLiteral("服务器繁忙，请稍后再试");
-    case 1003: return QStringLiteral("验证码已过期，请重新获取");
-    case 1004: return QStringLiteral("验证码不正确");
-    case 1005: return QStringLiteral("该邮箱或用户名已被注册");
-    case 1006:
+    case server_error::Json: return QStringLiteral("请求数据不完整，请重试");
+    case server_error::RpcFailed: return QStringLiteral("服务器繁忙，请稍后再试");
+    case server_error::VerifyExpired: return QStringLiteral("验证码已过期，请重新获取");
+    case server_error::VerifyCodeErr: return QStringLiteral("验证码不正确");
+    case server_error::UserExist: return QStringLiteral("该邮箱或用户名已被注册");
+    case server_error::PasswdErr:
         // 注册流程里表示「两次输入的密码不一致」
         return flow == Flow::Register ? QStringLiteral("两次输入的密码不一致")
                                       : QStringLiteral("密码不正确");
-    case 1007: return QStringLiteral("用户名与邮箱不匹配");
-    case 1008: return QStringLiteral("密码更新失败，请稍后再试");
-    case 1009: return QStringLiteral("邮箱或密码不正确");
-    case 1022: return QStringLiteral("验证码发送过于频繁，请稍后再试");
-    case 1101: return QStringLiteral("登录服务暂时不可用，请稍后重试");
-    case 1105: return QStringLiteral("登录过于频繁，请稍后再试");
+    case server_error::EmailNotMatch: return QStringLiteral("用户名与邮箱不匹配");
+    case server_error::PasswdUpFailed: return QStringLiteral("密码更新失败，请稍后再试");
+    case server_error::PasswdInvalid: return QStringLiteral("邮箱或密码不正确");
+    case server_error::VerifyTooFrequent: return QStringLiteral("验证码发送过于频繁，请稍后再试");
+    case server_error::VerifySendFailed: return QStringLiteral("验证码邮件发送失败，请稍后再试");
+    case server_error::ServiceUnavailable: return QStringLiteral("登录服务暂时不可用，请稍后重试");
+    case server_error::TooManyRequests: return QStringLiteral("登录过于频繁，请稍后再试");
     default: break;
     }
     return QStringLiteral("操作失败（错误码 %1）").arg(code);

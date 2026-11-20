@@ -14,6 +14,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace resource_frame {
@@ -38,8 +39,12 @@ inline bool SplitFrame(const std::string& body, Json::Value& header, const char*
 	//先减后比：header_len 接近 UINT32_MAX 时 4 + header_len 会溢出，绕过检查
 	if (header_len == 0 || header_len > MAX_HEADER_LEN || header_len > body.size() - 4)
 		return false;
-	Json::Reader reader;
-	if (!reader.parse(body.substr(4, header_len), header) || !header.isObject())
+	Json::CharReaderBuilder builder;
+	std::string errors;
+	std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+	const std::string head = body.substr(4, header_len);
+	if (!reader->parse(head.data(), head.data() + head.size(), &header, &errors)
+		|| !header.isObject())
 		return false;
 	payload = body.data() + 4 + header_len;
 	payload_len = body.size() - 4 - header_len;

@@ -141,7 +141,7 @@ QVector<ConversationModel::Row> ConversationModel::computeRows() const
         if (!info)
             continue;
         const qint64 thread = info->_chat_thread ? info->_chat_thread->_thread_id : 0;
-        //还没建立会话的好友只在联系人里出现；打开会话（1025）后才进这张表
+        //还没建立会话的好友只在联系人里出现；打开会话（4001）后才进这张表
         if (thread <= 0)
             continue;
         //本地删除的会话不占列表位置；收到新消息时由 UserMgr 取消隐藏。

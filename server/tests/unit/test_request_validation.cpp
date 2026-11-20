@@ -5,6 +5,7 @@
 // 下面的用例按「一个风险点一条用例」组织，改动校验规则时先看这里为什么会红。
 
 #include "RequestValidation.h"
+#include "JsonUtil.h"
 #include "const.h"
 
 #include <json/json.h>
@@ -22,8 +23,7 @@ constexpr int kUid = 1004; //用例里的登录用户
 Json::Value Parse(const std::string& text)
 {
 	Json::Value root;
-	Json::Reader reader;
-	if (!reader.parse(text, root))
+	if (!JsonFromString(text, root))
 		throw std::runtime_error("用例数据不是合法 JSON: " + text);
 	return root;
 }
@@ -220,7 +220,7 @@ XIGU_TEST(文件消息的大小与原始文件名)
 		R"("token":"t","unique_id":"u1","file_name":"报告.pdf")");
 
 	CHECK_EQ(ValidateChatRequest(ID_RESOURCE_CHAT_MSG_REQ,
-		Parse(base + R"(,"file_size":1024})"), kUid), Success);
+		Parse(base + R"(,"file_size":2004})"), kUid), Success);
 	//空文件没有传输意义，0 与负数都要拦
 	CHECK_EQ(ValidateChatRequest(ID_RESOURCE_CHAT_MSG_REQ,
 		Parse(base + R"(,"file_size":0})"), kUid), Error_Json);
@@ -229,7 +229,7 @@ XIGU_TEST(文件消息的大小与原始文件名)
 	//msg_type 只接受图片(2)与文件(3)，1 是纯文本，走这条路径会缺字段
 	const auto wrong_type = Parse(R"({"fromuid":1004,"touid":1001,"msg_type":1,)"
 		R"("md5":"0123456789abcdef0123456789abcdef","name":"res.bin",)"
-		R"("token":"t","unique_id":"u1","file_name":"报告.pdf","file_size":1024})");
+		R"("token":"t","unique_id":"u1","file_name":"报告.pdf","file_size":2004})");
 	CHECK_EQ(ValidateChatRequest(ID_RESOURCE_CHAT_MSG_REQ, wrong_type, kUid), Error_Json);
 }
 

@@ -78,14 +78,14 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	boost::system::error_code ec;
 	const auto total_size = static_cast<long long>(boost::filesystem::file_size(task->_path, ec));
 	if (ec) { //文件不存在或无权访问
-		FinishDownload(task, ErrorCodes::FileNotExists);
+		FinishDownload(task, ResourceError::FileNotExists);
 		return;
 	}
 
 	//seq从1开始；offset已经到文件尾说明客户端请求越界
 	const long long offset = static_cast<long long>(task->_seq - 1) * MAX_FILE_LEN;
 	if (task->_seq < 1 || offset >= total_size) {
-		FinishDownload(task, ErrorCodes::FileOffsetInvalid); //偏移不合法，重试同一seq也不会成功
+		FinishDownload(task, ResourceError::FileOffsetInvalid); //偏移不合法，重试同一seq也不会成功
 		return;
 	}
 
@@ -96,7 +96,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 
 	std::ifstream infile(task->_path, std::ios::binary); //只读打开，不改变文件
 	if (!infile) {
-		FinishDownload(task, ErrorCodes::FileReadPermissionFailed); //存在但打不开，属于读权限问题
+		FinishDownload(task, ResourceError::FileReadPermissionFailed); //存在但打不开，属于读权限问题
 		return;
 	}
 
@@ -104,7 +104,7 @@ void DownloadWorker::TaskCallback(std::shared_ptr<DownloadTask> task)
 	std::string data(read_len, '\0'); //预分配读取缓冲
 	infile.read(data.data(), static_cast<std::streamsize>(read_len));
 	if (!infile) { //文件被截断或IO错误
-		FinishDownload(task, ErrorCodes::FileReadPermissionFailed);
+		FinishDownload(task, ResourceError::FileReadPermissionFailed);
 		return;
 	}
 

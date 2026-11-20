@@ -14,8 +14,8 @@
 
 namespace {
 // 与服务端 ChatServer 的 ErrorCodes 对应，这里只区分对用户有意义的两种
-constexpr int kErrorInvalid = 1001; //请求字段不合法，通常是长度超限
-constexpr int kErrorUidInvalid = 1011; //目标用户无效或好友关系已不存在
+constexpr int kErrorInvalid = server_error::Json; //请求字段不合法，通常是长度超限
+constexpr int kErrorUidInvalid = server_error::UidInvalid; //目标用户无效或好友关系已不存在
 
 // 服务端下发的标签数组转成去重后的字符串列表
 QStringList toTagList(const QJsonArray &array)
@@ -85,7 +85,7 @@ ProfileService::ProfileService()
             });
 
     // 拉取好友资料失败时保持本地缓存，不弹错误：这是后台刷新，用户没有主动触发
-    // 1050 只覆盖文字资料，头像仍用本地已下载的路径，避免显示闪回文件名
+    // 3014 只覆盖文字资料，头像仍用本地已下载的路径，避免显示闪回文件名
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_profile_loaded, this,
             [this](const QJsonObject &data) {
                 if (data.value("error").toInt(kErrorInvalid) != ErrorCodes::SUCCESS)

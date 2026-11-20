@@ -27,7 +27,9 @@ set(XIGU_TEST_PASSWD "745230" CACHE STRING "集成测试账号密码（客户端
 add_library(xigu_test_client STATIC
     TestClient.cpp
     TestClient.h)
-target_include_directories(xigu_test_client PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(xigu_test_client PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/common/include")
 target_link_libraries(xigu_test_client PUBLIC
     Boost::headers
     JsonCpp::JsonCpp)

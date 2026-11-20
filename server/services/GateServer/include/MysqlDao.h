@@ -23,7 +23,8 @@ public:
 	//连通性探测：健康检查用，失败说明连接池或数据库不可用
 	bool Ping();
 
-	bool CheckEmail(const std::string& name, const std::string& email); //检查用户名和邮箱是否匹配
+	//检查用户名和邮箱是否匹配；db_error 区分"不匹配"与"数据库不可用"
+	bool CheckEmail(const std::string& name, const std::string& email, bool& db_error);
 	//检查用户名和密码是否匹配, 如果匹配则将用户信息存储在userInfo中。
 	//db_error 区分"数据库不可用"与"密码错误"，前者不能计入登录失败次数
 	bool CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo,

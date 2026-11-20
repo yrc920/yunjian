@@ -35,7 +35,7 @@ flowchart TB
     end
 
     subgraph msg["消息层 · ChatServer（多实例）"]
-        Chat["CServer → CSession → LogicSystem（单线程逻辑队列）<br/>ChatServiceImpl（gRPC 服务端）<br/>ChatGrpcClient（gRPC 客户端）<br/>UserMgr（uid → session）"]
+        Chat["CServer → CSession → LogicSystem（4 分片逻辑队列）<br/>ChatServiceImpl（gRPC 服务端）<br/>ChatGrpcClient（gRPC 客户端）<br/>UserMgr（uid → session）"]
     end
 
     subgraph res["资源层 · ResourceServer"]
@@ -76,12 +76,12 @@ RPC 调用与数据库访问，会阻塞该 IO 线程。这是当前实现的吞
 | --- | --- | --- |
 | 主线程 | 1 | 运行 `io_context`（acceptor + 信号） |
 | IOContextPool 线程 | CPU 核心数 | 承载 `CSession` 的异步读写 |
-| 逻辑线程 | 1 | `LogicSystem::DealMsg()` 消费逻辑队列，**串行**执行所有消息处理函数 |
+| 逻辑线程 | 4 | `LogicSystem::DealMsg(shard)` 按会话 ID 哈希消费 4 个队列；同一连接严格串行，不同连接可并行 |
 | gRPC 等待线程 | 1（显式 `std::thread` + `server->Wait()`） | 等待服务关闭；RPC 由 gRPC 内部工作线程处理 |
 | gRPC 客户端线程 | gRPC 内部 | 跨实例转发 |
 
-**关键设计：逻辑单线程。** 所有 TCP 消息的处理函数在同一个线程内串行执行，
-`UserMgr` 还会被 IO 和 gRPC 线程访问，因此映射由互斥锁保护。
+**关键设计：按会话分片。** 同一会话的消息固定落到同一分片，顺序不变；
+不同会话可以并行，慢查询只影响该分片。`UserMgr` 会被 IO、gRPC 与多个逻辑线程访问，映射由互斥锁保护。
 `CSession::Send()` 将发送操作投递到 socket 所属 IO 线程，与读取、关闭串行执行。
 
 ### ResourceServer
@@ -132,7 +132,7 @@ sequenceDiagram
     C->>G: POST /user_register {user,email,passwd,confirm,verifycode}
     G->>G: 校验 passwd == confirm
     G->>R: GET code_#lt;email#gt; 与请求比对
-    G->>M: CALL reg_user(name,email,pwd)
+    G->>M: INSERT user + LAST_INSERT_ID
     M-->>G: uid / 0 / -1
     G-->>C: {error=0, uid, email, user}
 ```
@@ -160,7 +160,7 @@ sequenceDiagram
     G-->>C: {error=0, uid, token, host, port}
 
     C->>CS: TCP connect host:port
-    C->>CS: 帧 [1005] {uid, token}
+    C->>CS: 帧 [2001] {uid, token}
     CS->>R: GET utoken_#lt;uid#gt; 快速校验（只读）
     CS->>CS: 加载资料、好友与会话列表
     CS->>S: AllocateSession(uid, token, session_id, instance)
@@ -168,7 +168,7 @@ sequenceDiagram
     S-->>CS: {epoch, lease_seconds, 被顶替的实例与 session_id}
     S-)CS2: KickSession（异步，尽力通知旧连接）
     CS->>CS: session->SetEpoch / UserMgr::SetUserSession
-    CS-->>C: [1006] 用户资料 + 好友申请 + 好友列表
+    CS-->>C: [2002] 用户资料 + 好友申请 + 好友列表
     Note over C: 登录成功，切换到聊天界面
 ```
 
@@ -176,7 +176,7 @@ sequenceDiagram
 
 ### 1.4.3 跨实例文本消息
 
-发送方先拿回执（1018），接收方的投递结果不回传——即使对方离线，发送方看到的也是成功。
+发送方先拿回执（4008），接收方的投递结果不回传——即使对方离线，发送方看到的也是成功。
 
 ```mermaid
 sequenceDiagram
@@ -186,18 +186,18 @@ sequenceDiagram
     participant C2 as ChatServer2
     participant B as 客户端 B
 
-    A->>C1: [1017] {fromuid, touid, text_array}
-    C1-->>A: [1018] 发送方回执
+    A->>C1: [4007] {fromuid, touid, text_array}
+    C1-->>A: [4008] 发送方回执
     C1->>C1: SessionRouter 查缓存（30 秒）
     opt 缓存未命中
         C1->>S: LookupRoute(touid)
         S-->>C1: {online, instance, epoch}
     end
     alt 位置 == 本实例
-        C1->>B: UserMgr::GetSession(touid) → 直投 [1019]
+        C1->>B: UserMgr::GetSession(touid) → 直投 [4009]
     else 位置 == 其他实例
         C1->>C2: gRPC NotifyTextChatMsg(target, req)
-        C2->>B: UserMgr::GetSession(touid) → 直投 [1019]
+        C2->>B: UserMgr::GetSession(touid) → 直投 [4009]
     end
 ```
 
@@ -218,9 +218,9 @@ sequenceDiagram
 | 资源 | 实现 | 容量 | 位置 |
 | --- | --- | --- | --- |
 | io_context 线程池 | `IOContextPool` | `hardware_concurrency()` | 四服务各自持有一份（模板相同、代码独立） |
-| Redis 连接 | `RedisConPool`（hiredis） | 5 | `RedisMgr` |
+| Redis 连接 | `RedisConPool`（hiredis） | 10 | `RedisMgr` |
 | gRPC Stub | `RPConPool` / `ChatConPool` | 5 | `VerifyGrpcClient` / `ChatGrpcClient` |
-| MySQL 会话 | `MysqlPool`（`common/MysqlPool.h`） | 见源码 | `MysqlDao` |
+| MySQL 会话 | `MysqlPool`（`common/MysqlPool.h`） | Chat 8 / Gate 8 / Resource 6 | `MysqlDao` |
 
 所有池均遵循同一模式：`std::queue` + `std::mutex` + `std::condition_variable`，
 `b_stop_` 标志用于关闭时唤醒所有等待者。

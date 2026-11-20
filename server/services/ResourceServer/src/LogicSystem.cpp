@@ -65,9 +65,8 @@ bool LogicSystem::LoadFileInfo(const std::string& md5, std::shared_ptr<FileInfo>
 	if (!RedisMgr::GetInstance()->Get(FILE_INFO_PREFIX + md5, value))
 		return false; //Redis也没有这次传输
 
-	Json::Reader reader;
 	Json::Value root;
-	if (!reader.parse(value, root) || !root.isObject())
+	if (!JsonFromString(value, root) || !root.isObject())
 		return false; //坏数据按没有进度处理
 
 	auto loaded = std::make_shared<FileInfo>();

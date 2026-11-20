@@ -21,11 +21,11 @@ public:
     //单聊与群聊共用同一条发送链路：会话上下文决定写哪张表、通知哪些人
     bool sendText(const ConversationRef &conv, const QString &text,
         const QStringList &mentions = {});
-    //图片先发 1031 落库，收到回执后由 uploadPendingImage 启动 1037 断点上传；
+    //图片先发 4010 落库，收到回执后由 uploadPendingImage 启动 6001 断点上传；
     //thumbnail 是气泡用的缩略图，uploadPath 是输入区压缩好的上传文件
     bool sendImage(const ConversationRef &conv, const QString &thumbnail,
         const QString &uploadPath, int width, int height);
-    //视频先落一条本地消息，异步取首帧并上传；缩略图就绪后再发 1034，资源随后上传
+    //视频先落一条本地消息，异步取首帧并上传；缩略图就绪后再发 4013，资源随后上传
     bool sendVideo(const ConversationRef &conv, const QString &path, const QString &fileName,
         qint64 fileSize);
     //文件不需要预览，直接落库并在回执后上传
@@ -39,10 +39,10 @@ public:
     void RecallMessage(qint64 messageId);
     //重发一条失败的消息：文本直接重发，图片/视频/文件用本机文件重新走一遍发送流程
     bool RetryMessage(const ConversationRef &conv, const QString &msgId);
-    void HandleResourceRsp(const QJsonObject &data); //1035 视频/文件回执，启动资源上传
-    //接收方收到 1033：补一条图片消息，本地没有压缩图时发起下载
+    void HandleResourceRsp(const QJsonObject &data); //4014 视频/文件回执，启动资源上传
+    //接收方收到 4012：补一条图片消息，本地没有压缩图时发起下载
     void HandleImageNotify(const QJsonObject &data);
-    //接收方收到 1036：补视频/文件消息，只自动下载视频首帧，资源本体等用户点击
+    //接收方收到 4015：补视频/文件消息，只自动下载视频首帧，资源本体等用户点击
     void HandleResourceNotify(const QJsonObject &data);
     //历史消息或通知里的图片没有本地文件时排入下载队列，由连接状态与并发上限依次放行
     void DownloadChatImage(const QString &name, int sender, qint64 messageId, qint64 threadId);
@@ -93,12 +93,12 @@ private:
         ConversationRef conv;
     };
     QHash<QString, PendingImage> _pending_images; //unique_id -> 待上传图片
-    //thread_id -> 已经上报到的 message_id；避免每次切回会话都重复发 1052
+    //thread_id -> 已经上报到的 message_id；避免每次切回会话都重复发 4016
     QHash<qint64, qint64> _read_reported;
     //发出后等回执的兜底：超过时限仍是"发送中"就标失败，不等用户发现
     void StartSendTimeout(const ConversationRef &conv, const QString &msgId);
 
-    //视频/文件在等 1035 回执：回执到达后才把资源本体交给 FileService
+    //视频/文件在等 4014 回执：回执到达后才把资源本体交给 FileService
     struct PendingResource {
         ChatMsgType type = ChatMsgType::File;
         ConversationRef conv;
@@ -112,7 +112,7 @@ private:
     };
     QHash<QString, PendingResource> _pending_resources; //unique_id -> 待上传资源
 
-    //视频首帧还在生成/上传时先把消息准备好，缩略图完成后才发 1034
+    //视频首帧还在生成/上传时先把消息准备好，缩略图完成后才发 4013
     struct PendingVideo {
         ConversationRef conv;
         QString path;

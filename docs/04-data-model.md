@@ -1,292 +1,208 @@
 # 04 · 数据模型
 
-数据分两层：**MySQL 负责持久化**（用户、好友关系、好友申请、会话与消息），**Redis 负责运行时状态**
-（token、用户缓存、实例位置、连接计数、验证码）。
+数据分两层：
 
-> `backup/xigu.sql` 是可直接洗库的完整快照：表结构 + 5 个种子账号 + 一组示例会话与消息；
-> `backup/xigu_clean.sql` 只有结构与种子账号，不带聊天记录。
-> **新增或修改字段时必须同时更新这两个文件**：服务端 `EnsureSchema` 会在启动时补列，
-> 但备份文件不同步的话，用备份洗库后拿到的仍是旧结构，`is_read`、`recalled`、`tags`
-> 这类后加字段会缺失，未读与撤回功能会直接出错。
+- **MySQL**：账号、好友、好友申请、会话、成员、消息与归档，是唯一权威。
+- **Redis**：token、会话租约、实例注册、验证码、限流计数、用户资料缓存、上传进度。
+
+客户端另有一份 **SQLite** 本地缓存，只保存已经拿到过的数据，按账号隔离；
+它不是权威，损坏或删除后由服务端重新同步。
+
+> `backup/xigu.sql`（含演示会话与消息）与 `backup/xigu_clean.sql`（仅账号、好友与一个空会话）
+> 使用同一份表结构。修改字段时必须同时更新两份，否则洗库后会拿到旧结构。
 
 ---
 
 ## 4.1 MySQL
 
-数据库：`xigu`，字符集 `utf8mb4 / utf8mb4_unicode_ci`。
-后端通过 **Boost.MySQL（经典协议，默认 3306）** 访问，连接参数在各自 `config.ini` 的 `[Mysql]` 段。
+数据库 `xigu`，字符集 `utf8mb4 / utf8mb4_unicode_ci`。
+后端通过 Boost.MySQL（经典协议 3306）访问，连接参数在各自 `config.ini` 的 `[Mysql]` 段。
 
-### 表 `user`
-
-| 列 | 类型 | 说明 |
-| --- | --- | --- |
-| `id` | int, AUTO_INCREMENT | 物理主键 |
-| `uid` | int, UNIQUE | **业务用户 ID**，由 `user_id` 表递增分配 |
-| `name` | varchar(255), INDEX | 用户名，唯一性由存储过程保证 |
-| `email` | varchar(255), UNIQUE | 邮箱，登录账号 |
-| `pwd` | varchar(255) | Argon2id 哈希串（`$argon2id$v=19$...`，约 98 字符） |
-| `nick` | varchar(255) | 昵称 |
-| `desc` | varchar(255) | 个性签名（SQL 中需反引号转义：`` `desc` ``） |
-| `sex` | int | 性别：0 未知 / 1 男 / 2 女（以客户端 `UserInfoPage`、`FriendInfoPage` 的显示规则为准） |
-| `icon` | varchar(255) | 头像：默认值为 Qt 资源路径（如 `:/res/head_1.jpg`）；上传后保存资源文件名（`<md5>.png`），由 ResourceServer 写入 |
-
-### 表 `friend`
+### 4.1.1 `user`
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | int unsigned, AUTO_INCREMENT | 主键 |
-| `self_id` | int | 关系持有者 uid |
+| `uid` | int, AUTO_INCREMENT | 业务用户 ID，主键 |
+| `name` | varchar(64), UNIQUE | 用户名，2–20 字符 |
+| `email` | varchar(254), UNIQUE | 登录账号，入口统一小写 |
+| `pwd` | varchar(255) | Argon2id 哈希串，不存明文 |
+| `nick` | varchar(64) | 昵称，空时界面回落到用户名 |
+| `desc` | varchar(255) | 个性签名（SQL 中用反引号） |
+| `sex` | tinyint unsigned | 0 未知 / 1 男 / 2 女 |
+| `icon` | varchar(255) | 头像资源名；空表示用客户端内置头像 |
+
+注册走 `查询 name/email → INSERT → LAST_INSERT_ID`，并发由两个唯一键兜底；
+不再有 `user_id` 计数表或 `reg_user` 存储过程。
+
+### 4.1.2 `friend`
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `self_id` | int | 关系持有者 |
 | `friend_id` | int | 好友 uid |
-| `back` | varchar(255), 默认空串 | 本人给好友设的备注；空串表示没设 |
-| `tags` | varchar(512), 默认 `'[]'` | 本人给好友打的分组标签，JSON 字符串数组 |
+| `back` | varchar(64) | 本人给对方设的备注，空串表示没设 |
+| `tags` | varchar(512) | JSON 字符串数组，最多 10 个、单个 12 字符 |
 
-唯一索引 `(self_id, friend_id)`。好友关系是**双向两行**：A 同意 B 的申请时，
-`AddFriend` 会分别插入 `(A,B)` 与 `(B,A)`，用 `INSERT IGNORE` 避免重复。
-两条 INSERT 固定按 `self_id` 升序执行：两个用户同时互相同意时写入的是同一对行，
-顺序一致才不会形成 AB/BA 循环等待。
+主键 `(self_id, friend_id)`，不再保留无业务意义的自增 `id`。
+好友关系是**双向两行**：A 同意 B 的申请时同时插入 `(A,B)` 与 `(B,A)`；
+两条 INSERT 固定按 uid 升序执行，避免双方同时同意时形成 AB/BA 循环等待。
 
-`back` 是**单方面**的：A 的这行只影响 A 看到的名字，与 B 自己设的备注无关。
-加好友与同意好友时都不写默认备注，留空就是空串；之后由 1047 单独修改。
-客户端显示名统一按 **备注 > 昵称 > 用户名** 回落，因此空备注不会让列表出现空白。
+备注与标签都是单方面的：A 的行只影响 A 看到的名字与分组。
+客户端显示名按 **备注 > 昵称 > 用户名** 回落。
 
-`tags` 与 `back` 同一层级、同样单方面：A 给 B 打的标签只影响 A 的联系人分组，
-不会出现在 B 的列表里。选 JSON 数组而不是逗号分隔，是因为标签可能带逗号或引号，
-标准转义比自定义分隔符可靠；写入时开启 `emitUTF8`，汉字按原文存，避免 `\uXXXX`
-把每个字撑到 6 字节。最多 10 个、单个 12 字符，512 字节足够。
-
-> 标签没有独立的关系表：好友数量是个人量级，按标签筛选在客户端完成，
-> 用不上多对多查询；一列 JSON 让 `SELECT friend_id, back, tags` 一次取回整份好友列表。
-> 两张表的 `tags` 列都由服务启动时的 `EnsureFriendTagColumns` 幂等补齐，不需要手工建表。
-
-### 表 `friend_apply`
+### 4.1.3 `friend_apply`
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | bigint, AUTO_INCREMENT | 主键，同时用作分页游标 |
+| `id` | bigint unsigned, AUTO_INCREMENT | 主键，也是申请列表分页游标 |
 | `from_uid` | int | 申请人 |
 | `to_uid` | int | 被申请人 |
-| `status` | smallint, 默认 0 | 0 待处理 / 1 已同意 |
-| `descs` | varchar(255), 默认空串 | 申请留言；同意后作为申请方的第一条欢迎消息 |
-| `back_name` | varchar(255), 默认空串 | 申请方给对方设置的备注；同意后用于反向好友记录 |
-| `tags` | varchar(512), 默认 `'[]'` | 申请方给对方选的分组；同意后复制到反向好友记录的 `tags` |
+| `status` | tinyint unsigned | 0 待处理 / 1 已通过 / 2 已拒绝 |
+| `descs` | varchar(255) | 申请留言；同意后作为申请方欢迎消息 |
+| `back_name` | varchar(64) | 申请方给通过方设的备注 |
+| `tags` | varchar(512) | 申请方给通过方选的分组 |
 
-唯一索引 `(from_uid, to_uid)`；`AddFriendApply` 用
-`ON DUPLICATE KEY UPDATE descs = VALUES(descs), back_name = VALUES(back_name), tags = VALUES(tags)` 更新重复申请。
-重新申请会整组覆盖上一次的留言、备注和标签，不会残留旧分组。
+唯一键 `(from_uid,to_uid)`：重复申请走 `ON DUPLICATE KEY UPDATE`，覆盖留言/备注/标签并把
+`status` 复位为 0。`(to_uid,id)` 与 `(from_uid,id)` 两个索引分别服务"我收到的"和"我发出的"列表。
 
-### 表 `user_id`
+### 4.1.4 `conversation`
 
-单行表，保存当前已分配的最大 uid。注册时 `UPDATE user_id SET id = id + 1` 后取回，
-作为新用户的 uid。这是一把隐式的全局自增锁，位于 `reg_user` 事务内。
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `thread_id` | bigint unsigned, AUTO_INCREMENT | 会话 ID |
+| `thread_type` | tinyint unsigned | 1 单聊 / 2 群聊 |
+| `dm_key` | varchar(32), UNIQUE | 单聊去重键 `小uid:大uid`；群聊为 NULL |
+| `name` | varchar(64) | 群名；单聊为空 |
+| `owner_id` | int | 群主；单聊为 0 |
+| `state` | tinyint unsigned | 0 正常 / 1 已解散 |
+| `dissolved_at` | datetime | 解散时间，未解散为 NULL |
+| `notice` | varchar(500) | 群公告 |
+| `last_message_id` | bigint unsigned | 最后一条消息 ID，只前进 |
+| `last_message_at` | timestamp | 最后活动时间，会话列表排序 |
+| `created_at` | timestamp | 创建时间 |
 
-### 存储过程 `reg_user`
+索引 `(state,last_message_at,thread_id)` 与列表查询
+`WHERE state=0 ORDER BY last_message_at DESC, thread_id DESC` 完全对齐。
+群解散只把 `state` 置 1，成员与消息保留；所有群查询都带 `state=0` 过滤。
 
-```sql
-CREATE PROCEDURE reg_user(IN new_name VARCHAR(255), IN new_email VARCHAR(255),
-                          IN new_pwd   VARCHAR(255), OUT result INT)
-```
+单聊用 `dm_key` 唯一键去重：先普通查询，没有才 `INSERT`，撞键说明并发请求已创建，
+回滚后按 `dm_key` 读回对方的 `thread_id`。不使用 `SELECT ... FOR UPDATE` 占位，
+避免查不到行时的间隙锁与 INSERT 形成死锁。
 
-| 返回值 | 含义 |
-| --- | --- |
-| `-1` | 执行异常（已 `ROLLBACK`） |
-| `0` | 用户名或邮箱已存在 |
-| `>0` | 新分配的 uid |
+### 4.1.5 `conversation_member`
 
-流程：`START TRANSACTION` → 检查 name → 检查 email → `user_id` 自增 → 插入 `user` → `COMMIT`。
-`DECLARE EXIT HANDLER FOR SQLEXCEPTION` 负责回滚并返回 -1。
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `thread_id` | bigint unsigned | 会话 |
+| `uid` | int | 成员 |
+| `role` | tinyint unsigned | 0 成员 / 1 管理员 / 2 群主 |
+| `nickname` | varchar(32) | 我在本群的昵称 |
+| `muted` | tinyint unsigned | 群免打扰 |
+| `last_read_message_id` | bigint unsigned | 唯一已读游标，只前进 |
+| `joined_at` | timestamp | 加入时间 |
 
-> **重要**：`new_pwd` 存的是 DAO 层算好的 Argon2id 哈希串，存储过程只做搬运，
-> 因此数据库里**不存在明文密码**。
+主键 `(thread_id,uid)`，索引 `(uid,thread_id)` 服务"我的会话列表"。
+未读数由 `COUNT(chat_message WHERE thread_id=? AND message_id>last_read_message_id AND sender_id<>me)`
+推导；群聊的"有人@我"再用 `FIND_IN_SET(me, mentions)` 判断。
+不保留逐条 `is_read` 列：单聊的已读由对端游标比较得出，群聊不展示逐条回执。
 
-### 会话与消息表
+### 4.1.6 `chat_message`
 
-聊天表结构如下（建表 SQL 由部署环境自行维护，不纳入仓库）：
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `message_id` | bigint unsigned, AUTO_INCREMENT | 全局消息号，决定会话内顺序 |
+| `thread_id` | bigint unsigned | 会话 |
+| `sender_id` | int | 发送者 |
+| `recv_id` | int | 单聊接收者；群聊固定 0（协议字段） |
+| `client_msg_id` | varchar(64) | 客户端消息 ID，重发保持不变 |
+| `content` | text | 正文；图片为资源名；视频/文件为元数据 JSON |
+| `created_at` | timestamp | 落库时间，重发时保留原值 |
+| `state` | tinyint unsigned | 0 正常 / 1 已撤回 |
+| `upload_state` | tinyint unsigned | 0 资源未上传 / 1 已就绪 |
+| `msg_type` | tinyint unsigned | 0 文本 / 1 图片 / 2 视频 / 3 文件 / 4 群系统消息 |
+| `mentions` | varchar(2048) | 逗号分隔的 @ uid；2KB 请求内可容纳整群 200 人 |
+
+- 幂等键 `(thread_id,sender_id,client_msg_id)`：重发命中唯一键时用
+  `ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)` 取回原 ID 与时间。
+- 索引 `(thread_id,message_id)` 服务历史分页；`(created_at,message_id)` 服务归档扫描。
+- 外键 `thread_id → conversation.thread_id ON DELETE CASCADE`；群解散是软删，不会触发级联。
+- 视频/文件的 `content`：
+  `{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`。
+- `upload_state=0` 表示消息已落库、资源还在上传；ResourceServer 最后一片落盘后
+  通过 gRPC 通知 ChatServer 改成 1，并对接收方推送 4012/4015。
+
+已读与撤回不再用独立的 `is_read` / `recalled` 列：
+撤回对应 `state=1`（正文清空、`msg_type` 归 0），已读由成员游标推导。
+
+### 4.1.7 `chat_message_archive`
+
+与 `chat_message` 同构，另有 `archived_at`，无外键。归档线程每 24 小时跑一次，
+保留 365 天，每批 2000 条：先 `INSERT IGNORE ... SELECT`，再按同一截止时间 `DELETE`，
+两个实例同时跑也只会搬不同的批次。归档表按 `message_id` 主键、`(thread_id,message_id)`
+与 `created_at` 建索引。
+
+---
+
+## 4.2 关键查询
+
+| 场景 | SQL 形状 | 说明 |
+| --- | --- | --- |
+| 登录会话列表 | `conversation JOIN conversation_member` + 未读/成员数子查询 | 首屏 50 条，复合游标 |
+| 历史消息 | `WHERE thread_id=? AND message_id>? ORDER BY message_id LIMIT ?` | 走 `(thread_id,message_id)` |
+| 发消息校验 | 成员 + 双向好友一次 `EXISTS` | 一条 SQL 同时挡越权与非好友 |
+| 写消息 | 批量 `INSERT ... ON DUPLICATE KEY` + 按 `client_msg_id` 回读 | 一个事务，回执用库里时间 |
+| 更新会话 | `UPDATE conversation ... WHERE last_message_id < ?` | 事务外执行，避免会话行死锁 |
+| 已读 | `UPDATE conversation_member SET last_read_message_id=? WHERE ... AND last_read_message_id<?` | 只前进 |
+| 归档 | `INSERT IGNORE` + `DELETE ... ORDER BY message_id LIMIT` | 分批，可重入 |
+
+所有 DAO 通过 `common/MysqlSession` 执行：每条语句带 deadline（默认 5000ms），
+超时用 Asio 操作级取消并标记连接污染，归还时丢弃；会话级还设置了
+`max_execution_time=4000`、`innodb_lock_wait_timeout=3`、`lock_wait_timeout=10`。
+
+---
+
+## 4.3 Redis
+
+连接池容量 10，1 秒有界借出；后台每 60 秒 PING 空闲连接并补池。
+
+| 键 | 类型 | 写入方 | TTL | 说明 |
+| --- | --- | --- | --- | --- |
+| `code_<email>` | String | VerifyServer | 600s | 验证码 |
+| `code_cd_<email>` | String | GateServer | 60s | 验证码冷却 |
+| `code_hr_<email>_<bucket>` | String | GateServer | 3600s | 邮箱小时配额 |
+| `code_ip_<ip>_<bucket>` | String | GateServer | 3600s | IP 小时配额 |
+| `loginfail_<account>_<bucket>` | String | GateServer | 60s | 登录失败计数 |
+| `loginfail_ip_<ip>_<bucket>` | String | GateServer | 60s | 登录失败 IP 计数 |
+| `utoken_<uid>` | String | StatusServer | 7d | 登录令牌，登出即删 |
+| `sess_<uid>` | Hash | StatusServer | 90s | 租约：`sid/inst/epoch`，每 30 秒续租 |
+| `sess_rate_<uid>` | String | StatusServer | 10s | 登录频率计数 |
+| `epoch_<uid>` | String | StatusServer | 无 | 围栏令牌，`max(计数+1, 毫秒)`，只增不减 |
+| `inst_<name>` | Hash | StatusServer | 90s | 实例地址、端口、容量、负载、draining |
+| `instances` | Set | StatusServer | 无 | 已注册实例名 |
+| `ubaseinfo_<uid>` | String(JSON) | ChatServer / ResourceServer | 3600s | 用户公开资料 |
+| `nameinfo_<name>` | String(JSON) | ChatServer / ResourceServer | 3600s | 用户名索引 |
+| `file_upload_<md5>` | String(JSON) | ResourceServer | 3600s | 分片上传进度 |
+
+用户资料缓存是 Cache-Aside：先读 Redis，未命中查 MySQL 并回填两个索引；
+资料修改与头像上传都会主动覆盖，TTL 只是兜底。缓存里**不放密码哈希**。
+
+`sess_` / `epoch_` / `inst_` 只由 StatusServer 写入；ChatServer 通过 RPC 查询，
+不直接读写在线状态键。`utoken_` 由 StatusServer 写，ChatServer 与 ResourceServer 只读。
+
+---
+
+## 4.4 客户端 SQLite（本地缓存）
+
+文件：`AppData/users/<uid>/chat.db`，按账号隔离，WAL 模式，`user_version` 逐级迁移。
 
 | 表 | 用途 |
 | --- | --- |
-| `chat_thread` | 单聊/群聊共用的全局会话 ID 和类型；`updated_at` 在每次写消息时刷新 |
-| `private_chat` | 两个按 uid 升序保存的单聊参与者；唯一索引避免重复会话 |
-| `group_chat` | 群资料：`thread_id`、`group_name`、`owner_id`、`notice`、创建/更新时间 |
-| `group_chat_member` | 群成员：`role`（0 成员/1 管理员/2 群主）、`nickname`、`last_read_message_id`、`muted`、`joined_at` |
-| `chat_message` | 全局自增 `message_id`、会话、发送/接收者、客户端去重 ID、正文、消息类型、上传状态、`created_at`、`is_read`、`recalled` 与 `mentions` |
+| `thread` | 会话行：类型、对方 uid、预览、未读、@我、草稿、同步游标、置顶/免打扰/隐藏 |
+| `message` | 消息：服务端 ID、客户端 ID、类型、正文、时间、状态、已读、撤回、资源元数据 |
+| `friend` | 好友与已删好友（`is_friend=0` 保留历史） |
+| `grp` | 群资料与我的群设置 |
+| `member` | 群成员资料 |
 
-时间字段有两个用途，都按 UNIX 秒下发：
-
-- `chat_message.created_at`：消息落库时间，决定聊天内的时间条与客户端会话排序；
-  重发同一条消息（唯一键命中）时保留原值，不会因为重试而改时间。
-- `chat_thread.updated_at`：会话最后活动时间，登录首屏用它排序，
-  避免历史消息还没拉回来时列表先按加好友顺序显示、随后又跳一次。
-
-SQL 里统一用 `UNIX_TIMESTAMP(created_at)` 取值，避免把数据库时区的字符串直接下发给客户端。
-写入不显式传时间：用列的 `CURRENT_TIMESTAMP` 默认值，插入后按 `message_id` 读回时间戳——
-这样重发同一条（唯一键命中、没有真正插入）时拿到的是库里原来的时间，而不是这次重试的时刻。
-
-`chat_message.msg_type`：0 文本、1 图片、2 视频、3 文件、4 群系统消息。
-
-**消息的生命周期与清理。** 单聊的 `chat_thread` / `private_chat` 一旦建立就不再销毁：A 删除 B 只删掉 A 那一行 `friend`；当 B 也删除 A（双向都不存在）时，服务端清空该会话的 `chat_message`，但保留 `chat_thread` 与 `private_chat`。这样 `thread_id` 不变，重新加好友后新消息沿用同一个自增序列，客户端本地历史也还能对上会话。群聊解散时删除 `chat_thread`，`group_chat` / `group_chat_member` / `chat_message` 按外键级联清理；成员退群或被移出只删成员行，群与消息留给其他成员。客户端在被移出、群解散后保留本地历史，只标记离开状态，由用户主动清除。
-群消息 `recv_id=0`，`mentions` 存逗号分隔的 @ uid。图片消息的 `content` 存资源文件名（md5）；
-视频与文件的 `content` 存元数据 JSON（`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`）。
-视频/文件的 `resource` 优先等于原文件名，重名时带 `(2)` 等后缀，落盘与下载都按它拼路径；
-`file_name` 始终保留上传者看到的原名用于展示。`status=0` 表示资源还没上传完成；
-ResourceServer 在最后一片落盘后通过 gRPC 通知 ChatServer 把 `status` 改成 1。
-视频与文件不区分上传者/接收者，接收方收到通知只建卡片，资源本体由用户点击后下载。
-
-已读与撤回是两列独立的状态，不复用 `status`（那一列表示资源是否上传完成）：
-
-- `is_read`：接收方是否已读，只对 `recv_id` 有意义。上报已读时批量置 1，
-  发送方那一侧的同一条记录不动——已读永远是接收方视角。
-- `recalled`：是否已撤回。撤回不物理删除，改为置 1 并清空 `content`、把 `msg_type` 归 0，
-  双方拉历史时都只看到提示；原始内容不再保留。
-
-两列都由 `EnsureSchema` 在启动时补齐，与好友标签走同一套"缺列才 ALTER"的逻辑。
-
-消息分页使用 `(thread_id, message_id)` 索引及游标 `message_id > last_id`；会话分页使用 `thread_id > last_id`。
-首次单聊先用普通查询取已有会话，缺失时直接插入 `chat_thread` + `private_chat`，由
-`uk_private_users` 唯一键裁决；撞键的一方回滚掉自己新建的会话行，再读对方已提交的 `thread_id`。
-这里不用 `SELECT ... FOR UPDATE` 占位：查不到行时它锁的是索引间隙，随后的 INSERT 又需要插入意向锁，
-两个并发请求会各自持有间隙锁并互相等待。
-客户端当前仍只保存在内存，不含 SQLite；每次登录会同步会话及服务端历史消息，后续本地缓存可用全局 `message_id` 增量续传。
-当前 QML 客户端已经按会话持有 `ChatThreadData`，消息对象包含 `msgid`、`thread_id`、`message_id`、发送者/接收者和状态。
-发送中的消息先进入会话并显示转圈，服务器回包后变为已发送，失败变为失败标记。
-历史或实时收到的对方消息在内存中标记为未读；未读/已读的展示与回执闭环尚未接通。
-消息容器每次合并后按有效 `message_id` 升序排列，待确认的本地消息暂放在末尾，收到服务器 ID 后重新排序，避免历史分页与实时消息交错时乱序。
-
----
-
-## 4.2 Redis
-
-连接：hiredis，连接池容量 5，启动即 `AUTH`。
-键前缀常量定义在 `ChatServer/include/const.h`（其他服务复制了各自需要的部分）。
-
-| 键 | 类型 | 写入方 | 读取方 | TTL | 说明 |
-| --- | --- | --- | --- | --- | --- |
-| `code_<email>` | String | VerifyServer | GateServer | 600s | 验证码，`SETEX` 写入 |
-| `utoken_<uid>` | String | StatusServer | ChatServer、ResourceServer | 7d | 登录令牌（UUID），每次登录刷新，主动登出立即删除 |
-| `sess_<uid>` | Hash | StatusServer | StatusServer | 90s | 会话租约：`sid` / `inst` / `epoch`，续租刷新 |
-| `epoch_<uid>` | String | StatusServer | StatusServer | 无 | 围栏令牌计数器，取 `max(计数+1, 毫秒)`，只增不减 |
-| `inst_<name>` | Hash | StatusServer | StatusServer | 90s | 实例地址、客户端/RPC 端口、容量、负载、draining |
-| `instances` | Set | StatusServer | StatusServer | 无 | 已注册实例名，过期时清理 |
-| `ubaseinfo_<uid>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按 uid 缓存的用户资料；头像上传后由资源服务器刷新 |
-| `nameinfo_<name>` | String(JSON) | ChatServer、ResourceServer | ChatServer | 无 | 按用户名缓存的用户资料；头像上传后由资源服务器刷新 |
-| `file_upload_<md5>` | String(JSON) | ResourceServer | ResourceServer | 3600s | 分段上传进度：路径、文件名、uid、seq、总大小、已落盘大小、是否头像 |
-
-`sess_` / `epoch_` / `inst_` / `instances` 只由 StatusServer 写入；ChatServer 通过 RPC 查询，
-不再直接读写在线状态键。`utoken_` 由 StatusServer 写入，ChatServer 只读它做登录前的快速失败。
-
-### 实例注册与加权选路
-
-```mermaid
-sequenceDiagram
-    participant CS as ChatServer
-    participant S as StatusServer
-    participant R as Redis
-
-    Note over CS,S: 启动（gRPC 开始监听之后）
-    CS->>S: RegisterInstance(name, host, rpc_host, ports, capacity)
-    S->>R: HSET inst_#lt;name#gt; + SADD instances
-
-    Note over CS,S: 每 30 秒
-    CS->>S: RenewSessions(instance, sessions, conns)
-    S->>R: HSET inst_#lt;name#gt; sessions/conns + PEXPIRE 90s
-
-    Note over S,R: 分配实例
-    S->>R: SMEMBERS instances + HGETALL inst_*
-    S->>S: 跳过 draining，按 sessions/capacity 取最小
-
-    Note over CS,S: 进程退出
-    CS->>S: UnregisterInstance(name)
-```
-
-设计要点：
-
-- 计数是扫描快照，包含尚未登录但未超时的 TCP 连接，不是严格的在线用户数。
-- 登录与断连不直接增减计数，调度数据最多滞后一个扫描周期。
-- StatusServer 跳过缺失、非法计数；全部无效时返回失败。
-- 计数没有 TTL，实例崩溃可能留下旧值，需要独立的探活机制。
-
-### 用户资料缓存策略
-
-`GetBaseInfo(base_key, uid, userinfo)` 是标准的 **Cache-Aside**：
-
-```mermaid
-flowchart LR
-    A["GetBaseInfo(base_key, uid)"] --> B{"GET ubaseinfo_#lt;uid#gt; 命中 ?"}
-    B -->|是| C["解析 JSON 填充 UserInfo"]
-    B -->|否| D["MySQL SELECT"]
-    D --> E["SET ubaseinfo_#lt;uid#gt; #lt;json#gt; 回填"]
-    E --> C
-```
-
-有三处需要注意：
-
-1. 缓存**无 TTL**：只能靠写入方主动覆盖。目前有两个写入点——头像上传完成后由 ResourceServer
-   重写两份键，本人修改资料后由 ChatServer 重写两份键；其余路径不会自动失效。
-2. 资料缓存读写均不使用 `pwd`，已有 Redis 键中的历史字段不会因更新程序自动删除。
-3. `GetBaseInfo` 在 `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient` 三处重复实现，
-   逻辑完全一致——是明确的重复代码，应收敛到 `UserMgr` 或独立的 `UserCache` 组件。
-
-### 验证码的复用语义
-
-`VerifyServiceImpl::GetVerifyCode` 先 `GET code_<email>`：
-
-- 命中 → **复用旧验证码**，不再生成、但仍会再发一次邮件；
-- 未命中 → 生成新验证码并 `SETEX 600`。
-
-因此在 10 分钟有效期内重复点击"获取验证码"，用户会收到多封内容相同的邮件。
-
----
-
-## 4.3 客户端侧数据（`client/core/userdata.h`）
-
-客户端不直接访问数据库，用下列结构承载服务端下发的数据：
-
-| 结构 | 用途 |
-| --- | --- |
-| `SearchInfo` | 用户搜索结果 |
-| `AddFriendApply` | 收到的好友申请（通知） |
-| `ApplyInfo` | 好友申请列表项（含 `status`） |
-| `AuthInfo` / `AuthRsp` | 同意好友申请的双向通知与响应 |
-| `FriendInfo` | 好友（含 `_chat_msgs` 会话记录） |
-| `UserInfo` | 当前登录用户 / 好友通用资料 |
-| `TextChatData` / `TextChatMsg` | 单条文本消息 / 一批消息 |
-
-`UserMgr`（单例）持有 token、好友列表、申请列表与分页游标
-（`_chat_loaded` / `_contact_loaded`，每页 13 条），是 UI 层唯一的数据源。
-`UserInfo` 额外带 `_desc`（个性签名），`AuthInfo` / `AuthRsp` 带 `_back`（本人给对方设的备注），
-两者都只在登录/通过申请时由服务端下发。
-
-### 三个名字与显示名规则
-
-用户名、昵称、备注职责不同，不能互相替代：
-
-| 字段 | 唯一性 | 可见范围 | 修改方 |
-| --- | --- | --- | --- |
-| `name` 用户名 | 全局唯一 | 所有人 | 注册后不可改 |
-| `nick` 昵称 | 可重复 | 所有人 | 本人（1045） |
-| `back` 备注 | 只在自己这一行 | 仅本人 | 本人（1047） |
-
-显示名统一按 **备注 > 昵称 > 用户名** 回落，由 `userdata.h` 的 `DisplayName()` 实现：
-会话列表、联系人、聊天标题、气泡名字、资料页都走同一条规则。
-服务端只下发三个原始字段，不参与显示名拼接。
-
-### 标签与联系人筛选
-
-标签是"我给好友打的分组"，与备注同级：单方面、只在自己这一侧生效、一个好友可以有多个。
-客户端在 `FriendInfo::_tags` 持有 `QStringList`，`UserMgr::AllTags()` 汇总去重后供联系人页
-生成筛选条；筛选由 `FriendListModel` 在行视图层完成，不改变 `UserMgr` 里的原始顺序。
-
-会话模式会关闭筛选（`setFilterEnabled(false)`），否则会话列表会被联系人页选中的标签一起过滤。
-筛选后列表为空时只在列表区域给提示，不改变"新的朋友"入口与空态引导的判断——
-那些判断统一用 `totalCount`，与筛选结果无关。
-
----
-
-## 4.4 当前边界
-
-| 数据 | 现状 |
-| --- | --- |
-| 客户端本地消息缓存 | 尚未接入 SQLite；当前登录时从服务端按会话拉取历史消息 |
-| 离线消息 | 消息正文已持久化；离线期间不推送，下一次登录的历史同步可取回 |
-| 消息送达状态 | `chat_message.status` 已预留，送达/已读回执闭环尚未实现 |
-| 好友标签 | 只用于联系人分组与筛选；没有"按标签群发"、没有标签重命名（改名等价于逐个好友改） |
-| 群聊 | 表结构已预留，群聊创建、成员授权和广播业务尚未实现 |
+关键索引：`message(thread_id,server_id)` 服务窗口分页，
+`message(thread_id,sender_id,client_msg_id) WHERE client_msg_id<>''` 服务本地幂等。
+消息搜索用 `LIKE` 扫描本机会话；数据量在单机个人历史量级，暂不引入 FTS。

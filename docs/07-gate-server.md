@@ -79,7 +79,7 @@ flowchart TB
 2. `passwd != confirm` → `1006`；
 3. `RedisMgr::Get("code_" + email)`，取不到 → `1003`；
 4. 与请求中 `verifycode` 比对，不等 → `1004`；
-5. `MysqlDao::RegUser(name, email, pwd)` → 内部调用存储过程 `reg_user`，
+5. `MysqlDao::RegUser(name, email, pwd)` → 先查重再 INSERT，并发由唯一键兜底，
    返回 `0` / `-1` → `1005`；
 6. 成功 → `{"error":0, "uid", "email", "user", "verifycode"}`。
 

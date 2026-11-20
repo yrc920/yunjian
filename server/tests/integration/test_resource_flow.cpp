@@ -245,7 +245,7 @@ int main(int argc, char** argv)
 	REQUIRE(conn.Send(ID_UPLOAD_FILE_REQ, jump, gap_payload.substr(kChunk * 2, kChunk), error));
 	Json::Value jump_response;
 	REQUIRE(conn.RecvFrame(response_id, jump_response, no_payload, error));
-	CHECK_EQ(IntField(jump_response["error"]), ErrorCodes::FileSeqInvalid);
+	CHECK_EQ(IntField(jump_response["error"]), ResourceError::FileSeqInvalid);
 
 	// ---------- 边界：畸形帧不拖垮服务 ----------
 	//声称 0xFFFFFFF0 字节的头长：早期写法在这里回绕后 substr 越界，
@@ -268,7 +268,7 @@ int main(int argc, char** argv)
 	// ---------- 边界：下载不存在的文件 ----------
 	CHECK(!Download(conn, login, login.uid, "ctest-no-such-file.bin", downloaded,
 		server_error, error));
-	CHECK_EQ(server_error, ErrorCodes::FileNotExists);
+	CHECK_EQ(server_error, ResourceError::FileNotExists);
 
 	// ---------- 边界：下载序号越界 ----------
 	Json::Value out_of_range;

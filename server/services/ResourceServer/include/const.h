@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "Protocol.h"
+
 //连接池等待上限：数据库/缓存故障时快速失败，避免文件线程被永久挂住
 constexpr int MYSQL_POOL_WAIT_MS = 2000;
 
@@ -17,21 +19,19 @@ constexpr int DEFAULT_STALE_HOURS = 24;
 //清理线程的巡检间隔（分钟）
 constexpr int DEFAULT_SWEEP_MINUTES = 60;
 
-enum ErrorCodes {
-	Success = 0,
-	Error_Json = 1001, //Json解析错误
-	TokenInvalid = 1010, //token与uid不匹配或已失效
-	UidInvalid = 1011, //uid无效
-	FileNotExists = 1012, //服务器没有这次传输的记录
-	FileSaveRedisFailed = 1013, //续传进度写入Redis失败
-	FileWritePermissionFailed = 1014, //目标文件无法创建或写入
-	FileDataInvalid = 1015, //分片数据与声明的偏移不一致
-	FileNameInvalid = 1016, //文件名含路径分隔符或超长
-	FileTooLarge = 1017, //文件超过4GB上限
-	FileSeqInvalid = 1018, //分片序号不连续
-	FileReadPermissionFailed = 1019, //源文件无法打开或读取
-	FileOffsetInvalid = 1020, //请求的偏移已超出文件范围
-	FileQuotaExceeded = 1021, //用户已用空间加上本次上传会超过配额
+//资源通道自有错误码：12xx 段与通用错误码、聊天消息 ID 都不重叠，
+//客户端与日志里看到 12xx 就能直接定位到文件传输
+enum ResourceError {
+	FileNotExists = 1201, //服务器没有这次传输的记录
+	FileSaveRedisFailed = 1202, //续传进度写入Redis失败
+	FileWritePermissionFailed = 1203, //目标文件无法创建或写入
+	FileDataInvalid = 1204, //分片数据与声明的偏移不一致
+	FileNameInvalid = 1205, //文件名含路径分隔符或超长
+	FileTooLarge = 1206, //文件超过4GB上限
+	FileSeqInvalid = 1207, //分片序号不连续
+	FileReadPermissionFailed = 1208, //源文件无法打开或读取
+	FileOffsetInvalid = 1209, //请求的偏移已超出文件范围
+	FileQuotaExceeded = 1210, //用户已用空间加上本次上传会超过配额
 };
 
 #include "Defer.h"
@@ -55,15 +55,16 @@ enum ErrorCodes {
 #define DOWNLOAD_WORKER_COUNT 2 //按文件名分派的下载线程数
 
 enum MSG_IDS {
-	//沿用 1000 段系统命令编号，接在聊天协议之后；资源服务器使用自己的连接与帧头
-	ID_UPLOAD_FILE_REQ = 1037, //通用文件分段上传
-	ID_UPLOAD_FILE_RSP = 1038,
-	ID_SYNC_FILE_REQ = 1039, //续传前同步服务器进度
-	ID_SYNC_FILE_RSP = 1040,
-	ID_DOWN_LOAD_FILE_REQ = 1041, //断点下载
-	ID_DOWN_LOAD_FILE_RSP = 1042,
-	ID_UPLOAD_HEAD_ICON_REQ = 1043, //头像分段上传
-	ID_UPLOAD_HEAD_ICON_RSP = 1044,
+	//6xxx 段：资源通道使用独立连接与 2+4 字节帧头，
+	//与聊天主通道的 2xxx–5xxx 明确分开
+	ID_UPLOAD_FILE_REQ = 6001, //通用文件分段上传
+	ID_UPLOAD_FILE_RSP = 6002,
+	ID_SYNC_FILE_REQ = 6003, //续传前同步服务器进度
+	ID_SYNC_FILE_RSP = 6004,
+	ID_DOWN_LOAD_FILE_REQ = 6005, //断点下载
+	ID_DOWN_LOAD_FILE_RSP = 6006,
+	ID_UPLOAD_HEAD_ICON_REQ = 6007, //头像分段上传
+	ID_UPLOAD_HEAD_ICON_RSP = 6008,
 };
 
 #define USERTOKENPREFIX "utoken_" //与StatusServer、ChatServer共用的token前缀

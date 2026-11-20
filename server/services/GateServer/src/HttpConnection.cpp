@@ -242,6 +242,8 @@ void HttpConnection::DeferResponse() {
 	_deferred = true;
 	_response.result(http::status::ok);
 	_response.set(http::field::server, "GateServer");
+	//异步链路（口令线程池）没有经过 WriteJson，内容类型要在这里补齐
+	_response.set(http::field::content_type, "application/json");
 }
 
 void HttpConnection::SendDeferred(const std::string& body) {

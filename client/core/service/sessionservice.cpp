@@ -59,7 +59,7 @@ SessionService::SessionService() : _ready(false)
         frame["fromuid"] = _current.Uid;
         emit TcpMgr::GetInstance()->sig_send_data(
             ReqId::ID_HEART_BEAT_REQ,
-            QJsonDocument(frame).toJson(QJsonDocument::Indented));
+            QJsonDocument(frame).toJson(QJsonDocument::Compact));
     });
 
     auto *tcp = TcpMgr::GetInstance().get();
@@ -140,7 +140,7 @@ SessionService::SessionService() : _ready(false)
                 if (conv._thread_id == mgr->ActiveThread())
                     ChatService::GetInstance()->MarkSessionRead(conv);
             });
-    //1018 回执带错误：按 msgid 把对应会话里的消息标失败
+    //4008 回执带错误：按 msgid 把对应会话里的消息标失败
     connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [](const QJsonObject &data) {
         ConversationRef conv;
         conv._thread_id = data.value("thread_id").toVariant().toLongLong();
@@ -386,14 +386,14 @@ SessionService::SessionService() : _ready(false)
     connect(tcp, &TcpMgr::sig_auth_rsp, this, [this, applyFriendAdded](std::shared_ptr<AuthRsp> rsp) {
         if (!rsp)
             return;
-        //1015 别人通过我的申请：列表与红点更新，不强行切页
+        //3008 别人通过我的申请：列表与红点更新，不强行切页
         applyFriendAdded(rsp, true);
         emit friendApproved(rsp->_uid);
     });
     connect(tcp, &TcpMgr::sig_auth_friend_rsp, this, [this, applyFriendAdded](std::shared_ptr<AuthRsp> rsp) {
         if (!rsp)
             return;
-        //1014 我自己同意别人：不计未读，界面直接进会话
+        //3007 我自己同意别人：不计未读，界面直接进会话
         applyFriendAdded(rsp, false);
         emit friendAdded(rsp->_uid);
     });
@@ -489,7 +489,7 @@ void SessionService::connectToChat(const ServerInfo &info)
     UserMgr::GetInstance()->ClearSession(); //内部会关闭上一个账号的本地库
 
     //先开库并恢复缓存：网络回来之前会话列表与历史就已经可读，
-    //1006 到达后只做一次合并，不必等每个会话的第一页消息
+    //2002 到达后只做一次合并，不必等每个会话的第一页消息
     auto store = LocalStore::GetInstance();
     if (store->Open(info.Uid))
         UserMgr::GetInstance()->RestoreFromCache();
@@ -523,7 +523,7 @@ void SessionService::logout()
 
     _logging_out = true;
     const QByteArray payload =
-        QJsonDocument(QJsonObject{}).toJson(QJsonDocument::Indented);
+        QJsonDocument(QJsonObject{}).toJson(QJsonDocument::Compact);
     emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOGOUT_REQ, payload);
     _logout_timer.start();
 }
@@ -573,7 +573,7 @@ void SessionService::onTcpConnected(bool ok)
     frame["token"] = _pending.Token;
 
     const QByteArray payload =
-        QJsonDocument(frame).toJson(QJsonDocument::Indented);
+        QJsonDocument(frame).toJson(QJsonDocument::Compact);
 
     emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, payload);
 }
@@ -587,17 +587,18 @@ void SessionService::onChatLoginFailed(int code)
     // 把服务端错误码翻成可操作的提示：能重试的与需要重新登录的要区分开
     QString text;
     switch (code) {
-    case 1010: text = QStringLiteral("登录凭证已失效，请重新登录"); break;
-    case 1011: text = QStringLiteral("账号不存在或已被注销"); break;
-    case 1101: text = QStringLiteral("登录服务暂时不可用，请稍后重试"); break;
-    case 1104: text = QStringLiteral("聊天服务正在启动，请稍后重试"); break;
-    case 1105: text = QStringLiteral("登录过于频繁，请稍后再试"); break;
+    case server_error::TokenInvalid: text = QStringLiteral("登录凭证已失效，请重新登录"); break;
+    case server_error::UidInvalid: text = QStringLiteral("账号不存在或已被注销"); break;
+    case server_error::ServiceUnavailable: text = QStringLiteral("登录服务暂时不可用，请稍后重试"); break;
+    case server_error::InstanceUnknown: text = QStringLiteral("聊天服务正在启动，请稍后重试"); break;
+    case server_error::TooManyRequests: text = QStringLiteral("登录过于频繁，请稍后再试"); break;
     default: text = QStringLiteral("登录失败，错误码 %1").arg(code); break;
     }
     if (_reconnecting) {
         _connecting = false;
         //凭证失效/账号不存在是永久错误；其余（服务启动中、过于频繁）继续退避
-        const bool permanent = code == 1010 || code == 1011;
+        const bool permanent = code == server_error::TokenInvalid
+            || code == server_error::UidInvalid;
         scheduleReconnect(text, permanent);
         return;
     }
@@ -616,7 +617,7 @@ void SessionService::onChatLoggedIn(const QJsonObject &data)
     const bool was_reconnecting = _reconnecting;
     auto *mgr = UserMgr::GetInstance().get();
     _history_pages = 0;
-    //重连时 1006 会重新下发完整快照：分页状态与"本次出现过的群"必须重新统计，
+    //重连时 2002 会重新下发完整快照：分页状态与"本次出现过的群"必须重新统计，
     //否则上一次登录的 _seen_threads 会把已解散的群误判成还在
     _seen_threads.clear();
     _threads_complete = false;

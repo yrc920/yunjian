@@ -34,9 +34,25 @@ XIGU_TEST(UTF8字符计数按首字节统计)
 	CHECK_EQ(Utf8CharCount("你好\xF0\x9F\x98\x80" "abc"), static_cast<std::size_t>(6));
 }
 
+XIGU_TEST(协议号分段且请求响应相邻)
+{
+	//2xxx 连接、3xxx 好友、4xxx 消息、5xxx 群聊；1000 段只留 HTTP 与错误码
+	CHECK(MSG_CHAT_LOGIN >= 2000 && MSG_CHAT_LOGIN < 3000);
+	CHECK(ID_SEARCH_USER_REQ >= 3000 && ID_SEARCH_USER_REQ < 4000);
+	CHECK(ID_TEXT_CHAT_MSG_REQ >= 4000 && ID_TEXT_CHAT_MSG_REQ < 5000);
+	CHECK(ID_CREATE_GROUP_REQ >= 5000 && ID_CREATE_GROUP_REQ < 6000);
+
+	//分发层用 ResponseId(request) 回包，所有登记的请求都必须满足这条约定
+	CHECK_EQ(ResponseId(MSG_CHAT_LOGIN), MSG_CHAT_LOGIN_RSP);
+	CHECK_EQ(ResponseId(ID_TEXT_CHAT_MSG_REQ), ID_TEXT_CHAT_MSG_RSP);
+	CHECK_EQ(ResponseId(ID_CREATE_GROUP_REQ), ID_CREATE_GROUP_RSP);
+	CHECK_EQ(ResponseId(ID_LOGOUT_REQ), ID_LOGOUT_RSP);
+	CHECK(MAX_REQUEST_ID > ID_NOTIFY_GROUP_CHANGED);
+}
+
 XIGU_TEST(发包时必须转网络序)
 {
-	const std::uint16_t msg_id = ID_TEXT_CHAT_MSG_REQ; //1017 = 0x03F9
+	const std::uint16_t msg_id = ID_TEXT_CHAT_MSG_REQ; //4007 = 0x0FA7
 	SendNode node("hello", 5, msg_id);
 	CHECK_EQ(node._total_len, static_cast<std::size_t>(5 + HEAD_TOTAL_LEN));
 

@@ -22,10 +22,17 @@ set(SERVER_SOURCES
     src/ChatServiceImpl.cpp    # gRPC 服务实现（服务间消息转发）
     src/CServer.cpp            # TCP 监听器（boost::asio acceptor）
     src/CSession.cpp           # 单个 TCP 会话的收发
-    src/LogicSystem.cpp        # 业务分发：消息路由到处理函数
+    src/logic/LogicSystem.cpp  # 业务分发：队列、分片、协议校验与注册
+    src/logic/LogicSystemSession.cpp # 登录、登出、心跳
+    src/logic/LogicSystemFriend.cpp  # 好友、申请、资料与备注
+    src/logic/LogicSystemChat.cpp    # 单聊消息、已读、撤回、会话分页
+    src/logic/LogicSystemGroup.cpp   # 群聊资料、成员与广播
     src/ArchiveJanitor.cpp     # 过期消息归档（独立线程，分批搬运）
     src/MsgNode.cpp            # 消息协议编解码节点（包头+包体）
-    src/MysqlDao.cpp           # 数据访问层
+    src/dao/MysqlDao.cpp       # 连接池生命周期与用户资料读写
+    src/dao/FriendDao.cpp      # 好友、申请、备注与好友列表
+    src/dao/ChatDao.cpp        # 会话、消息、已读、撤回与归档
+    src/dao/GroupDao.cpp       # 群资料、成员、权限与群系统消息
     src/UserCache.cpp          # 用户资料的缓存读取（Redis + MySQL 回填）
     src/UserMgr.cpp            # 在线用户管理（uid -> session 映射）
     src/ChatGrpcClient.cpp     # 调用对端聊天实例的 gRPC 客户端

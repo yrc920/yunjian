@@ -291,7 +291,7 @@ void FileService::UploadAvatar(const QString &path)
     info->_path = path; //FileTcpMgr 按偏移重新打开这个文件
     info->_total_size = file_info.size();
     info->_uid = UserMgr::GetInstance()->GetUid();
-    info->_req_id = ID_UPLOAD_HEAD_ICON_REQ; //头像走 1043
+    info->_req_id = ID_UPLOAD_HEAD_ICON_REQ; //头像走 6007
     UserMgr::GetInstance()->AddUploadFile(info);
 
     _uploadMd5 = md5; //业务层自己的副本，用于暂停/失败清理
@@ -317,7 +317,7 @@ void FileService::UploadAvatar(const QString &path)
     FileTcpMgr::GetInstance()->StartUpload(md5); //网络线程读第一片
 }
 
-//聊天资源（图片、视频、文件、视频首帧）走通用上传通道(1037)，与头像状态互不影响
+//聊天资源（图片、视频、文件、视频首帧）走通用上传通道(6001)，与头像状态互不影响
 bool FileService::UploadChatResource(const QString &name, const QString &path, const QString &md5,
     qint64 messageId, int touid, qint64 threadId, int threadType, const QString &uniqueId)
 {

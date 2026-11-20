@@ -106,7 +106,7 @@ public:
     int ThreadMemberCount(qint64 thread_id) const; //群成员数，单聊返回0
     bool ThreadMuted(qint64 thread_id) const; //群免打扰看服务端字段，单聊看本地标记
     qint64 LastMessageId(const ConversationRef &conv) const; //当前最大消息ID, 作为翻页游标
-    bool HasPendingPrivateChat(int friend_id) const; //是否正在等待 1026 回包
+    bool HasPendingPrivateChat(int friend_id) const; //是否正在等待 4002 回包
     void MarkPrivateChatPending(int friend_id, bool pending);
     //对端已读：把自己发的、消息号不超过 last_read_id 的消息标成已读
     bool MarkMessagesReadTo(int peer_uid, qint64 last_read_id);
@@ -162,7 +162,7 @@ public:
                             const QString &local_path, const QSize &pixel_size);
     //按消息号找消息；输出所属会话，单聊与群聊共用
     std::shared_ptr<TextChatData> FindMessage(qint64 message_id, qint64 *thread_id = nullptr) const;
-    //服务端还没分配 ID 时按客户端 msgid 找消息，视频/文件在 1035 前失败时用它重试
+    //服务端还没分配 ID 时按客户端 msgid 找消息，视频/文件在 4014 前失败时用它重试
     std::shared_ptr<TextChatData> FindMessageByUniqueId(const QString &msg_id,
         qint64 *thread_id = nullptr) const;
     //本地文件被用户移动或删除：清掉路径并把状态退回未下载，允许重新下载
@@ -184,28 +184,29 @@ public:
     std::shared_ptr<ApplyInfo> ApplyAt(int index) const;
 
     // ---- 群聊 ----
-    //登录或 1028 下发的一条群会话：新建或更新资料，不动已有消息
+    //登录或 4004 下发的一条群会话：新建或更新资料，不动已有消息
     void UpsertGroupThread(const QJsonObject &item);
-    //1026/1063 的群资料：名称、公告、我的角色与设置
+    //4002/5004 的群资料：名称、公告、我的角色与设置
     void ApplyGroupProfile(const QJsonObject &group);
     //群成员整体替换：资料页与气泡显示名都读这一份
     void SetGroupMembers(qint64 thread_id, const QJsonArray &members);
     void AddGroupMember(qint64 thread_id, const GroupMember &member);
     //成员数变化：服务端下发的人数优先，缺省时按成员表长度
     void SetGroupMemberCount(qint64 thread_id, int count);
-    //被移出或解散：从会话列表移除，消息一并丢弃（服务端已经级联删除）
+    //被移出或解散：从会话列表移除；服务端保留历史，本机是否清理由用户决定
     std::shared_ptr<GroupInfo> GetGroup(qint64 thread_id) const;
     int GroupCount() const;
     std::shared_ptr<GroupInfo> GroupAt(int index) const;
     //群消息里的发送者显示名：群昵称 > 好友备注 > 昵称 > 用户名
-    QString GroupSenderName(qint64 thread_id, int uid) const;    QString GroupSenderIcon(qint64 thread_id, int uid) const;
+    QString GroupSenderName(qint64 thread_id, int uid) const;
+    QString GroupSenderIcon(qint64 thread_id, int uid) const;
     void SetGroupMuted(qint64 thread_id, bool muted);
 
     //新会话开始前清空上一个账号的数据，避免重新登录后好友与申请重复
     void ClearSession();
 
     // ---- 本地缓存 ----
-    //把库里的好友、群、会话与预览装回内存：1006 到达前列表就是完整的
+    //把库里的好友、群、会话与预览装回内存：2002 到达前列表就是完整的
     void RestoreFromCache();
     //打开会话时用最近一页替换内存窗口；库里的数据才是全量，内存只保留看得见的一段
     void SetThreadWindow(qint64 thread_id, std::vector<std::shared_ptr<TextChatData>> msgs);
@@ -233,7 +234,7 @@ signals:
     void UserIconChanged();
     void UserProfileChanged();        //本人昵称/性别/签名变化，资料页与侧栏据此刷新
     void FriendRelationChanged(int uid); //备注或标签变化，列表只刷新对应行
-    void FriendProfileChanged(int uid);  //好友昵称/签名变化，来自 1050 资料刷新
+    void FriendProfileChanged(int uid);  //好友昵称/签名变化，来自 3014 资料刷新
     void FriendTagsChanged();         //标签集合变化，联系人页筛选条重算
     void FriendListAboutToChange();
     void ApplyListAboutToChange();

@@ -22,8 +22,8 @@ using asio::ip::tcp;
 //登录用的消息 ID。这里不 include services/ChatServer/include/const.h：
 //资源服务也有一份 const.h，两份都定义了 ErrorCodes 与 MSG_IDS，同一个目标里不能并存。
 //各测试文件在 include 对应 const.h 后用 static_assert 校验这两个值与枚举一致
-constexpr std::uint16_t kChatLoginReq = 1005;
-constexpr std::uint16_t kChatLoginRsp = 1006;
+constexpr std::uint16_t kChatLoginReq = 2001;
+constexpr std::uint16_t kChatLoginRsp = 2002;
 
 //协议字段的类型并不统一：proto 把端口定义成 string，会话列表里的时间有时是
 //int64 有时是字符串。JsonCpp 的 asInt() 在类型不符时直接抛 LogicError，
@@ -72,12 +72,12 @@ public:
 	void Close();
 
 	bool Send(std::uint16_t msg_id, const Json::Value& body, std::string& error);
-	//读一帧；服务端主动推送（1019 通知等）由调用方决定是否忽略
+	//读一帧；服务端主动推送（4009 通知等）由调用方决定是否忽略
 	bool Recv(std::uint16_t& msg_id, Json::Value& body, std::string& error);
 	//一直读到指定 ID 为止，最多跳过 max_skip 帧，避免协议异常时死循环
 	bool RecvUntil(std::uint16_t want, Json::Value& body, std::string& error, int max_skip = 32);
 
-	//登录并等 1006 回包；成功后这条连接才允许发业务请求
+	//登录并等 2002 回包；成功后这条连接才允许发业务请求
 	bool Login(const LoginResult& login, Json::Value& response, std::string& error);
 
 private:

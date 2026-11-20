@@ -5,6 +5,7 @@
 #include "LogicSystem.h"
 #include "ConfigMgr.h"
 #include "StatusGrpcClient.h"
+#include "SessionRouter.h"
 #include "const.h"
 #include "Log.h"
 
@@ -81,6 +82,10 @@ void CServer::ClearSession(const std::string& session_id)
         //按uid和session_id一起解绑，只有映射仍指向当前连接时才移除，避免误删同一用户的新连接
         UserMgr::GetInstance()->RmvUserSession(uid, session_id);
         _sessions.erase(iter); //只移除本地会话登记，socket关闭与租约清理由调用方处理
+        //本连接已不在这台实例上，路由缓存里的"在线位置=本实例"必须立刻失效；
+        //否则同实例的发送方会继续往一个已经不存在的会话投递，消息只落库不推送
+        if (uid > 0)
+            SessionRouter::Inst().Invalidate(uid);
     }
 }
 

@@ -8,6 +8,7 @@
 
 #include <json/json.h>
 
+#include <memory>
 #include <string>
 
 //只去掉空白，字段内容与类型不变，客户端的解析结果完全一致
@@ -16,4 +17,15 @@ inline std::string JsonToCompact(const Json::Value& value)
 	Json::StreamWriterBuilder builder;
 	builder["indentation"] = "";
 	return Json::writeString(builder, value);
+}
+
+//统一解析入口：Json::Reader 已废弃，各处自己拼 CharReader 又容易漏掉错误串。
+//解析失败返回 false，out 不保证是对象；调用方仍需检查 isObject
+inline bool JsonFromString(const std::string& text, Json::Value& out)
+{
+	Json::CharReaderBuilder builder;
+	builder["collectComments"] = false;
+	std::string errors;
+	std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+	return reader->parse(text.data(), text.data() + text.size(), &out, &errors);
 }

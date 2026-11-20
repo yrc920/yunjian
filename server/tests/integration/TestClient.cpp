@@ -1,4 +1,5 @@
 #include "TestClient.h"
+#include "JsonUtil.h"
 
 #include <algorithm>
 #include <cctype>
@@ -59,8 +60,7 @@ std::string CompactJson(const Json::Value& value)
 
 bool ParseJson(const std::string& text, Json::Value& out)
 {
-	Json::Reader reader;
-	return reader.parse(text, out);
+	return JsonFromString(text, out);
 }
 
 //HTTP 响应只有两种形态：带 Content-Length 的定长体，或读到对端关闭为止。

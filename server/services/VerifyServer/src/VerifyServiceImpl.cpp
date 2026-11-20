@@ -24,7 +24,7 @@ grpc::Status VerifyServiceImpl::GetVerifyCode(grpc::ServerContext* /*context*/,
 			code = GenerateCode();
 			//写入失败（Redis 不可用）时无法保证后续校验，直接返回 Redis 错误
 			if (!RedisMgr::GetInstance()->SetEx(key, code, CODE_EXPIRE_SECONDS)) {
-				response->set_error(VerifyCodes::RedisErr);
+				response->set_error(ErrorCodes::RPCFailed);
 				return grpc::Status::OK;
 			}
 		}
@@ -32,15 +32,15 @@ grpc::Status VerifyServiceImpl::GetVerifyCode(grpc::ServerContext* /*context*/,
 		std::string text = "您的验证码为 " + code + "，请在 " +
             std::to_string(CODE_EXPIRE_SECONDS / 60) + " 分钟内完成验证。";
 		if (!EmailSender::Send(email, "验证码", text)) {
-			response->set_error(VerifyCodes::SendMailErr);
+			response->set_error(ErrorCodes::VerifySendFailed);
 			return grpc::Status::OK;
 		}
 
-		response->set_error(VerifyCodes::Success);
+		response->set_error(ErrorCodes::Success);
 	}
 	catch (std::exception& e) {
 		LOG_ERROR << "GetVerifyCode exception: " << e.what();
-		response->set_error(VerifyCodes::Exception);
+		response->set_error(ErrorCodes::RPCFailed);
 	}
 
 	return grpc::Status::OK;

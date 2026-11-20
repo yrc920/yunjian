@@ -41,7 +41,7 @@ GroupService::GroupService()
             return;
         }
 
-        //建群回包已经带完整资料与成员，直接落库，不再多拉一次 1062
+        //建群回包已经带完整资料与成员，直接落库，不再多拉一次 5003
         const QJsonObject group = data.value("group").toObject();
         QJsonObject thread;
         thread["thread_id"] = QJsonValue::fromVariant(threadId);
@@ -223,7 +223,7 @@ void GroupService::DismissGroup(qint64 thread_id)
         QJsonDocument(frame).toJson(QJsonDocument::Compact));
 }
 
-//1068 的 event 决定处理方式：
+//5009 的 event 决定处理方式：
 //created 新群 / info 改名称公告 / members 人数与角色 / removed 被移出 / dismissed 解散 / message 系统消息
 void GroupService::applyGroupChanged(const QJsonObject &data)
 {

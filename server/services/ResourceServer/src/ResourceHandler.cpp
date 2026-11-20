@@ -200,13 +200,13 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	const int last = root["last"].asInt(); //是否最后一片
 
 	if (!IsMd5(md5) || !IsSafeName(name)) { //资源名或文件名不合法
-		SendUploadResponse(session, avatar, ErrorCodes::FileNameInvalid, md5, name, seq,
+		SendUploadResponse(session, avatar, ResourceError::FileNameInvalid, md5, name, seq,
 			total_size, trans_size, last, uid);
 		return;
 	}
 
 	if (total_size <= 0 || total_size > MAX_FILE_SIZE) { //空文件或超过4GB
-		SendUploadResponse(session, avatar, ErrorCodes::FileTooLarge, md5, name, seq,
+		SendUploadResponse(session, avatar, ResourceError::FileTooLarge, md5, name, seq,
 			total_size, trans_size, last, uid);
 		return;
 	}
@@ -215,7 +215,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 	if (seq < 1 || trans_size <= 0 || trans_size > total_size ||
 		payload_len == 0 || payload_len > MAX_FILE_LEN ||
 		(last == 1) != (trans_size == total_size)) {
-		SendUploadResponse(session, avatar, ErrorCodes::FileDataInvalid, md5, name, seq,
+		SendUploadResponse(session, avatar, ResourceError::FileDataInvalid, md5, name, seq,
 			total_size, trans_size, last, uid);
 		return;
 	}
@@ -235,7 +235,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 
 	//配额只在首片检查：按用户目录已用空间判断，避免传完才发现放不下
 	if (seq == 1 && !CheckQuota(uid, name, total_size)) {
-		SendUploadResponse(session, avatar, ErrorCodes::FileQuotaExceeded, md5, name, seq,
+		SendUploadResponse(session, avatar, ResourceError::FileQuotaExceeded, md5, name, seq,
 			total_size, trans_size, last, uid);
 		return;
 	}
@@ -270,7 +270,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 				return;
 			}
 
-			SendUploadResponse(session, avatar, ErrorCodes::FileNotExists, md5, name, seq,
+			SendUploadResponse(session, avatar, ResourceError::FileNotExists, md5, name, seq,
 				total_size, trans_size, last, uid);
 			return;
 		}
@@ -278,7 +278,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		//续传必须沿用第一次请求确定的路径与总大小，防止同名请求覆盖别的文件
 		if (file_info->_name != name || file_info->_uid != uid ||
 			file_info->_total_size != total_size || file_info->_avatar != avatar) {
-			SendUploadResponse(session, avatar, ErrorCodes::FileDataInvalid, md5, name, seq,
+			SendUploadResponse(session, avatar, ResourceError::FileDataInvalid, md5, name, seq,
 				total_size, trans_size, last, uid);
 			return;
 		}
@@ -286,7 +286,7 @@ void resource::HandleUpload(std::shared_ptr<CSession> session, const std::string
 		//通用资源走拥塞窗口，多个分片可能在途；按“已接收序号”而不是落盘序号判断，
 		//落盘由同一文件的文件线程按队列顺序完成，不会写出空洞
 		if (seq != file_info->_accepted_seq + 1) {
-			SendUploadResponse(session, avatar, ErrorCodes::FileSeqInvalid, md5, name, seq,
+			SendUploadResponse(session, avatar, ResourceError::FileSeqInvalid, md5, name, seq,
 				total_size, trans_size, last, uid);
 			return;
 		}
@@ -346,7 +346,7 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 	const std::string token = root["token"].asString(); //重新校验身份
 
 	if (!IsMd5(md5)) {
-		rtvalue["error"] = ErrorCodes::FileDataInvalid; //续传键格式不对
+		rtvalue["error"] = ResourceError::FileDataInvalid; //续传键格式不对
 		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 		return;
 	}
@@ -360,7 +360,7 @@ void resource::HandleSync(std::shared_ptr<CSession> session, const std::string& 
 
 	std::shared_ptr<FileInfo> file_info;
 	if (!LogicSystem::GetInstance()->LoadFileInfo(md5, file_info)) { //内存/Redis都没有
-		rtvalue["error"] = ErrorCodes::FileNotExists;
+		rtvalue["error"] = ResourceError::FileNotExists;
 		rtvalue["md5"] = md5;
 		SendResponse(session, rtvalue, ID_SYNC_FILE_RSP);
 		return;
@@ -413,7 +413,7 @@ void resource::HandleDownload(std::shared_ptr<CSession> session, const std::stri
 	const int seq = root["seq"].asInt(); //要第几片
 
 	if (!IsSafeName(name) || owner_uid <= 0 || seq < 1) {
-		SendDownloadError(session, ErrorCodes::FileNameInvalid, name, seq); //文件名/归属/序号非法
+		SendDownloadError(session, ResourceError::FileNameInvalid, name, seq); //文件名/归属/序号非法
 		return;
 	}
 
@@ -428,7 +428,7 @@ void resource::HandleDownload(std::shared_ptr<CSession> session, const std::stri
 		LOG_WARN << "[resource] download denied requester=" << uid
 			<< " owner=" << owner_uid << " name=" << name;
 		//对外与"文件不存在"一致，不向非成员暴露该文件是否存在
-		SendDownloadError(session, ErrorCodes::FileNotExists, name, seq);
+		SendDownloadError(session, ResourceError::FileNotExists, name, seq);
 		return;
 	}
 

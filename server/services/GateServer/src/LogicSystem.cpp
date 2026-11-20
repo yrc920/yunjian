@@ -41,6 +41,65 @@ std::string ClientIp(const std::shared_ptr<HttpConnection>& connection)
 	return endpoint.address().to_string();
 }
 
+//邮箱在数据库里按不区分大小写比较，在 Redis 里却区分：
+//入口统一 trim + 小写，验证码、注册、登录、重置才能落到同一个键上
+std::string NormalizeEmail(const std::string& input)
+{
+	std::string email = input;
+	const auto begin = email.find_first_not_of(" \t\r\n");
+	const auto end = email.find_last_not_of(" \t\r\n");
+	email = begin == std::string::npos ? "" : email.substr(begin, end - begin + 1);
+	for (char& ch : email)
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	return email;
+}
+
+bool IsValidEmail(const std::string& email)
+{
+	if (email.size() < 5 || email.size() > 254)
+		return false;
+	const auto at = email.find('@');
+	if (at == std::string::npos || at == 0 || at + 1 >= email.size())
+		return false;
+	if (email.find('@', at + 1) != std::string::npos)
+		return false;
+	if (at > 64)
+		return false;
+	const std::string domain = email.substr(at + 1);
+	if (domain.front() == '.' || domain.back() == '.' || domain.find('.') == std::string::npos)
+		return false;
+	for (unsigned char ch : email) {
+		if (ch <= 0x20 || ch == 0x7f)
+			return false;
+	}
+	return true;
+}
+
+//用户名按字符数限制 2~20；拒绝空白、控制字符与路径/协议分隔符，
+//中文与 emoji 按 UTF-8 首字节计数，不把一个汉字算成三字节
+bool IsValidUserName(const std::string& name)
+{
+	std::size_t chars = 0;
+	for (unsigned char ch : name) {
+		if ((ch & 0xC0) == 0x80)
+			continue;
+		++chars;
+		if (ch <= 0x20 || ch == 0x7f)
+			return false;
+		if (ch < 0x80 && std::string("@/\\:*?\"<>|").find(static_cast<char>(ch)) != std::string::npos)
+			return false;
+	}
+	return chars >= 2 && chars <= 20;
+}
+
+//客户端发送的是 xor 变形后的口令，长度与原文一致。
+//这里只校验长度与非空：具体字符集由客户端约束，服务端不做可逆解析
+bool IsValidPasswordPayload(const std::string& pwd)
+{
+	return pwd.size() >= 6 && pwd.size() <= 15
+		&& pwd.find('\0') == std::string::npos;
+}
+
 //把"哈希 + 落库"放到口令线程池执行：Argon2id 单次 64 MiB，
 //在单线程 io_context 上做会把所有 HTTP 请求一起卡住。
 //work 在池线程算完得到回包，再回投到连接所属的 IO 线程写响应；
@@ -51,7 +110,15 @@ void PostPasswordWork(const std::shared_ptr<HttpConnection>& connection,
 	connection->DeferResponse();
 	const bool queued = PasswordPool::Instance().Post(
 		[connection, work = std::move(work)]() {
-			Json::Value response = work();
+			Json::Value response;
+			try {
+				response = work();
+			}
+			catch (const std::exception& e) {
+				//任务异常也要回包，否则连接只能等到 15 秒截止时间才被关闭
+				LOG_ERROR << "password work failed: " << e.what();
+				response["error"] = ErrorCodes::RPCFailed;
+			}
 			boost::asio::post(connection->GetSocket().get_executor(),
 				[connection, response]() {
 					connection->SendDeferred(JsonToCompact(response));
@@ -63,6 +130,33 @@ void PostPasswordWork(const std::shared_ptr<HttpConnection>& connection,
 	Json::Value busy;
 	busy["error"] = ErrorCodes::ServiceUnavailable;
 	connection->SendDeferred(JsonToCompact(busy));
+}
+
+//所有同步入口共用的写回包：统一 content-type 与紧凑 JSON
+void WriteJson(const std::shared_ptr<HttpConnection>& connection, const Json::Value& response)
+{
+	connection->SetJsonResponse(JsonToCompact(response));
+}
+
+void Fail(const std::shared_ptr<HttpConnection>& connection, int error)
+{
+	Json::Value response;
+	response["error"] = error;
+	WriteJson(connection, response);
+}
+
+//解析请求体并检查必填字段的类型：所有字段在协议里都是字符串。
+//失败时由调用方回 Error_Json，不在这里写响应，避免异步分支重复发送
+bool ReadJson(const std::shared_ptr<HttpConnection>& connection, Json::Value& root,
+	std::initializer_list<const char*> required)
+{
+	if (!JsonFromString(connection->RequestBody(), root) || !root.isObject())
+		return false;
+	for (const char* key : required) {
+		if (!root[key].isString())
+			return false;
+	}
+	return true;
 }
 
 //登录限流键统一小写：MySQL 的邮箱比较不区分大小写，Redis 键区分，
@@ -85,8 +179,7 @@ long long ReadCounter(const std::string& key)
 } // namespace
 
 LogicSystem::LogicSystem() {
-	//注册一个GET请求的URL和对应的处理函数
-    //健康检查：部署脚本与容器探针用，任一依赖不可用就回 503，
+	//健康检查：部署脚本与容器探针用，任一依赖不可用就回 503，
 	//响应体带上细分原因，排障时不用再登机器看日志
 	RegGet("/healthz", [](std::shared_ptr<HttpConnection> connection) {
 		const bool redis_ok = RedisMgr::GetInstance()->Ping();
@@ -105,31 +198,20 @@ LogicSystem::LogicSystem() {
 		connection->SetResult(healthy ? http::status::ok : http::status::service_unavailable);
 		beast::ostream(connection->_response.body()) << JsonToCompact(root);
 		return true;
-    });
+	});
 
-	//注册发送验证码的POST请求的URL和对应的处理函数
 	RegPost("/get_verifycode", [](std::shared_ptr<HttpConnection> connection) {
-		//将请求体中的数据转换为字符串
-		auto body_str = beast::buffers_to_string(connection->_request.body().data());
-		connection->_response.set(http::field::content_type, "application/json"); //设置响应内容类型为JSON
-
-		Json::Value root; //用于构建响应的JSON数据
-		Json::Reader reader; //用于解析请求体中的JSON数据
-		Json::Value src_root; //用于存储解析后的JSON数据
-		//解析请求体中的JSON数据, 将解析结果存储到src_root中
-		bool parse_success = reader.parse(body_str, src_root);
-		//请求体必须是对象，email必须是字符串；先检查类型再取值，避免数组或对象触发转换异常
-		if (!parse_success || !src_root.isObject() || !src_root["email"].isString()) {
-			LOG_WARN << "Failed to parse JSON data!";
-			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-			std::string jsonstr = JsonToCompact(root);
-			beast::ostream(connection->_response.body()) << jsonstr;
+		Json::Value root;
+		if (!ReadJson(connection, root, { "email" })) {
+			Fail(connection, ErrorCodes::Error_Json);
 			return true;
 		}
 
-		//如果解析成功, 则从src_root中提取email字段的值
-		auto email = src_root["email"].asString();
+		const std::string email = NormalizeEmail(root["email"].asString());
+		if (!IsValidEmail(email)) {
+			Fail(connection, ErrorCodes::Error_Json);
+			return true;
+		}
 
 		//发送频控：先卡 60 秒冷却，再卡邮箱与 IP 的小时配额。
 		//Redis 不可用时按 RPC 失败返回，不能把限流器变成放行器
@@ -137,9 +219,10 @@ LogicSystem::LogicSystem() {
 		const int cooldown = RedisMgr::GetInstance()->SetNxEx(
 			COOLDOWNPREFIX + email, "1", CODE_COOLDOWN_SECONDS);
 		if (cooldown <= 0) {
-			root["error"] = cooldown < 0 ? ErrorCodes::RPCFailed : ErrorCodes::VerifyTooFrequent;
-			root["email"] = email;
-			beast::ostream(connection->_response.body()) << JsonToCompact(root);
+			Json::Value response;
+			response["error"] = cooldown < 0 ? ErrorCodes::RPCFailed : ErrorCodes::VerifyTooFrequent;
+			response["email"] = email;
+			WriteJson(connection, response);
 			return true;
 		}
 
@@ -163,92 +246,59 @@ LogicSystem::LogicSystem() {
 				rate_error = ErrorCodes::VerifyTooFrequent;
 		}
 		if (rate_error != 0) {
-			root["error"] = rate_error;
-			root["email"] = email;
-			beast::ostream(connection->_response.body()) << JsonToCompact(root);
+			Json::Value response;
+			response["error"] = rate_error;
+			response["email"] = email;
+			WriteJson(connection, response);
 			return true;
 		}
 
-		//给验证服务发送RPC请求, 获取验证码, 将RPC调用的结果存储在rsp中
-		GetVerifyRsp rsp = VerifyGrpcClient::GetInstance()->GetVerifyCode(email);
-		LOG_DEBUG << "email is " << email;
-		root["error"] = rsp.error(); //将RPC调用结果中的error字段设置到响应的JSON数据中
-		root["email"] = src_root["email"]; //将请求中的email字段原样返回到响应中
-		//将JSON数据转换为字符串, 并写入响应内容中
-		std::string jsonstr = JsonToCompact(root);
-		beast::ostream(connection->_response.body()) << jsonstr;
+		//验证服务返回的就是统一错误码：0 成功 / 1002 依赖失败 / 1023 邮件投递失败
+		const GetVerifyRsp rsp = VerifyGrpcClient::GetInstance()->GetVerifyCode(email);
+		LOG_DEBUG << "verify code requested for " << MaskEmail(email);
+		Json::Value response;
+		response["error"] = rsp.error();
+		response["email"] = email;
+		WriteJson(connection, response);
 		return true;
 	});
 
-	//注册用户注册的POST请求的URL和对应的处理函数
-    RegPost("/user_register", [](std::shared_ptr<HttpConnection> connection) {
-		//将请求体中的数据转换为字符串
-        auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		connection->_response.set(http::field::content_type, "application/json"); //设置响应内容类型为JSON
-
-		Json::Value root; //用于构建响应的JSON数据
-		Json::Reader reader; //用于解析请求体中的JSON数据
-		Json::Value src_root; //用于存储解析后的JSON数据
-		//解析请求体中的JSON数据, 将解析结果存储到src_root中
-        bool parse_success = reader.parse(body_str, src_root);
-		//注册字段不仅要存在，还必须都是字符串，后面才可以安全地读取邮箱、账号、密码和验证码
-        if (!parse_success || !src_root.isObject() ||
-			!src_root["email"].isString() || !src_root["user"].isString() ||
-			!src_root["passwd"].isString() || !src_root["confirm"].isString() ||
-			!src_root["verifycode"].isString()) {
-            LOG_WARN << "Failed to parse JSON data!";
-			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
-
-		//如果解析成功, 则从src_root中提取email、user、passwd、confirm和verifycode字段的值
-		auto email = src_root["email"].asString();
-		auto name = src_root["user"].asString();
-		auto pwd = src_root["passwd"].asString();
-		auto confirm = src_root["confirm"].asString();
-
-		//检查密码和确认密码是否一致, 如果不一致则返回错误信息
-		if (pwd != confirm) {
-			LOG_WARN << " confirm password error";
-			root["error"] = ErrorCodes::PasswdErr;
-			//将JSON数据转换为字符串, 并写入响应内容中
-			std::string jsonstr = JsonToCompact(root);
-			beast::ostream(connection->_response.body()) << jsonstr;
+	RegPost("/user_register", [](std::shared_ptr<HttpConnection> connection) {
+		Json::Value root;
+		if (!ReadJson(connection, root,
+			{ "email", "user", "passwd", "confirm", "verifycode" })) {
+			Fail(connection, ErrorCodes::Error_Json);
 			return true;
 		}
 
-        //先查找redis中email对应的验证码是否合理
-        std::string  verify_code;
-        bool b_get_verify = RedisMgr::GetInstance()->
-            Get(CODEPREFIX + email, verify_code);
-		//如果没有找到验证码或者验证码过期了, 则返回错误信息
-        if (!b_get_verify) {
-            LOG_WARN << " get verify code expired";
-			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
-            //将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
-		//如果找到了验证码, 则将请求中的验证码和redis中获取到的验证码进行比较, 如果不一致则返回错误信息
-        if (verify_code != src_root["verifycode"].asString()) {
-            LOG_WARN << " verify code error";
-			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+		const std::string email = NormalizeEmail(root["email"].asString());
+		const std::string name = root["user"].asString();
+		const std::string pwd = root["passwd"].asString();
+		if (!IsValidEmail(email) || !IsValidUserName(name) || !IsValidPasswordPayload(pwd)) {
+			Fail(connection, ErrorCodes::Error_Json);
+			return true;
+		}
+		if (pwd != root["confirm"].asString()) {
+			Fail(connection, ErrorCodes::PasswdErr);
+			return true;
+		}
+
+		std::string verify_code;
+		if (!RedisMgr::GetInstance()->Get(CODEPREFIX + email, verify_code)) {
+			Fail(connection, ErrorCodes::VerifyExpired);
+			return true;
+		}
+		if (verify_code != root["verifycode"].asString()) {
+			Fail(connection, ErrorCodes::VerifyCodeErr);
+			return true;
+		}
 
 		//注册要写库并生成哈希，同样交给口令线程池
 		PostPasswordWork(connection, [name, email, pwd]() {
 			Json::Value result;
 			const int uid = MysqlDao::GetInstance()->RegUser(name, email, pwd);
 			if (uid == 0 || uid == -1) {
-				LOG_WARN << " user or email exist";
+				LOG_WARN << " account already exists: " << MaskEmail(email);
 				result["error"] = ErrorCodes::UserExist;
 				return result;
 			}
@@ -264,76 +314,51 @@ LogicSystem::LogicSystem() {
 			return result;
 		});
 		return true;
-    });
+	});
 
-	//注册用户重置密码的POST请求的URL和对应的处理函数
-    RegPost("/reset_pwd", [](std::shared_ptr<HttpConnection> connection) {
-        //将请求体中的数据转化为字符串
-        auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		connection->_response.set(http::field::content_type, "application/json"); //设置响应内容类型为JSON
+	RegPost("/reset_pwd", [](std::shared_ptr<HttpConnection> connection) {
+		Json::Value root;
+		if (!ReadJson(connection, root, { "email", "user", "passwd", "verifycode" })) {
+			Fail(connection, ErrorCodes::Error_Json);
+			return true;
+		}
 
-		Json::Value root; //用于构建响应的JSON数据
-		Json::Reader reader; //用于解析请求体中的JSON数据
-		Json::Value src_root; //用于存储解析后的JSON数据
-		//解析请求体中的JSON数据, 将解析结果存储到src_root中
-        bool parse_success = reader.parse(body_str, src_root);
-		//改密请求必须同时提供字符串类型的邮箱、用户名、新密码和验证码，缺字段或类型不符都返回JSON错误
-        if (!parse_success || !src_root.isObject() || !src_root["email"].isString() ||
-            !src_root["user"].isString() || !src_root["passwd"].isString() || !src_root["verifycode"].isString()) {
-            LOG_WARN << "Failed to parse JSON data!";
-			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
+		const std::string email = NormalizeEmail(root["email"].asString());
+		const std::string name = root["user"].asString();
+		const std::string pwd = root["passwd"].asString();
+		if (!IsValidEmail(email) || name.empty() || !IsValidPasswordPayload(pwd)) {
+			Fail(connection, ErrorCodes::Error_Json);
+			return true;
+		}
 
-		//如果解析成功, 则从src_root中提取email、user、passwd和verifycode字段的值
-        auto email = src_root["email"].asString();
-        auto name = src_root["user"].asString();
-        auto pwd = src_root["passwd"].asString();
+		std::string verify_code;
+		if (!RedisMgr::GetInstance()->Get(CODEPREFIX + email, verify_code)) {
+			Fail(connection, ErrorCodes::VerifyExpired);
+			return true;
+		}
+		if (verify_code != root["verifycode"].asString()) {
+			Fail(connection, ErrorCodes::VerifyCodeErr);
+			return true;
+		}
 
-        //先查找redis中email对应的验证码是否合理
-        std::string verify_code;
-        bool b_get_verify = RedisMgr::GetInstance()->
-			Get(CODEPREFIX + src_root["email"].asString(), verify_code);
-		//如果没有找到验证码或者验证码过期了, 则返回错误信息
-        if (!b_get_verify) {
-            LOG_WARN << " get verify code expired";
-			root["error"] = ErrorCodes::VerifyExpired; //设置错误码为验证码过期
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
-		//如果找到了验证码, 则将请求中的验证码和redis中获取到的验证码进行比较, 如果不一致则返回错误信息
-        if (verify_code != src_root["verifycode"].asString()) {
-            LOG_WARN << " verify code error";
-			root["error"] = ErrorCodes::VerifyCodeErr; //设置错误码为验证码错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
-
-        //改密要写新哈希，和注册一样交给口令线程池
 		PostPasswordWork(connection, [name, email, pwd]() {
 			Json::Value result;
-			if (!MysqlDao::GetInstance()->CheckEmail(name, email)) {
-				LOG_WARN << " user email not match";
+			bool db_error = false;
+			const bool matched = MysqlDao::GetInstance()->CheckEmail(name, email, db_error);
+			if (db_error) {
+				result["error"] = ErrorCodes::RPCFailed;
+				return result;
+			}
+			if (!matched) {
 				result["error"] = ErrorCodes::EmailNotMatch;
 				return result;
 			}
-
 			if (!MysqlDao::GetInstance()->UpdatePwd(name, pwd)) {
-				LOG_ERROR << " update pwd failed";
 				result["error"] = ErrorCodes::PasswdUpFailed;
 				return result;
 			}
 
-			//验证码一次性使用：改密成功后立即删除，避免同一码再次改密
 			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
-
 			spdlog::info("password reset ok account={} name={}", MaskEmail(email), name);
 			result["error"] = 0;
 			result["email"] = email;
@@ -341,33 +366,21 @@ LogicSystem::LogicSystem() {
 			return result;
 		});
 		return true;
-        });
+	});
 
-	//注册用户登录的POST请求的URL和对应的处理函数
-    RegPost("/user_login", [](std::shared_ptr<HttpConnection> connection) {
-		//将请求体中的数据转换为字符串
-        auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		connection->_response.set(http::field::content_type, "application/json"); //设置响应内容类型为JSON
+	RegPost("/user_login", [](std::shared_ptr<HttpConnection> connection) {
+		Json::Value root;
+		if (!ReadJson(connection, root, { "email", "passwd" })) {
+			Fail(connection, ErrorCodes::Error_Json);
+			return true;
+		}
 
-		Json::Value root; //用于构建响应的JSON数据
-		Json::Reader reader; //用于解析请求体中的JSON数据
-		Json::Value src_root; //用于存储解析后的JSON数据
-		//解析请求体中的JSON数据, 将解析结果存储到src_root中
-        bool parse_success = reader.parse(body_str, src_root);
-		//登录入口只接受对象形式的请求，并检查邮箱和密码类型，避免错误字段进入数据库验证流程
-        if (!parse_success || !src_root.isObject() ||
-            !src_root["email"].isString() || !src_root["passwd"].isString()) {
-            LOG_WARN << "Failed to parse JSON data!";
-			root["error"] = ErrorCodes::Error_Json; //设置错误码为JSON解析错误
-			//将JSON数据转换为字符串, 并写入响应内容中
-            std::string jsonstr = JsonToCompact(root);
-            beast::ostream(connection->_response.body()) << jsonstr;
-            return true;
-        }
-
-		//如果解析成功, 则从src_root中提取email和passwd字段的值
-        auto email = src_root["email"].asString();
-        auto pwd = src_root["passwd"].asString();
+		const std::string email = NormalizeEmail(root["email"].asString());
+		const std::string pwd = root["passwd"].asString();
+		if (!IsValidEmail(email) || !IsValidPasswordPayload(pwd)) {
+			Fail(connection, ErrorCodes::PasswdInvalid);
+			return true;
+		}
 
 		//登录失败限流：先查失败计数，超限时直接返回，不再做 256MB 的密码校验。
 		//只统计失败、成功清零，正常用户偶发输错不会被长期锁住
@@ -380,85 +393,78 @@ LogicSystem::LogicSystem() {
 		const long long account_fails = ReadCounter(account_key);
 		const long long ip_fails = ip_key.empty() ? 0 : ReadCounter(ip_key);
 		if (account_fails >= LOGIN_ACCOUNT_FAIL_LIMIT || ip_fails >= LOGIN_IP_FAIL_LIMIT) {
-			root["error"] = ErrorCodes::TooManyRequests;
-			beast::ostream(connection->_response.body()) << JsonToCompact(root);
+			Fail(connection, ErrorCodes::TooManyRequests);
 			return true;
 		}
 
-        //剩下的活都绕不开密码校验：交给口令线程池，IO 线程继续接别的连接
-		PostPasswordWork(connection,
-			[email, pwd, account_key, ip_key]() {
-				Json::Value result;
-				UserInfo user_info;
-				bool db_error = false;
-				const bool pwd_valid = MysqlDao::GetInstance()->CheckPwd(
-					email, pwd, user_info, db_error);
-				if (!pwd_valid) {
-					//数据库不可用是服务端故障，不能当成密码错误，也不能累加失败次数
-					if (db_error) {
-						result["error"] = ErrorCodes::RPCFailed;
-						return result;
-					}
-					//失败计数带 60 秒 TTL，窗口结束后自动归零
-					RedisMgr::GetInstance()->IncrWithTtl(account_key, LOGIN_FAIL_WINDOW_SECONDS);
-					if (!ip_key.empty())
-						RedisMgr::GetInstance()->IncrWithTtl(ip_key, LOGIN_FAIL_WINDOW_SECONDS);
-					spdlog::warn("login rejected account={} reason=bad_password", MaskEmail(email));
-					result["error"] = ErrorCodes::PasswdInvalid;
-					return result;
-				}
-
-				//密码正确：清掉失败计数，避免历史失败影响后续登录
-				RedisMgr::GetInstance()->Del(account_key);
-				if (!ip_key.empty())
-					RedisMgr::GetInstance()->Del(ip_key);
-
-				const auto reply = StatusGrpcClient::GetInstance()->GetChatServer(user_info.uid);
-				if (reply.error()) {
-					LOG_ERROR << "grpc get chat server failed, error is " << reply.error();
+		//剩下的活都绕不开密码校验：交给口令线程池，IO 线程继续接别的连接
+		PostPasswordWork(connection, [email, pwd, account_key, ip_key]() {
+			Json::Value result;
+			UserInfo user_info;
+			bool db_error = false;
+			const bool pwd_valid = MysqlDao::GetInstance()->CheckPwd(email, pwd, user_info, db_error);
+			if (!pwd_valid) {
+				//数据库不可用是服务端故障，不能当成密码错误，也不能累加失败次数
+				if (db_error) {
 					result["error"] = ErrorCodes::RPCFailed;
 					return result;
 				}
-
-				spdlog::info("login ok uid={} account={} chat={}:{}",
-					user_info.uid, MaskEmail(email), reply.host(), reply.port());
-				result["error"] = 0;
-				result["email"] = email;
-				result["uid"] = user_info.uid;
-				result["token"] = reply.token();
-				result["host"] = reply.host();
-				result["port"] = reply.port();
-				result["res_host"] = reply.res_host();
-				result["res_port"] = reply.res_port();
+				RedisMgr::GetInstance()->IncrWithTtl(account_key, LOGIN_FAIL_WINDOW_SECONDS);
+				if (!ip_key.empty())
+					RedisMgr::GetInstance()->IncrWithTtl(ip_key, LOGIN_FAIL_WINDOW_SECONDS);
+				spdlog::warn("login rejected account={} reason=bad_password", MaskEmail(email));
+				result["error"] = ErrorCodes::PasswdInvalid;
 				return result;
-			});
+			}
+
+			RedisMgr::GetInstance()->Del(account_key);
+			if (!ip_key.empty())
+				RedisMgr::GetInstance()->Del(ip_key);
+
+			const auto reply = StatusGrpcClient::GetInstance()->GetChatServer(user_info.uid);
+			if (reply.error()) {
+				LOG_ERROR << "grpc get chat server failed, error is " << reply.error();
+				result["error"] = ErrorCodes::RPCFailed;
+				return result;
+			}
+
+			spdlog::info("login ok uid={} account={} chat={}:{}",
+				user_info.uid, MaskEmail(email), reply.host(), reply.port());
+			result["error"] = 0;
+			result["email"] = email;
+			result["uid"] = user_info.uid;
+			result["token"] = reply.token();
+			result["host"] = reply.host();
+			result["port"] = reply.port();
+			result["res_host"] = reply.res_host();
+			result["res_port"] = reply.res_port();
+			return result;
+		});
 		return true;
-        });
+	});
 }
 
 void LogicSystem::RegGet(std::string url, HttpHandler handler) {
-	_get_handlers.insert(make_pair(url, handler)); //将URL和处理函数插入到GET请求的处理器映射中
+	_get_handlers.insert(make_pair(url, handler));
 }
 
 void LogicSystem::RegPost(std::string url, HttpHandler handler) {
-	_post_handlers.insert(make_pair(url, handler)); //将URL和处理函数插入到POST请求的处理器映射中
+	_post_handlers.insert(make_pair(url, handler));
 }
 
 bool LogicSystem::HandleGet(std::string path, std::shared_ptr<HttpConnection> con) {
 	//如果没有找到对应URL的处理函数, 返回false, 让网络层返回404错误
-    if (_get_handlers.find(path) == _get_handlers.end()) {
-        return false;
-    }
-	_get_handlers[path](con); //调用对应URL的处理函数, 处理请求
-    return true;
+	if (_get_handlers.find(path) == _get_handlers.end()) {
+		return false;
+	}
+	_get_handlers[path](con);
+	return true;
 }
 
 bool LogicSystem::HandlePost(std::string path, std::shared_ptr<HttpConnection> con) {
-	//如果没有找到对应URL的处理函数, 返回false, 让网络层返回404错误
 	if (_post_handlers.find(path) == _post_handlers.end()) {
 		return false;
 	}
-
-	_post_handlers[path](con); //调用对应URL的处理函数, 处理请求
+	_post_handlers[path](con);
 	return true;
 }

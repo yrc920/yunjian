@@ -85,7 +85,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		+ static_cast<long long>(data.size());
 	if (task->_seq < 1 || data.empty() || data.size() > MAX_FILE_LEN
 		|| expected_trans != task->_trans_size) {
-		FinishTask(task, ErrorCodes::FileDataInvalid); //序号、长度、偏移任一项不符
+		FinishTask(task, ResourceError::FileDataInvalid); //序号、长度、偏移任一项不符
 		return;
 	}
 
@@ -102,21 +102,21 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		std::ofstream outfile(task->_path, mode); //打开目标文件
 		if (!outfile) { //目录权限或磁盘问题
 			LOG_ERROR << "无法打开文件进行写入: " << task->_path;
-			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
+			FinishTask(task, ResourceError::FileWritePermissionFailed);
 			return;
 		}
 
 		outfile.write(data.data(), static_cast<std::streamsize>(data.size())); //写本片
 		if (!outfile) { //写满磁盘或IO错误
 			LOG_ERROR << "写入文件失败: " << task->_path;
-			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
+			FinishTask(task, ResourceError::FileWritePermissionFailed);
 			return;
 		}
 		outfile.close(); //关闭后数据才真正落盘
 	}
 	catch (std::exception& e) { //文件系统异常不能逃出线程
 		LOG_ERROR << "FileWorker exception: " << e.what();
-		FinishTask(task, ErrorCodes::FileWritePermissionFailed);
+		FinishTask(task, ResourceError::FileWritePermissionFailed);
 		return;
 	}
 
@@ -132,7 +132,7 @@ void FileWorker::TaskCallback(std::shared_ptr<FileTask> task)
 		if (ec) {
 			LOG_ERROR << "rename upload failed: " << task->_path << " -> "
 				<< final_path.string() << " (" << ec.message() << ")";
-			FinishTask(task, ErrorCodes::FileWritePermissionFailed);
+			FinishTask(task, ResourceError::FileWritePermissionFailed);
 			return;
 		}
 	}
@@ -193,14 +193,16 @@ void FileWorker::UpdateAvatarInfo(int uid, const std::string& name)
 	base_root["desc"] = user_info->desc;
 	base_root["sex"] = user_info->sex;
 	base_root["icon"] = user_info->icon; //新头像文件名
-	RedisMgr::GetInstance()->Set(USER_BASE_INFO + std::to_string(uid),
-		JsonToCompact(base_root)); //按uid缓存
-
-	Json::Value name_root = base_root; //用户名索引缓存内容相同
-	RedisMgr::GetInstance()->Set(NAME_INFO + user_info->name, JsonToCompact(name_root));
+	//与 ChatServer 的资料缓存共用 1 小时 TTL：头像文件名不会永久压在缓存里
+	constexpr int kProfileTtlSeconds = 3600;
+	const std::string profile_text = JsonToCompact(base_root);
+	RedisMgr::GetInstance()->SetEx(USER_BASE_INFO + std::to_string(uid),
+		profile_text, kProfileTtlSeconds);
+	RedisMgr::GetInstance()->SetEx(NAME_INFO + user_info->name,
+		profile_text, kProfileTtlSeconds);
 
 	//头像文件名变了, 让 ChatServer 把新资料推给在线好友; 失败只记日志,
-	//好友下次登录仍会从 1006 回包里拿到新的 icon 文件名
+	//好友下次登录仍会从 2002 回包里拿到新的 icon 文件名
 	if (!ChatGrpcClient::GetInstance()->BroadcastProfileChanged(uid)) {
 		LOG_WARN << "broadcast avatar change failed, uid: " << uid;
 	}

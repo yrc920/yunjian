@@ -138,7 +138,7 @@ ChatService::ChatService()
         if (thumb != _video_by_thumb.end()) {
             const QString uniqueId = thumb.value();
             _video_by_thumb.erase(thumb);
-            sendVideoRequest(uniqueId, name); //首帧已落盘，可以发 1034 了
+            sendVideoRequest(uniqueId, name); //首帧已落盘，可以发 4013 了
             return;
         }
         UserMgr::GetInstance()->FinishResourceUpload(name);
@@ -245,7 +245,7 @@ ChatService::ChatService()
 }
 
 //会话是否可发：单聊要求好友仍在，群聊要求本地有群对象。
-//单聊顺带触发 1025 建会话，群聊的 thread_id 在入群时就已确定
+//单聊顺带触发 4001 建会话，群聊的 thread_id 在入群时就已确定
 bool ensureConversation(const ConversationRef &conv)
 {
     auto *mgr = UserMgr::GetInstance().get();
@@ -273,7 +273,7 @@ void fillConversationFrame(QJsonObject &frame, const ConversationRef &conv)
     frame["thread_type"] = static_cast<int>(conv._kind);
 }
 
-// 打开会话：只有登录就绪、会话不存在且没有在途请求时才发 1025，
+// 打开会话：只有登录就绪、会话不存在且没有在途请求时才发 4001，
 // 避免连续点同一个好友时重复建 thread
 void ChatService::ensurePrivateChat(int uid)
 {
@@ -489,7 +489,7 @@ QString ChatService::EnsureImageThumbnail(const QString &name, QSize *pixelSize)
     return thumb;
 }
 
-// 图片消息：先插入本地消息并发 1031，服务端落库后回执，再上传资源。
+// 图片消息：先插入本地消息并发 4010，服务端落库后回执，再上传资源。
 // 返回 true 只代表消息已交给网络层
 bool ChatService::sendImage(const ConversationRef &conv, const QString &thumbnail,
     const QString &uploadPath, int width, int height)
@@ -636,7 +636,7 @@ bool ChatService::sendVideo(const ConversationRef &conv, const QString &path,
     _pending_videos.insert(uniqueId, PendingVideo{conv, cache, name, md5,
         message->_file_name, size});
 
-    //首帧异步提取：拿到后再上传缩略图，缩略图完成后才发 1034
+    //首帧异步提取：拿到后再上传缩略图，缩略图完成后才发 4013
     auto *thumbnailer = new VideoThumbnailer(FileService::GetInstance().get());
     QObject::connect(thumbnailer, &VideoThumbnailer::finished, qApp,
                      [this, thumbnailer, uniqueId](const QImage &image) {
@@ -801,7 +801,7 @@ void ChatService::sendResourceRequest(const PendingResource &resource)
         QJsonDocument(frame).toJson(QJsonDocument::Compact));
 }
 
-//1035 回执：补齐服务端消息 ID 后把资源本体交给 FileService 上传。
+//4014 回执：补齐服务端消息 ID 后把资源本体交给 FileService 上传。
 //会话上下文直接取自在途记录，回包里的 touid 在群聊里没有意义
 void ChatService::HandleResourceRsp(const QJsonObject &data)
 {
@@ -835,7 +835,7 @@ void ChatService::HandleResourceRsp(const QJsonObject &data)
         static_cast<int>(conv._kind), uniqueId);
 }
 
-//接收方收到 1033：消息先落到会话里，本地有压缩图就直接生成缩略图显示，否则边下载边显示进度。
+//接收方收到 4012：消息先落到会话里，本地有压缩图就直接生成缩略图显示，否则边下载边显示进度。
 //群聊的 touid 为 0，改按 thread_type + thread_id 判断归属
 void ChatService::HandleImageNotify(const QJsonObject &data)
 {
@@ -893,7 +893,7 @@ void ChatService::HandleImageNotify(const QJsonObject &data)
         DownloadChatImage(name, sender, messageId, threadId);
 }
 
-//接收方收到 1036：只建卡片并下载视频首帧，视频/文件本体等用户点击
+//接收方收到 4015：只建卡片并下载视频首帧，视频/文件本体等用户点击
 void ChatService::HandleResourceNotify(const QJsonObject &data)
 {
     auto *mgr = UserMgr::GetInstance().get();
@@ -1132,7 +1132,7 @@ void ChatService::ToggleResourceTransfer(qint64 messageId, const QString &unique
     conv._thread_id = threadId;
     conv._kind = mgr->ThreadKind(threadId);
     conv._peer_uid = conv._kind == ChatThreadKind::Private ? mgr->FriendIdByThread(threadId) : 0;
-    messageId = message->_message_id; //1035 之前为 0，后面按 msgid 更新状态
+    messageId = message->_message_id; //4014 之前为 0，后面按 msgid 更新状态
     const bool isSelf = message->_from_uid == mgr->GetUid();
     const QString name = message->_resource_name;
     const auto state = message->_transfer_state;
@@ -1180,7 +1180,7 @@ void ChatService::ToggleResourceTransfer(qint64 messageId, const QString &unique
                 static_cast<int>(conv._kind), message->_msg_id);
         }
         else {
-            //1035 就没成功，服务端没有这条消息：补发一次 1034，回执里再拿消息 ID
+            //4014 就没成功，服务端没有这条消息：补发一次 4013，回执里再拿消息 ID
             PendingResource resource;
             resource.type = message->_msg_type;
             resource.conv = conv;

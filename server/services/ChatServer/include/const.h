@@ -3,41 +3,11 @@
 //
 
 #include <string>
-
-enum ErrorCodes {
-	Success = 0,
-	Error_Json = 1001, //Json解析错误
-	RPCFailed = 1002, //RPC请求错误
-	VerifyExpired = 1003, //验证码过期
-	VerifyCodeErr = 1004, //验证码错误
-	UserExist = 1005, //用户已经存在
-	PasswdErr = 1006, //密码错误
-	EmailNotMatch = 1007, //邮箱不匹配
-	PasswdUpFailed = 1008, //更新密码失败
-	PasswdInvalid = 1009, //密码更新失败
-	TokenInvalid = 1010,   //Token失效
-	UidInvalid = 1011,  //uid无效
-	RecallExpired = 1012, //超过可撤回时间
-	RecallDenied = 1013, //这条消息不允许撤回（不是本人发的或已撤回）
-	NotFriend = 1014, //双方已不是好友，消息发不出去
-	GroupNotFound = 1015, //群不存在、已解散，或请求者不在群里
-	GroupDenied = 1016, //当前角色没有这个操作权限（改群名、踢人、设管理员等）
-	GroupFull = 1017, //群成员已达上限
-	GroupMemberExists = 1018, //被邀请的人已经在群里
-	ServiceUnavailable = 1101, //状态服务暂时不可用，登录可以重试
-	SessionFenced = 1102, //会话已被更高 epoch 的新登录顶替
-	SessionExpired = 1103, //租约过期
-	InstanceUnknown = 1104, //本实例未注册或注册已过期
-	TooManyRequests = 1105, //短时间内的登录次数超过上限
-	ResponseTooLarge = 1106, //响应超过单帧上限，已回错误包而不是断开连接
-};
+#include "Protocol.h"
 
 #include "Defer.h"
 
 #define MAX_LENGTH (1024 * 2) //客户端请求体最大字节数；4 字节包头单独读取
-//请求 ID 的上限：协议 ID 都在 1000 段，与包体长度无关。
-//早期用 MAX_LENGTH 兼作 ID 上限，将来 ID 涨过 2KB 会被误判成非法请求
-constexpr int MAX_REQUEST_ID = 2000;
 
 //消息可撤回时间：超过这个秒数只能留在记录里，与常见 IM 的 2 分钟一致
 constexpr int RECALL_WINDOW_SECONDS = 120;
@@ -74,61 +44,72 @@ inline size_t Utf8CharCount(const std::string& text)
 	return count;
 }
 
+//长连接消息 ID 按职责分段，每段内请求/响应相邻：
+//  2xxx 连接与会话    3xxx 用户与好友    4xxx 会话与消息
+//  5xxx 群聊          6xxx 资源通道（另一条 TCP 连接，帧头为 2+4 字节）
+//1000 段留给 HTTP 网关操作与业务错误码，不再与长连接消息混用
 enum MSG_IDS {
-	MSG_CHAT_LOGIN = 1005, //用户登陆
-	MSG_CHAT_LOGIN_RSP = 1006, //用户登陆回包
-	ID_SEARCH_USER_REQ = 1007, //用户搜索请求
-	ID_SEARCH_USER_RSP = 1008, //搜索用户回包
-	ID_ADD_FRIEND_REQ = 1009, //申请添加好友请求
-	ID_ADD_FRIEND_RSP = 1010, //申请添加好友回复
-	ID_NOTIFY_ADD_FRIEND_REQ = 1011,  //通知用户添加好友申请
-	ID_AUTH_FRIEND_REQ = 1013, //认证好友请求
-	ID_AUTH_FRIEND_RSP = 1014, //认证好友回复
-	ID_NOTIFY_AUTH_FRIEND_REQ = 1015, //通知用户认证好友申请
-	ID_TEXT_CHAT_MSG_REQ = 1017, //文本聊天信息请求
-	ID_TEXT_CHAT_MSG_RSP = 1018, //文本聊天信息回复
-	ID_NOTIFY_TEXT_CHAT_MSG_REQ = 1019, //通知用户文本聊天信息
-	ID_NOTIFY_OFF_LINE_REQ = 1021, //通知用户下线
-	ID_HEART_BEAT_REQ = 1023, //心跳请求
-	ID_HEARTBEAT_RSP = 1024, //心跳回复
-	ID_CREATE_PRIVATE_CHAT_REQ = 1025, //打开单聊会话, 服务端按需创建 thread
-	ID_CREATE_PRIVATE_CHAT_RSP = 1026, //返回 thread_id 与对方资料
-	ID_LOAD_CHAT_THREAD_REQ = 1027, //按 thread_id 游标拉会话列表
-	ID_LOAD_CHAT_THREAD_RSP = 1028, //会话列表与 load_more
-	ID_LOAD_CHAT_MSG_REQ = 1029, //按 message_id 游标拉会话消息
-	ID_LOAD_CHAT_MSG_RSP = 1030, //历史消息与 load_more
-	ID_IMG_CHAT_MSG_REQ = 1031, //图片聊天消息: 先落库, 资源随后上传
-	ID_IMG_CHAT_MSG_RSP = 1032, //图片聊天消息回执
-	ID_NOTIFY_IMG_CHAT_MSG_REQ = 1033, //通知接收方图片已上传完成, 可以下载
-	ID_RESOURCE_CHAT_MSG_REQ = 1034, //视频/文件消息: content 存文件名、大小与预览资源
-	ID_RESOURCE_CHAT_MSG_RSP = 1035, //视频/文件消息回执
-	ID_NOTIFY_RESOURCE_CHAT_MSG_REQ = 1036, //通知接收方视频/文件已上传, 等待手动下载
-	ID_UPDATE_PROFILE_REQ = 1045, //修改本人资料: 昵称、性别、个性签名
-	ID_UPDATE_PROFILE_RSP = 1046, //修改本人资料回包, 带更新后的完整字段
-	ID_UPDATE_FRIEND_REMARK_REQ = 1047, //修改好友备注与标签
-	ID_UPDATE_FRIEND_REMARK_RSP = 1048, //备注与标签修改回包
-	ID_GET_PROFILE_REQ = 1049, //按uid拉取好友最新资料(昵称/签名/头像/性别)
-	ID_GET_PROFILE_RSP = 1050, //最新资料回包
-	ID_NOTIFY_PROFILE_CHANGED = 1051, //好友资料变更推送(昵称/签名/头像/性别)
-	ID_MARK_READ_REQ = 1052, //上报已读位置
-	ID_MARK_READ_RSP = 1053, //已读上报回包
-	ID_NOTIFY_MSG_READ = 1054, //对端已读通知, 发送方据此把单勾改成双勾
-	ID_RECALL_MSG_REQ = 1055, //撤回自己发的消息
-	ID_RECALL_MSG_RSP = 1056, //撤回回包
-	ID_NOTIFY_MSG_RECALLED = 1057, //对端撤回通知
-	ID_DELETE_FRIEND_REQ = 1058, //删除好友（双向关系一起删，不通知对方）
-	ID_DELETE_FRIEND_RSP = 1059, //删除好友回包
-	ID_CREATE_GROUP_REQ = 1060, //创建群聊：群名 + 勾选的好友
-	ID_CREATE_GROUP_RSP = 1061, //创建结果，带回 thread_id 与群资料
-	ID_GET_GROUP_INFO_REQ = 1062, //拉群资料与成员列表
-	ID_GET_GROUP_INFO_RSP = 1063, //群资料、成员与我自己的群设置
-	ID_UPDATE_GROUP_REQ = 1064, //改群名/公告、改我在本群的昵称、免打扰
-	ID_UPDATE_GROUP_RSP = 1065, //群设置修改回包，带回生效后的值
-	ID_GROUP_MEMBER_OP_REQ = 1066, //群成员操作：邀请、移除、设/撤管理员、退群、解散
-	ID_GROUP_MEMBER_OP_RSP = 1067, //成员操作回包
-	ID_NOTIFY_GROUP_CHANGED = 1068, //群资料/成员/免打扰或被移出/解散的推送
-	ID_LOGOUT_REQ = 1069, //主动登出：释放租约并吊销令牌
-	ID_LOGOUT_RSP = 1070, //登出结果，客户端收到后关闭连接
+	//2xxx：连接、认证与保活
+	MSG_CHAT_LOGIN = 2001, //用户登陆
+	MSG_CHAT_LOGIN_RSP = 2002, //用户登陆回包
+	ID_HEART_BEAT_REQ = 2003, //心跳请求
+	ID_HEARTBEAT_RSP = 2004, //心跳回复
+	ID_LOGOUT_REQ = 2005, //主动登出：释放租约并吊销令牌
+	ID_LOGOUT_RSP = 2006, //登出结果，客户端收到后关闭连接
+	ID_NOTIFY_OFF_LINE_REQ = 2007, //通知用户下线（服务端推送，无响应）
+
+	//3xxx：用户搜索、好友关系与资料
+	ID_SEARCH_USER_REQ = 3001, //用户搜索请求
+	ID_SEARCH_USER_RSP = 3002, //搜索用户回包
+	ID_ADD_FRIEND_REQ = 3003, //申请添加好友请求
+	ID_ADD_FRIEND_RSP = 3004, //申请添加好友回复
+	ID_NOTIFY_ADD_FRIEND_REQ = 3005, //通知用户添加好友申请（推送）
+	ID_AUTH_FRIEND_REQ = 3006, //认证好友请求
+	ID_AUTH_FRIEND_RSP = 3007, //认证好友回复
+	ID_NOTIFY_AUTH_FRIEND_REQ = 3008, //通知用户认证好友申请（推送）
+	ID_DELETE_FRIEND_REQ = 3009, //删除好友（只删自己这一侧，不通知对方）
+	ID_DELETE_FRIEND_RSP = 3010, //删除好友回包
+	ID_UPDATE_FRIEND_REMARK_REQ = 3011, //修改好友备注与标签
+	ID_UPDATE_FRIEND_REMARK_RSP = 3012, //备注与标签修改回包
+	ID_GET_PROFILE_REQ = 3013, //按uid拉取好友最新资料（昵称/签名/头像/性别）
+	ID_GET_PROFILE_RSP = 3014, //最新资料回包
+	ID_NOTIFY_PROFILE_CHANGED = 3015, //好友资料变更推送（推送）
+	ID_UPDATE_PROFILE_REQ = 3016, //修改本人资料：昵称、性别、个性签名
+	ID_UPDATE_PROFILE_RSP = 3017, //修改本人资料回包，带更新后的完整字段
+
+	//4xxx：单聊会话、消息、已读与撤回
+	ID_CREATE_PRIVATE_CHAT_REQ = 4001, //打开单聊会话，服务端按需创建 thread
+	ID_CREATE_PRIVATE_CHAT_RSP = 4002, //返回 thread_id 与对方资料
+	ID_LOAD_CHAT_THREAD_REQ = 4003, //按复合游标拉会话列表
+	ID_LOAD_CHAT_THREAD_RSP = 4004, //会话列表与 load_more
+	ID_LOAD_CHAT_MSG_REQ = 4005, //按 message_id 游标拉会话消息
+	ID_LOAD_CHAT_MSG_RSP = 4006, //历史消息与 load_more
+	ID_TEXT_CHAT_MSG_REQ = 4007, //文本聊天信息请求
+	ID_TEXT_CHAT_MSG_RSP = 4008, //文本聊天信息回复
+	ID_NOTIFY_TEXT_CHAT_MSG_REQ = 4009, //通知用户文本聊天信息（推送）
+	ID_IMG_CHAT_MSG_REQ = 4010, //图片消息：先落库，资源随后上传
+	ID_IMG_CHAT_MSG_RSP = 4011, //图片消息回执
+	ID_NOTIFY_IMG_CHAT_MSG_REQ = 4012, //通知接收方图片已上传完成（推送）
+	ID_RESOURCE_CHAT_MSG_REQ = 4013, //视频/文件消息：content 存名称、大小与预览资源
+	ID_RESOURCE_CHAT_MSG_RSP = 4014, //视频/文件消息回执
+	ID_NOTIFY_RESOURCE_CHAT_MSG_REQ = 4015, //通知接收方视频/文件已上传（推送）
+	ID_MARK_READ_REQ = 4016, //上报已读位置
+	ID_MARK_READ_RSP = 4017, //已读上报回包
+	ID_NOTIFY_MSG_READ = 4018, //对端已读通知（推送）
+	ID_RECALL_MSG_REQ = 4019, //撤回自己发的消息
+	ID_RECALL_MSG_RSP = 4020, //撤回回包
+	ID_NOTIFY_MSG_RECALLED = 4021, //对端撤回通知（推送）
+
+	//5xxx：群聊资料、设置与成员管理
+	ID_CREATE_GROUP_REQ = 5001, //创建群聊：群名 + 勾选的好友
+	ID_CREATE_GROUP_RSP = 5002, //创建结果，带回 thread_id 与群资料
+	ID_GET_GROUP_INFO_REQ = 5003, //拉群资料与成员列表
+	ID_GET_GROUP_INFO_RSP = 5004, //群资料、成员与我自己的群设置
+	ID_UPDATE_GROUP_REQ = 5005, //改群名/公告、改我在本群的昵称、免打扰
+	ID_UPDATE_GROUP_RSP = 5006, //群设置修改回包
+	ID_GROUP_MEMBER_OP_REQ = 5007, //群成员操作：邀请、移除、设/撤管理员、退群、解散
+	ID_GROUP_MEMBER_OP_RSP = 5008, //成员操作回包
+	ID_NOTIFY_GROUP_CHANGED = 5009, //群资料/成员/被移出/解散的推送
 };
 
 #define USERTOKENPREFIX  "utoken_" //用户token的名字前缀，仅用于登录前的快速校验

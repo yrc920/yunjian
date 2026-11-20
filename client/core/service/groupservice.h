@@ -40,7 +40,7 @@ private:
     friend class Singleton<GroupService>;
     GroupService();
 
-    //1068：把资料、成员数、系统消息分别落到 UserMgr
+    //5009：把资料、成员数、系统消息分别落到 UserMgr
     void applyGroupChanged(const QJsonObject &data);
     void appendSystemMessage(qint64 thread_id, const QJsonObject &message);
 

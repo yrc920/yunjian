@@ -31,22 +31,7 @@ namespace net = boost::asio;            //from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl;       //from <boost/asio/ssl.hpp>
 using tcp = boost::asio::ip::tcp;       //from <boost/asio/ip/tcp.hpp>
 
-enum ErrorCodes {
-	Success = 0,
-	Error_Json = 1001, //Json解析错误
-	RPCFailed = 1002, //RPC请求错误
-	VerifyExpired = 1003, //验证码过期
-	VerifyCodeErr = 1004, //验证码错误
-	UserExist = 1005, //用户已经存在
-	PasswdErr = 1006, //注册时密码与确认密码不一致
-	EmailNotMatch = 1007, //重置密码时用户名与邮箱不匹配
-	PasswdUpFailed = 1008, //重置密码时写库失败
-	PasswdInvalid = 1009, //登录时邮箱与密码不匹配
-	VerifyTooFrequent = 1022, //验证码发送过于频繁
-	ServiceUnavailable = 1101, //服务暂时不可用（口令线程池排队已满），客户端可重试
-	TooManyRequests = 1105, //登录失败次数超过上限
-};
-
+#include "Protocol.h"
 #include "Defer.h"
 
 #define CODEPREFIX "code_"

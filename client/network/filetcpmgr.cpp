@@ -18,7 +18,7 @@ constexpr int FileHeadLen = 6; //2字节消息ID + 4字节包体长度
 constexpr int MaxFileLen = 64 * 1024; //与ResourceServer的MAX_FILE_LEN一致，两端切片必须同尺寸
 constexpr int MaxFileFrame = 128 * 1024; //与ResourceServer的MAX_MESSAGE_LEN一致（64KB 数据 + 帧头）
 constexpr int MaxCwnd = 8; //拥塞窗口：聊天图片最多8片在途，头像固定1片
-constexpr int ResourceFileNotExists = 1012; //服务器没有这次上传的进度，需要从第一片重来
+constexpr int ResourceFileNotExists = server_error::FileNotExists; //服务器没有这次上传的进度，需要从第一片重来
 
 QJsonObject parseObject(const QByteArray &data)
 {

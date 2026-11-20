@@ -54,7 +54,7 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFri
 	Status status = stub->NotifyAddFriend(&context, req, &rsp);
 
 	//使用Defer对象确保在函数结束时将Stub对象归还给连接池
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -86,7 +86,7 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyAuthFriend(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -99,7 +99,7 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
 }
 
 //资料变更推送: 与其它跨实例通知一样按实例名找连接池, 找不到或失败都回 RPCFailed,
-//调用方只记日志不重试——好友下次登录会从 1006 回包拿到最新资料
+//调用方只记日志不重试——好友下次登录会从 2002 回包拿到最新资料
 ProfileChangedRsp ChatGrpcClient::NotifyProfileChanged(std::string server_ip,
 	const ProfileChangedReq& req)
 {
@@ -116,7 +116,7 @@ ProfileChangedRsp ChatGrpcClient::NotifyProfileChanged(std::string server_ip,
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyProfileChanged(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -144,7 +144,7 @@ ChatEventRsp ChatGrpcClient::NotifyChatEvent(std::string server_ip, const ChatEv
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(DELIVERY_RPC_DEADLINE_MS));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyChatEvent(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -171,7 +171,7 @@ GroupEventRsp ChatGrpcClient::NotifyGroupEvent(std::string server_ip, const Grou
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(DELIVERY_RPC_DEADLINE_MS));
 	auto stub = pool->getConnection();
 	Status status = stub->NotifyGroupEvent(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -216,7 +216,7 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip,
 		message->set_fromuid(text.fromuid());
 		message->set_touid(text.touid());
     }
-	Defer defercon([&stub, this, &pool]() {
+	Defer defercon([&stub, &pool]() {
 		pool->returnConnection(std::move(stub));
 		});
 
@@ -231,7 +231,7 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip,
 
 
 ChatConPool::ChatConPool(size_t poolSize, std::string host, std::string port)
-	: poolSize_(poolSize), host_(host), port_(port), b_stop_(false)
+	: b_stop_(false), poolSize_(poolSize), host_(host), port_(port)
 {
 	for (size_t i = 0; i < poolSize_; ++i)
 	{

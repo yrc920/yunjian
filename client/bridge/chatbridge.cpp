@@ -143,7 +143,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 emit remarkStateChanged();
                 emit remarkSaved(ok, uid);
             });
-    //1050 的资料可能比本地缓存新，界面快照与标题按它重建一次
+    //3014 的资料可能比本地缓存新，界面快照与标题按它重建一次
     connect(profileService, &ProfileService::profileLoaded, this,
             [this](int uid) { refreshFriendSnapshot(uid); });
     //头像同步只影响个人资料页的一小块状态，不复用聊天列表的刷新信号
@@ -226,7 +226,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
         if (!_friendQuery.trimmed().isEmpty())
             rebuildFriendMatches();
 
-        //新好友第一次建会话：1025 之后 1026 才带回 thread_id。这里接住它，
+        //新好友第一次建会话：4001 之后 4002 才带回 thread_id。这里接住它，
         //否则会一直停在 thread_id=0 上，新消息只能留下最新一条预览
         if (_mode == ChatMode && _pane == ChatPage && !isGroup()
             && _currentUid > 0 && _currentThreadId <= 0) {
@@ -1136,7 +1136,7 @@ void ChatBridge::openChat(int uid)
     ProfileService::GetInstance()->requestProfile(uid);
 
     // 先从本地库装最近一页：切进去立刻有内容，网络只负责补增量。
-    // 这条会话本地没有消息时窗口为空，等 1029 回来再填
+    // 这条会话本地没有消息时窗口为空，等 4005 回来再填
     ChatService::GetInstance()->OpenWindow(_currentThreadId);
 
     // 消息模型切到这条会话，随后触发的 countChanged 会让界面滚到底
@@ -1344,7 +1344,7 @@ int ChatBridge::deleteMessages(const QVariantList &keys)
 }
 
 //上滑加载更早的消息：只读本地库，不走网络。
-//服务端 1029 只能按消息号往后翻，更早的历史在首次登录回填时已经落库
+//服务端 4005 只能按消息号往后翻，更早的历史在首次登录回填时已经落库
 void ChatBridge::loadOlderMessages()
 {
     if (_currentThreadId <= 0)
@@ -1678,7 +1678,7 @@ bool ChatBridge::sendParts(const QVariantList &parts)
         if (!QFileInfo(path).isFile())
             return false;
     }
-    //按编辑器顺序发送：文本分帧，图片先发 1031，视频/文件先发 1034；
+    //按编辑器顺序发送：文本分帧，图片先发 4010，视频/文件先发 4013；
     //回执到达后再把资源交给资源服务器。@ 名单只挂在文本段上
     QStringList sent_uploads; //整批成功后才删输入区的临时压缩图
     for (const QVariant &part : parts) {

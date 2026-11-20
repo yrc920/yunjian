@@ -17,13 +17,18 @@
 | `src/CServer.cpp` | TCP acceptor；`_sessions` 表；`ClearSession` 负责断连清理 |
 | `src/CSession.cpp` | 单会话：异步读头/体、发送队列、帧编解码 |
 | `src/MsgNode.cpp` | `RecvNode` / `SendNode` 消息节点 |
-| `src/LogicSystem.cpp` | 逻辑队列 + 单线程消费 + 消息处理函数注册表 |
+| `src/logic/LogicSystem.cpp` | 逻辑队列、4 分片消费、JSON 校验与 handler 注册表 |
+| `src/logic/LogicSystemSession.cpp` | 登录、登出、心跳 |
+| `src/logic/LogicSystemFriend.cpp` | 搜索、好友申请、同意、删除、备注、资料 |
+| `src/logic/LogicSystemChat.cpp` | 单聊消息、会话分页、已读、撤回 |
+| `src/logic/LogicSystemGroup.cpp` | 建群、群资料、成员管理、群广播 |
 | `src/UserMgr.cpp` | `uid → CSession` 映射（供本实例直投） |
 | `src/ChatServiceImpl.cpp` | gRPC 服务端：接收其他实例的转发并投递给本地会话 |
 | `src/ChatGrpcClient.cpp` | gRPC 客户端：向对端实例发起转发（Stub 池 5） |
 | `src/StatusGrpcClient.cpp` | StatusServer 客户端：租约、批量续租、释放、位置查询、实例注册 |
 | `src/SessionRouter.cpp` | 在线位置缓存：正缓存 30 秒、负缓存 5 秒，未命中回源 StatusServer |
-| `src/MysqlDao.cpp` + `common/{MysqlPool,MySqlSession}.cpp` | 数据访问与连接池 |
+| `src/dao/{MysqlDao,FriendDao,ChatDao,GroupDao}.cpp` | 数据访问：用户、好友、消息、群聊 |
+| `common/{MysqlPool,MysqlSession}.cpp` | 连接池与带 deadline 的同步门面 |
 
 ## 9.2 启动流程
 
@@ -119,20 +124,20 @@ flowchart LR
 
 | ID | 函数 | 说明 |
 | --- | --- | --- |
-| 1005 | `LoginHandler` | 校验 token、绑定会话、下发资料 |
-| 1007 | `SearchInfo` | 按 uid / 用户名搜索 |
-| 1009 | `AddFriendApply` | 好友申请 |
-| 1013 | `AuthFriendApply` | 同意好友申请 |
-| 1017 | `DealChatTextMsg` | 文本消息 |
-| 1031 | `DealChatImgMsg` | 图片消息：只落库，资源随后由客户端上传 |
-| 1033 | `CSession::NotifyImageRecv` | 服务端推送：图片已上传完成，接收方开始下载 |
-| 1034 | `DealResourceChatMsg` | 视频/文件消息：只落库，资源随后由客户端上传 |
-| 1036 | `CSession::NotifyResourceRecv` | 服务端推送：视频/文件已上传完成，接收方显示下载卡片 |
+| 2001 | `LoginHandler` | 校验 token、绑定会话、下发资料 |
+| 3001 | `SearchInfo` | 按 uid / 用户名搜索 |
+| 3003 | `AddFriendApply` | 好友申请 |
+| 3006 | `AuthFriendApply` | 同意好友申请 |
+| 4007 | `DealChatTextMsg` | 文本消息 |
+| 4010 | `DealChatImgMsg` | 图片消息：只落库，资源随后由客户端上传 |
+| 4012 | `CSession::NotifyImageRecv` | 服务端推送：图片已上传完成，接收方开始下载 |
+| 4013 | `DealResourceChatMsg` | 视频/文件消息：只落库，资源随后由客户端上传 |
+| 4015 | `CSession::NotifyResourceRecv` | 服务端推送：视频/文件已上传完成，接收方显示下载卡片 |
 
 出队后释放队列锁，数据库/RPC 不持有队列锁；单条请求异常会关闭对应连接，不终止逻辑线程。
 各 handler 用 `Defer`（析构时执行 lambda）处理正常业务分支的回包。
 
-## 9.5 登录（1005）
+## 9.5 登录（2001）
 
 ```mermaid
 flowchart TB
@@ -147,25 +152,25 @@ flowchart TB
     G -->|失败| E3["error=1101/1104/1105 return<br/>旧设备不受影响"]
     G --> H["session->SetEpoch(epoch) / SetUserId(uid)"]
     H --> J["UserMgr::SetUserSession(uid, session)"]
-    J --> K["回包 [1006]"]
+    J --> K["回包 [2002]"]
 ```
 
 > 租约申请放在资料加载之后：新设备登录失败不能把旧设备踢掉。
 > 登录只申请租约，在线状态由 StatusServer 维护；同一连接不能重复登录或切换 uid。
 > 回包前若连接已关闭，会把刚拿到的租约异步释放，避免占用到 TTL 到期。
 
-### 登出（1069）
+### 登出（2005）
 
-主动退出时客户端发 1069（空对象）。`LogoutHandler` 按 `uid + session_id + epoch`
+主动退出时客户端发 2005（空对象）。`LogoutHandler` 按 `uid + session_id + epoch`
 调 `StatusServer::LogoutSession`，只有当前租约的持有者才能同时删除 `sess_<uid>` 与
-`utoken_<uid>`；被顶掉的旧连接调用它不会影响新会话。随后回 1070，摘除本地登记并延迟
+`utoken_<uid>`；被顶掉的旧连接调用它不会影响新会话。随后回 2006，摘除本地登记并延迟
 200ms 关闭连接。状态服务不可用时本地照常下线，令牌由 7 天 TTL 兜底。
 
 普通掉线、心跳超时、被踢下线都不走这条路径，只释放租约，不吊销令牌。
 
 ## 9.6 消息路由：本实例 vs 跨实例
 
-三个需要投递给他人的 handler（1009 / 1013 / 1017）共用同一套判定：
+三个需要投递给他人的 handler（3003 / 3006 / 4007）共用同一套判定：
 
 ```cpp
 std::string instance;
@@ -212,7 +217,7 @@ flowchart TB
 
 ## 9.7 好友相关流程
 
-### 申请（1009）
+### 申请（3003）
 
 1. 解析 `{uid, applyname, bakname, touid, tags}`，`applyname` 是申请留言（为空时用默认句）；
 2. `MysqlDao::AddFriendApply(uid, touid, welcome, bakname, tags)`：把申请留言写 `friend_apply.descs`、
@@ -223,34 +228,34 @@ flowchart TB
 
 登录回包的 `apply_list` 同时包含两个方向：`GetApplyList` 取别人申请我的，`GetSentApplyList` 取我发出去的，后者带 `direction=1`，客户端在「新的朋友」里显示为等待验证。两条 SQL 都关联 `user` 表并取出 `user.icon`，申请人的头像变化后重新登录即可拿到新文件名，再由 ResourceServer 下载成本地缓存。
 
-### 同意（1013）
+### 同意（3006）
 
 1. 解析 `{fromuid, touid, back}`；
 2. `AddFriend(uid, touid, back_name, my_tags, apply_desc, reverse_back, reverse_tags)` 开启事务并锁定对方向自己的好友申请，无申请则失败；
    `reverse_back` 与 `reverse_tags` 是申请方当初填的备注与分组，随回包/通知带回给申请方，避免重新登录才看到；
 3. 同一事务内把申请状态置 1，再双向插入 `friend` 表（`INSERT IGNORE`）；两条插入固定按 `self_id` 升序执行，
    两个用户同时互相同意时不会出现 AB/BA 的锁顺序；
-4. 创建或复用 `private_chat` 线程；线程创建失败不回滚好友关系，聊天在首次打开/发送时再建；
+4. 创建或复用 `conversation` 单聊线程；线程创建失败不回滚好友关系，聊天在首次打开/发送时再建；
 5. `AddFriend` 在事务内读取 `friend_apply.descs` 并返回给逻辑层；逻辑层随后按“申请方留言 → 同意方默认句”写入两条 `chat_message`，申请方在前；欢迎消息写失败只记录日志，不回滚好友关系；
-6. 回 1014（附对方资料、`thread_id`、`welcome_msgs`）；
-7. 通知对方 1015（本实例直投 / 跨实例 `NotifyAuthFriend`），带同样的 `thread_id`、
+6. 回 3007（附对方资料、`thread_id`、`welcome_msgs`）；
+7. 通知对方 3008（本实例直投 / 跨实例 `NotifyAuthFriend`），带同样的 `thread_id`、
    申请方视角的 `welcome_msgs`，以及 `back` 与 `tags`（申请方当初填的备注与分组）。
 
 > 好友关系写库失败才回滚并返回错误。欢迎消息属于附加内容，写失败只记录日志，不回滚好友关系。
 
-### 资料、备注与标签（1045 / 1047 / 1049）
+### 资料、备注与标签（3016 / 3011 / 3013）
 
 三个入口都以**会话绑定的 uid** 作为操作者，请求体里不带 uid/fromuid，客户端无法修改他人数据。
 
-**1045 修改本人资料** `{nick, sex, desc}`：
+**3016 修改本人资料** `{nick, sex, desc}`：
 
 1. `RequestValidation` 先校验三个字段类型与 `sex ∈ [0,2]`；
 2. handler 按 UTF-8 字符数再校验长度（昵称 20、签名 60），避免绕过界面写入超长内容；
 3. `MysqlDao::UpdateUserProfile` 一次更新 `nick / sex / desc`（`desc` 是保留字，SQL 里加反引号）；
 4. 重新读库，用完整资料覆盖 `ubaseinfo_<uid>` 与 `nameinfo_<name>` 两份缓存；
-5. 回 1046，带最终落库值，客户端直接刷新本地资料。
+5. 回 3017，带最终落库值，客户端直接刷新本地资料。
 
-**1047 修改好友备注与标签** `{touid, remark, tags}`：
+**3011 修改好友备注与标签** `{touid, remark, tags}`：
 
 1. 备注长度上限与昵称一致（20 字符），允许空串表示清除；标签在 `RequestValidation` 里已校验
    数量（≤10）与单个长度（≤12 字符），这里整组序列化成 JSON 数组；
@@ -260,11 +265,11 @@ flowchart TB
 3. 返回 1 已更新 / 0 不是好友 / -1 数据库错误，分别映射为成功、`UidInvalid(1011)`、`RPCFailed(1002)`；
 4. 只写自己这一行，不通知对方；回包带回服务端确认后的备注与标签。
 
-**1009 申请时带标签**：`tags` 与 `back_name` 一起写 `friend_apply`。同意时 `AddFriend` 在同一事务里
+**3003 申请时带标签**：`tags` 与 `back_name` 一起写 `friend_apply`。同意时 `AddFriend` 在同一事务里
 读回这两列，按方向分别写入两条 `friend` 记录——申请方的备注与标签写进申请方那行，
 同意方自己填的写进同意方那行。申请被拒绝时标签留在 `friend_apply` 里，不会出现在任何好友列表。
 
-**1049 拉取好友最新资料** `{touid}`：走 `GetBaseInfo`（优先读 `ubaseinfo_`，未命中查库回填），
+**3013 拉取好友最新资料** `{touid}`：走 `GetBaseInfo`（优先读 `ubaseinfo_`，未命中查库回填），
 只回 `uid / name / nick / desc / sex / icon`，不含邮箱与密码。不要求对方在线或已是好友。
 客户端在打开会话与资料页时各拉一次，用来刷新昵称和个性签名。
 
@@ -272,23 +277,23 @@ flowchart TB
 > 先查 `information_schema.columns`，缺列才 `ALTER TABLE ... ADD COLUMN`。启动流程里预热
 > 由单例在首次使用时建立连接池（只建一条，其余后台补齐），不要在启动阶段连数据库。
 
-### 资料变更推送（1051）
+### 资料变更推送（3015）
 
 改资料的入口有两个，最后汇到同一个推送方法 `LogicSystem::NotifyFriendsProfileChanged(uid)`：
 
 | 入口 | 触发点 | 路径 |
 | --- | --- | --- |
-| 客户端改昵称/签名（1045） | `UpdateProfile` 写库并刷缓存后 | 逻辑层直接调用 |
-| 客户端换头像（1043） | `FileWorker::UpdateAvatarInfo` 写完 `user.icon` 后 | 资源服务器 gRPC `BroadcastProfile` → 用户所在实例 |
+| 客户端改昵称/签名（3016） | `UpdateProfile` 写库并刷缓存后 | 逻辑层直接调用 |
+| 客户端换头像（6007） | `FileWorker::UpdateAvatarInfo` 写完 `user.icon` 后 | 资源服务器 gRPC `BroadcastProfile` → 用户所在实例 |
 
 推送流程：
 
 1. 从 `user` 表读一次完整资料，保证推送内容与落库值一致（头像可能是资源服务器写的）；
 2. `GetFriendIds` 取好友 uid 列表，`SessionRouter::LookupBatch` 一次查出在线位置，离线好友跳过；
-3. 在本实例的好友直接 `session->Send(1051)`；
+3. 在本实例的好友直接 `session->Send(3015)`；
 4. 跨实例的好友按**目标实例分组**，一个实例只发一次 `NotifyProfileChanged`，请求里带
    `fromuid`、这批 `touids` 与四个字段；对端只投递给本实例在线的那几个；
-5. 推送不写库、不重试：失败时好友下次登录从 1006 回包拿到最新资料。
+5. 推送不写库、不重试：失败时好友下次登录从 2002 回包拿到最新资料。
 
 > 推送放在回包之前同步执行。好友数量是个人量级，跨实例 RPC 有 3 秒截止时间，
 > 正常情况下用户感知不到；如果将来好友规模变大，应改为投递到逻辑队列异步分发。
@@ -297,49 +302,49 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 `NotifyProfileChanged`（实例间批量转发）。两者都在 `services/ChatServer` 与
 `services/ResourceServer` 的 `ChatGrpcClient` 中对接。
 
-**单聊会话创建（1025 / 首次发消息）**：先普通查询已有 `private_chat`，没有则直接插入
-`chat_thread` + `private_chat`，由 `uk_private_users` 唯一键决定谁创建成功；撞键的一方回滚后
+**单聊会话创建（4001 / 首次发消息）**：先普通查询已有 `conversation.dm_key`，没有则直接插入
+`conversation` 与两行 `conversation_member`，由 `uk_conversation_dm` 唯一键决定谁创建成功；撞键的一方回滚后
 读对方已提交的 `thread_id`。这里不能用 `SELECT ... FOR UPDATE` 占位——查不到行时加的是间隙锁，
 随后的 INSERT 需要插入意向锁，两个并发请求会互相等待并被 MySQL 判定为死锁（1213）。
 
-## 9.8 文本消息（1017）与会话同步
+## 9.8 文本消息（4007）与会话同步
 
 1. 解析 `{fromuid, touid, thread_id, text_array:[{content, msgid}]}`；
 2. 先按 `thread_id` 找到/创建单聊线程，把消息写入 `chat_message`，拿到 `message_id`；
-3. 构造 1018 回执：`thread_id`、`message_id`、`time`，发送方状态 1；写库失败时状态 2；
-4. `SessionRouter::Lookup(touid)` → 本实例直投 1019 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
-5. 目标离线时消息已持久化，不推送；下次登录按 1027/1029 同步。
+3. 构造 4008 回执：`thread_id`、`message_id`、`time`，发送方状态 1；写库失败时状态 2；
+4. `SessionRouter::Lookup(touid)` → 本实例直投 4009 / 跨实例 `NotifyTextChatMsg`，接收方状态 3；
+5. 目标离线时消息已持久化，不推送；下次登录按 4003/4005 同步。
 
 `time` 是 `chat_message.created_at` 的 UNIX 秒值。写入不显式传时间，插入后按 `message_id`
 读回：重发同一条（唯一键命中）时拿到的是库里原来的时间。跨实例转发把同一个值写入
 `TextChatData.time`，接收方不会因为转发延迟看到偏晚的时间。
 
-### 已读与撤回（1052 / 1055）
+### 已读与撤回（4016 / 4019）
 
 两个请求都不带操作者字段，身份只认会话；`RequestValidation` 只校验字段类型与正数，
 归属校验在 DAO 里做。
 
-**已读（1052）**：
+**已读（4016）**：
 
-1. 按 `thread_id` 查 `private_chat`，确认请求者属于该会话，同时取出对方 uid；
-2. `UPDATE chat_message SET is_read = 1 WHERE thread_id = ? AND recv_id = ? AND message_id <= ? AND is_read = 0`；
+1. 按 `thread_id` 查 `conversation_member`，确认请求者属于该单聊，同时取出对方 uid；
+2. `UPDATE conversation_member SET last_read_message_id = ? WHERE thread_id = ? AND uid = ? AND last_read_message_id < ?`；
 3. 受影响行数为 0 说明没有新消息被标记，直接回包、不打扰对方——否则每次切会话都会推一条通知；
-4. 有变化时推 1054：本实例直投，跨实例走 `NotifyChatEvent(event=1)`。
+4. 有变化时推 4018：本实例直投，跨实例走 `NotifyChatEvent(event=1)`。
 
-**撤回（1055）**：
+**撤回（4019）**：
 
 1. 按 `message_id` 读记录，校验 `sender_id` 是本人、`recalled = 0`、`created_at` 在
    `RECALL_WINDOW_SECONDS`（120 秒）内；
 2. `UPDATE chat_message SET recalled = 1, content = '', msg_type = 0 WHERE message_id = ? AND recalled = 0`；
-3. 回 1056 给自己，推 1057 给对方（`NotifyChatEvent(event=2)`）。
+3. 回 4020 给自己，推 4021 给对方（`NotifyChatEvent(event=2)`）。
 
 `thread_id` 一律以库里的记录为准，客户端传错也不会把通知发到别的会话。对方离线时不推送，
 状态已经在库里，下次拉历史由 `read` / `recalled` 字段还原。
 
 > 跨实例统一走 `NotifyChatEvent`，一个 RPC 带 `fromuid / touid / thread_id / message_id / event`，
-> 对端按 `event` 组装 1054 或 1057。这样已读与撤回不需要两套转发通道。
+> 对端按 `event` 组装 4018 或 4021。这样已读与撤回不需要两套转发通道。
 
-### 删除好友（1058）
+### 删除好友（3009）
 
 `DeleteFriend` 只删 `self_id = 自己 AND friend_id = 对方` 这一行，以及自己发出的申请记录。
 对方的行不动、也不推任何通知：他那边好友列表照旧，会话照旧，只是消息发不出去。
@@ -360,20 +365,20 @@ gRPC 侧新增两个方法：`BroadcastProfile`（资源服务器 → 任意实�
 
 申请列表按 `friend_apply.id DESC` 返回，客户端首屏与新通知都保持"最新的在上"。
 
-图片消息（1031）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
-（`msg_type=1`、`status=0`、`content=资源文件名`），回 1032 后结束。
+图片消息（4010）只做前半段：校验字段与好友关系，把消息写入 `chat_message`
+（`msg_type=1`、`upload_state=0`、`content=资源文件名`），回 4011 后结束。
 资源全部落盘后，ResourceServer 向 StatusServer 查询接收方所在实例，通过 gRPC
 `NotifyImageUploaded` 把 `message_id`、双方 uid、`thread_id`、资源名与 `client_msg_id` 交给 ChatServer：
-`ChatServiceImpl` 先更新 `chat_message.status=1`（带 `sender` 限定），如果接收方在本实例在线，
-再调用 `CSession::NotifyImageRecv` 推送 1033。接收方离线时只更新状态，下次登录按历史消息同步；
+`ChatServiceImpl` 先更新 `chat_message.upload_state=1`（带 `sender` 限定），如果接收方在本实例在线，
+再调用 `CSession::NotifyImageRecv` 推送 4012。接收方离线时只更新状态，下次登录按历史消息同步；
 ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 
-视频/文件消息（1034）与图片同一条链路，区别在落库字段：`msg_type` 为 2/3，
+视频/文件消息（4013）与图片同一条链路，区别在落库字段：`msg_type` 为 2/3，
 `content` 存元数据 JSON（原始文件名、字节数、资源名、首帧资源名），原始文件名不参与路径拼接。
-回 1035 后由客户端先传首帧、再传资源本体；ResourceServer 完成同样的 gRPC 通知，
-`ChatServiceImpl::NotifyResourceUploaded` 更新状态后推送 1036（离线时只更新数据库）。
+回 4014 后由客户端先传首帧、再传资源本体；ResourceServer 完成同样的 gRPC 通知，
+`ChatServiceImpl::NotifyResourceUploaded` 更新状态后推送 4015（离线时只更新数据库）。
 
-登录同步使用 1027（会话游标）和 1029（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 尚未接入，当前每次登录从 `message_id=0` 拉取。历史消息带 `msg_type`：图片的 `content` 是资源文件名，视频/文件是元数据 JSON，客户端解析后渲染卡片，不自动下载本体。
+登录同步使用 4003（会话游标）和 4005（`thread_id + message_id > last`，升序，`load_more`）；客户端按最后一条 `message_id` 继续翻页。客户端本地 SQLite 已接入：登录时按每个会话的 `sync_cursor` 拉增量，打开会话再从本地库装载最近一页。历史消息带 `msg_type`：图片的 `content` 是资源文件名，视频/文件是元数据 JSON，客户端解析后渲染卡片，不自动下载本体。
 
 ## 9.9 多实例部署
 
@@ -401,10 +406,10 @@ ResourceServer 找不到实例或 RPC 失败时直接写库兜底。
 ## 9.11 已知问题
 
 - `StatusGrpcClient` 已链接但未调用；若启用可改为由 StatusServer 统一校验 token。
-- `GetBaseInfo` 在 `LogicSystem`、`ChatServiceImpl`、`ChatGrpcClient` 三处重复。
+- 用户资料缓存已收敛到 `UserCache`，登录、搜索、资料页与跨实例通知共用同一份读写逻辑。
 - 断连时检查 session 标识后清理位置键；Redis 不可用或锁获取失败时仍可能残留。
-- 心跳阈值 20 秒、扫描周期 60 秒，半开连接最多接近 80 秒才回收，计数更新存在延迟。
+- 心跳阈值 20 秒、扫描周期 30 秒，半开连接最多约 50 秒才回收，计数更新存在延迟。
 - 消息已落库；跨实例 RPC 失败时本次实时投递失败，但消息不会丢，需等下次登录同步，没有自动重试。
 - 好友操作仍无重试、无补偿；欢迎消息写失败只记录日志。
-- 昵称/头像变更不向好友广播，对方要等下一次登录或重新拉取才看到新资料。
-- 资料缓存没有 TTL，只靠 1045 与头像上传两条写入路径主动覆盖。
+- 昵称/头像变更会推给在线好友（3015）；离线好友下次登录从 2002 或 3014 拿最新值。
+- 资料缓存 TTL 1 小时，资料修改与头像上传会主动覆盖。

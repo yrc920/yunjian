@@ -30,7 +30,7 @@ public:
     void OnSessionReady(); //聊天登录完成，可以拉取缺失头像
 
     void UploadAvatar(const QString &path); //裁剪器保存后的PNG路径
-    //聊天资源（图片/视频/文件，以及视频首帧）走通用上传通道(1037)；
+    //聊天资源（图片/视频/文件，以及视频首帧）走通用上传通道(6001)；
     //messageId/touid/threadId/uniqueId 用于服务器最后一片写完后回写消息状态，首帧传0
     //threadType: 1 单聊 / 2 群聊；群聊的 touid 为 0，资源服务器按 thread_type 广播
     bool UploadChatResource(const QString &name, const QString &path, const QString &md5,

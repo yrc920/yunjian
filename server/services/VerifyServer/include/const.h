@@ -25,13 +25,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
-//验证码服务返回的错误码，由 GateServer 原样透传给客户端
-enum VerifyCodes {
-	Success = 0,      //验证码已发送
-	RedisErr = 1,     //读写 Redis 失败
-	Exception = 2,    //处理过程异常
-	SendMailErr = 3   //发送邮件失败
-};
+#include "Protocol.h"
 
 //Redis 中验证码键的前缀，完整键为 code_<email>
 #define CODE_PREFIX "code_"

@@ -88,9 +88,11 @@ bool MysqlDao::CanAccessResource(int requester, int owner, const std::string& na
 		if (!icon.isNull())
 			return true;
 
-		//其余资源要求双方至少共处一个会话：单聊两人各一行成员记录，群聊同 thread_id
+		//其余资源要求双方至少共处一个仍然有效的会话：
+		//单聊两人各一行成员记录，群聊同 thread_id；已解散的群不再放行
 		auto shared = con->sql(
 			"SELECT 1 FROM conversation_member mine "
+			"JOIN conversation c ON c.thread_id = mine.thread_id AND c.state = 0 "
 			"JOIN conversation_member peer ON peer.thread_id = mine.thread_id "
 			"WHERE mine.uid = ? AND peer.uid = ? LIMIT 1")
 			.bind(requester).bind(owner).execute().fetchOne();
@@ -102,7 +104,7 @@ bool MysqlDao::CanAccessResource(int requester, int owner, const std::string& na
 	}
 }
 
-bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int status)
+bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int upload_state)
 {
 	auto con = pool_->Acquire();
 	if (!con)
@@ -110,9 +112,10 @@ bool MysqlDao::UpdateChatMessageStatus(long long message_id, int sender, int sta
 
 
 	try {
-		//gRPC 不可用时的兜底路径，同样带上 sender 限定
-		con->sql("UPDATE chat_message SET status = ? WHERE message_id = ? AND sender_id = ?")
-			.bind(status).bind(static_cast<int64_t>(message_id)).bind(sender).execute();
+		//gRPC 不可用时的兜底路径，同样带上 sender 限定。
+		//列名是 upload_state：status 只存在于客户端消息模型，库里没有这一列
+		con->sql("UPDATE chat_message SET upload_state = ? WHERE message_id = ? AND sender_id = ?")
+			.bind(upload_state).bind(static_cast<int64_t>(message_id)).bind(sender).execute();
 		return true;
 	}
 	catch (MysqlError& e) {

@@ -89,14 +89,12 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context,
 		rtvalue["welcome_msgs"].append(item);
 	}
 
-	std::string base_key = USER_BASE_INFO + std::to_string(fromuid);
-	auto user_info = std::make_shared<UserInfo>();
-	bool b_info = usercache::GetBaseInfo(base_key, fromuid, user_info);
-	if (b_info) {
-		rtvalue["name"] = user_info->name;
-		rtvalue["nick"] = user_info->nick;
-		rtvalue["icon"] = user_info->icon;
-		rtvalue["sex"] = user_info->sex;
+	UserInfo user_info;
+	if (usercache::Get(fromuid, user_info)) {
+		rtvalue["name"] = user_info.name;
+		rtvalue["nick"] = user_info.nick;
+		rtvalue["icon"] = user_info.icon;
+		rtvalue["sex"] = user_info.sex;
 	}
 	else {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -263,7 +261,7 @@ Status ChatServiceImpl::NotifyImageUploaded(ServerContext* context,
 }
 
 //资源服务器换完头像只知道 uid, 不知道好友列表: 交给逻辑层查好友并按实例分发。
-//这条路径与客户端改资料(1045)汇合在同一个推送方法里, 头像和昵称走同一套通知。
+//这条路径与客户端改资料(3016)汇合在同一个推送方法里, 头像和昵称走同一套通知。
 Status ChatServiceImpl::BroadcastProfile(ServerContext* context,
     const BroadcastProfileReq* request, BroadcastProfileRsp* response)
 {

@@ -28,6 +28,18 @@ public:
 	//处理函数显式设定状态码（健康检查失败时回 503），HandleReq 不再覆盖
 	void SetResult(http::status status);
 
+	//请求体与 JSON 回包：入口处理器只依赖这两个方法，
+	//不必为了拼响应而成为 HttpConnection 的友元
+	std::string RequestBody() const
+	{
+		return beast::buffers_to_string(_request.body().data());
+	}
+	void SetJsonResponse(const std::string& body)
+	{
+		_response.set(http::field::content_type, "application/json");
+		beast::ostream(_response.body()) << body;
+	}
+
 private:
 	void DoRead(); //按连接类型发起异步读
 	void DoWrite(); //按连接类型发起异步写

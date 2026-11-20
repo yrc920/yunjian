@@ -1304,7 +1304,7 @@ void UserMgr::AppendChatThreads(const QJsonArray &threads)
 }
 
 //把本地库装回内存：好友、群、成员、会话映射与每条会话的预览。
-//这一步在 1006 之前执行，网络回来之前列表就已经有内容，不必等服务端逐个下发
+//这一步在 2002 之前执行，网络回来之前列表就已经有内容，不必等服务端逐个下发
 void UserMgr::RestoreFromCache()
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -1340,7 +1340,7 @@ void UserMgr::RestoreFromCache()
         _group_list.push_back(group);
     }
 
-    //成员整表读回：气泡上的发送者名字、@ 候选与群昵称都靠它，不必等 1063
+    //成员整表读回：气泡上的发送者名字、@ 候选与群昵称都靠它，不必等 5004
     for (const auto &item : store->LoadMembers()) {
         auto group = _group_map.value(item.thread_id);
         if (!group)
@@ -2266,14 +2266,14 @@ void UserMgr::UpsertGroupThread(const QJsonObject &item)
     emit UnreadChanged();
 }
 
-//群资料：名称、公告、我的角色与免打扰。1063 与 1068 info 共用这一条路径
+//群资料：名称、公告、我的角色与免打扰。5004 与 5009 info 共用这一条路径
 void UserMgr::ApplyGroupProfile(const QJsonObject &group_json)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
     const qint64 thread_id = group_json.value("thread_id").toVariant().toLongLong();
     auto group = _group_map.value(thread_id);
     if (!group) {
-        //收到未知群的资料（刚被邀请）：先建对象，成员列表由后续 1063 补齐
+        //收到未知群的资料（刚被邀请）：先建对象，成员列表由后续 5004 补齐
         group = std::make_shared<GroupInfo>(thread_id);
         _group_map[thread_id] = group;
         _group_list.push_back(group);

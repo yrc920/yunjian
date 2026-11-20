@@ -29,8 +29,7 @@ int MysqlDao::RegUser(const std::string& name, const std::string& email, const s
 	if (!con)
 		return -1; //池等待超时或已停止
 	try {
-		//name 与 email 都有唯一键：先查一次给出明确结果，并发由唯一键兜底。
-		//原实现依赖 reg_user 存储过程里的 user_id 计数表，多一次写和一张表
+		//name 与 email 都有唯一键：先查一次给出明确结果，并发由唯一键兜底
 		auto exists = con->sql(
 			"SELECT 1 FROM user WHERE name = ? OR email = ? LIMIT 1")
 			.bind(name).bind(email).execute().fetchOne();
@@ -74,53 +73,46 @@ bool MysqlDao::Ping()
 	}
 }
 
-bool MysqlDao::CheckEmail(const std::string& name, const std::string& email) {
-	auto con = pool_->Acquire(); //从连接池中获取一个可用的MySQL会话对象
+bool MysqlDao::CheckEmail(const std::string& name, const std::string& email, bool& db_error) {
+	db_error = false;
+	auto con = pool_->Acquire();
+	if (!con) {
+		db_error = true;
+		return false;
+	}
 	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
-		if (!con)
-			return false;
-
-		//执行查询语句(查询指定用户名的邮箱地址)
 		auto res = con->sql("SELECT email FROM user WHERE name = ?")
 			.bind(name).execute();
 
 		auto row = res.fetchOne();
 		//用户名不存在时不能返回 true：否则 /reset_pwd 会给人"重置成功"的假象，
-		//实际 UpdatePwd 影响 0 行。这里按"不匹配"处理，与密码错误同一个出口。
-		if (row.isNull()) {
+		//实际 UpdatePwd 影响 0 行。这里按"不匹配"处理，与邮箱错误同一个出口。
+		if (row.isNull())
 			return false;
-		}
-		auto email_in_db = row[0].get<std::string>();
-		//如果查询结果中的email与输入的email不匹配, 则说明用户名和邮箱不匹配, 返回false
-		return email == email_in_db;
+		return email == row[0].get<std::string>();
 	}
 	catch (MysqlError& e) {
+		db_error = true;
 		LOG_ERROR << "mysql error: " << e.what();
 		return false;
 	}
 }
 
 bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
-	auto con = pool_->Acquire(); //从连接池中获取一个可用的MySQL会话对象
+	//先算哈希再借连接：Argon2 单次几十毫秒，不能占着池连接做纯 CPU 计算
+	const auto stored_pwd = PasswordHash::Hash(newpwd);
+	if (stored_pwd.empty())
+		return false;
+
+	auto con = pool_->Acquire();
+	if (!con)
+		return false;
 	try {
-		//如果连接池返回空指针, 则说明连接池已停止, 直接返回false
-		if (!con)
-			return false;
-
-		//密码以哈希形式落库, 数据库中不出现明文
-		auto stored_pwd = PasswordHash::Hash(newpwd);
-		if (stored_pwd.empty()) {
-			return false;
-		}
-
-		//执行更新语句(更新指定用户名的密码)
 		auto res = con->sql("UPDATE user SET pwd = ? WHERE name = ?")
 			.bind(stored_pwd).bind(name).execute();
 
 		//用户名不存在时 affected rows 为 0，不能把"没人被更新"报成成功
-		const bool updated = res.getAffectedItemsCount() > 0;
-		return updated;
+		return res.getAffectedItemsCount() > 0;
 	}
 	catch (MysqlError& e) {
 		LOG_ERROR << "mysql error: " << e.what();
@@ -131,39 +123,50 @@ bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
 bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserInfo& userInfo,
 	bool& db_error) {
 	db_error = false;
-	auto con = pool_->Acquire(); //从连接池中获取一个可用的MySQL会话对象
-	
-	//使用RAII机制确保无论函数如何退出, 都能正确归还MySQL会话对象给连接池, 避免资源泄漏
 
-	try {
-		//连接池超时或数据库不可用：这是服务端故障，不是密码错误
+	//查询与校验分开：连接只包住取哈希的那一次往返，Argon2 在连接归还后执行。
+	//否则一次登录会把池里的连接按住几十毫秒，并发登录时池很快被耗尽
+	std::string stored_pwd;
+	{
+		auto con = pool_->Acquire();
 		if (!con) {
 			db_error = true;
 			return false;
 		}
+		try {
+			auto res = con->sql("SELECT uid, name, pwd FROM user WHERE email = ?")
+				.bind(email).execute();
 
-		//执行查询语句(查询指定邮箱的用户信息, 显式列出列以便按索引取值)
-		auto res = con->sql("SELECT uid, name, pwd, email FROM user WHERE email = ?")
-			.bind(email).execute();
+			auto row = res.fetchOne();
+			//未查到该邮箱对应的用户, 按密码不匹配处理
+			if (row.isNull())
+				return false;
 
-		auto row = res.fetchOne();
-		//未查到该邮箱对应的用户, 按密码不匹配处理
-		if (row.isNull())
+			userInfo.uid = row[0].get<int>();
+			userInfo.name = row[1].get<std::string>();
+			userInfo.email = email;
+			stored_pwd = row[2].get<std::string>();
+			userInfo.pwd = stored_pwd;
+		}
+		catch (MysqlError& e) {
+			//查询本身失败（连接断开、SQL 错误）属于服务端故障
+			db_error = true;
+			LOG_ERROR << "mysql error: " << e.what();
 			return false;
+		}
+	}
 
-		std::string origin_pwd = row[2].get<std::string>(); //第2列为pwd
-		userInfo.name = row[1].get<std::string>();
-		userInfo.email = email;
-		userInfo.uid = row[0].get<int>();
-		userInfo.pwd = origin_pwd;
+	const bool valid = PasswordHash::Verify(pwd, stored_pwd);
+	if (!valid)
+		return false;
 
-		//库中 pwd 为 Argon2id 哈希串, 直接校验
-		const bool valid = PasswordHash::Verify(pwd, origin_pwd);
-		//旧账号仍可能是 256 MiB / 3 次的哈希：登录成功后顺手升级到当前参数，
-		//只做一次额外写入；升级失败不影响本次登录
-		if (valid && PasswordHash::NeedsRehash(origin_pwd)) {
-			const auto upgraded = PasswordHash::Hash(pwd);
-			if (!upgraded.empty()) {
+	//旧账号仍可能是 256 MiB / 3 次的哈希：登录成功后顺手升级到当前参数。
+	//升级是附加动作，拿不到连接或写失败都不影响本次登录
+	if (PasswordHash::NeedsRehash(stored_pwd)) {
+		const auto upgraded = PasswordHash::Hash(pwd);
+		if (!upgraded.empty()) {
+			auto con = pool_->Acquire();
+			if (con) {
 				try {
 					con->sql("UPDATE user SET pwd = ? WHERE uid = ?")
 						.bind(upgraded).bind(userInfo.uid).execute();
@@ -173,12 +176,6 @@ bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 				}
 			}
 		}
-		return valid;
 	}
-	catch (MysqlError& e) {
-		//查询本身失败（连接断开、SQL 错误）属于服务端故障
-		db_error = true;
-		LOG_ERROR << "mysql error: " << e.what();
-		return false;
-	}
+	return true;
 }
