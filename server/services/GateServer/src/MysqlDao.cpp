@@ -98,6 +98,25 @@ bool MysqlDao::CheckEmail(const std::string& name, const std::string& email, boo
 	}
 }
 
+//按用户名取 uid：重置密码成功后吊销访问令牌，账号不存在返回 0
+int MysqlDao::GetUidByName(const std::string& name)
+{
+	auto con = pool_->Acquire();
+	if (!con)
+		return 0;
+	try {
+		auto row = con->sql("SELECT uid FROM user WHERE name = ?")
+			.bind(name).execute().fetchOne();
+		if (row.isNull())
+			return 0;
+		return row[0].get<int>();
+	}
+	catch (MysqlError& e) {
+		LOG_ERROR << "mysql error loading uid by name: " << e.what();
+		return 0;
+	}
+}
+
 bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
 	//先算哈希再借连接：Argon2 单次几十毫秒，不能占着池连接做纯 CPU 计算
 	const auto stored_pwd = PasswordHash::Hash(newpwd);

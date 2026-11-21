@@ -45,3 +45,19 @@ Servers = chatserver2
 Name = chatserver2
 Host = 127.0.0.1
 Port = 50056
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+# 历史消息归档：超过保留期的消息搬到 chat_message_archive
+[Archive]
+Enabled = 1
+RetentionDays = 365
+IntervalHours = 24
+BatchSize = 2000
+FirstDelaySeconds = 300
+
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

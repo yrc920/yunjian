@@ -65,7 +65,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		Json::Value response_item;
 		response_item["msgid"] = item["msgid"].asString();
 		response_item["content"] = item["content"].asString();
-		response_item["type"] = item.isMember("type") ? item["type"].asInt() : 0;
+		response_item["msg_type"] = item.isMember("type") ? item["type"].asInt() : 0;
 		response_item["status"] = 2;
 		rtvalue["text_array"].append(response_item);
 	}
@@ -114,6 +114,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		Json::Value item;
 		item["msgid"] = message.client_msg_id;
 		item["content"] = message.content;
+		item["msg_type"] = message.msg_type; //接收方靠它区分文本与合并转发
 		item["thread_id"] = Json::Int64(message.thread_id);
 		item["message_id"] = Json::Int64(message.message_id);
 		item["status"] = 1;
@@ -145,6 +146,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		auto* text_msg = text_msg_req.add_textmsgs();
 		text_msg->set_msgid(message.client_msg_id);
 		text_msg->set_msgcontent(message.content);
+		text_msg->set_msg_type(message.msg_type);
 		text_msg->set_message_id(message.message_id);
 		text_msg->set_status(3);
 		text_msg->set_fromuid(uid);

@@ -37,7 +37,7 @@ public:
 
 signals:
     void connecting();                       // 开始连接，界面可显示进度
-    void connectFailed(const QString &msg);  // 连接层面失败（超时 / 未连上）
+    void connectFailed(const QString &msg, int code = 0); // code=0 连接层失败，其余为服务端错误码
     void sessionReady();                     // 长连接就绪，可以进入聊天界面
     //普通断线后的自动重连：attempt 从 1 开始；成功后发 reconnected
     void reconnecting(int attempt);
@@ -62,7 +62,7 @@ private:
     void startReconnectAttempt();
     void onSessionTimeout();
     void finishLogout();
-    void failAndReset(const QString &msg);
+    void failAndReset(const QString &msg, int code = 0);
 
     // 拉会话历史；lastMessageId 为 0 表示第一页，否则从这个游标往后取
     void requestMessages(qint64 threadId, qint64 lastMessageId = 0);

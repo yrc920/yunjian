@@ -1,272 +1,150 @@
 # 05 · 配置参考
 
-所有服务通过 `ConfigMgr`（Boost.PropertyTree 的 `read_ini`）读取**当前工作目录下**的 `config.ini`，
-因此启动时必须 `cd` 到可执行文件所在目录。配置文件在构建后由 CMake 自动拷贝到产物目录，
-修改**源码目录下的 ini** 后需要重新构建，或直接修改产物目录下的 ini。
+## 5.1 读取规则
 
-客户端通过 Qt `QSettings(IniFormat)` 读取可执行文件同目录的 `config.ini`，机制类似。
+- 每个服务从**当前工作目录**读取 `config.ini`，所以必须进入自身产物目录启动。
+- 仓库只提交 `*.ini.example`；首次构建会复制一份 `config.ini`，运行前按环境修改。
+- 配置项缺省时使用代码内的安全默认值；**证书两项只填一项会直接启动失败**，不会静默退回明文。
+- 日志段 `[Log]` 在所有服务中语义一致。
 
-配置访问方式：`ConfigMgr::Inst()[section][key]`（未命中返回空串）或
-`ConfigMgr::Inst().GetValue(section, key)`。
+## 5.2 GateServer
 
----
+路径：`bin/GateServer/config.ini`
 
-## 5.1 客户端 `client/config.ini`
+| 段 | 键 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `GateServer` | `Port` | 8080 | HTTP/HTTPS 监听端口 |
+| | `SslCert` / `SslKey` | 空 | 都填才启用 HTTPS；`fullchain` + 无口令私钥 |
+| | `SslReloadSeconds` | 60 | 证书文件变化检查间隔 |
+| `Password` | `Threads` | 2 | Argon2id 并发数，每个约 64 MiB |
+| | `QueueLimit` | 128 | 排队上限，满后回 `1101` |
+| `VerifyServer` | `Host` / `Port` | 127.0.0.1:50051 | 验证码服务地址 |
+| `StatusServer` | `Host` / `Port` | 127.0.0.1:50052 | 状态服务地址 |
+| `Mysql` | `Host` / `Port` | 127.0.0.1:3306 | 经典协议 |
+| | `QueryTimeoutMs` | 5000 | 单条查询 deadline |
+| | `User` / `Passwd` / `Schema` | root / 123456 / xigu | 数据库账号 |
+| `Redis` | `Host` / `Port` / `Passwd` | 127.0.0.1:6380 / 123456 | 缓存 |
+| `Log` | `Level` | info | trace/debug/info/warn/error/critical/off |
+| | `Dir` | logs | 相对当前工作目录 |
+| | `FileMaxMB` / `FileCount` | 32 / 5 | 轮转大小与份数 |
+| | `Console` | 1 | 是否同时输出控制台 |
 
-```ini
-[GateServer]
-scheme=http
-host=127.0.0.1
-port=8080
+## 5.3 StatusServer
 
-[Network]
-tls=false
-```
+路径：`bin/StatusServer/config.ini`
 
-| 字段 | 说明 |
-| --- | --- |
-| `scheme` | `http` 或 `https`，缺省按 `http`；写成其它值时也按 `http` 处理 |
-| `host` | 用 HTTPS 时**必须填证书上的域名**，填 IP 会因证书不匹配被拒 |
-| `port` | 留空表示用协议默认端口（80 / 443） |
-| `Network/tls` | 聊天（8090/8091）与文件（9090）通道是否走 TLS，缺省 `false`；必须与服务端证书开关一致 |
+| 段 | 键 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `StatusServer` | `Host` / `Port` | 127.0.0.1:50052 | gRPC 监听 |
+| `ResourceServer` | `Host` / `Port` | 127.0.0.1:9090 | **下发给客户端的资源地址**，必须是客户端可达地址 |
+| `Redis` | 同 GateServer | | 租约、令牌、实例表 |
+| `chatservers` | `Name` | chatserver1,chatserver2 | 允许注册的实例名，逗号分隔；留空表示接受任意实例，仅用于调试 |
+| `Log` | 同上 | | |
 
-启动时拼成 `scheme://host:port` 存入全局 `gate_url_prefix`。
+> 生产环境把 `[ResourceServer] Host` 改成公网域名或 IP；`127.0.0.1` 只适用于客户端与服务同机。
 
-> 键名大小写：`QSettings` 读取时用 `"GateServer/host"`、`"GateServer/port"`，
-> 与文件中的小写键名保持一致即可。
+## 5.4 VerifyServer
 
----
+路径：`bin/VerifyServer/config.ini`
 
-## 5.2 GateServer `server/services/GateServer/config.ini`
+| 段 | 键 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `VerifyServer` | `Host` / `Port` | 0.0.0.0:50051 | gRPC 监听 |
+| `Redis` | 同 GateServer | | 验证码写入 |
+| `Email` | `Host` / `Port` | smtp.qq.com:465 | SMTP over SSL |
+| | `User` / `Pass` | 空 | 发信账号与授权码 |
+| | `From` | 空 | 发件人显示地址 |
+| | `CA` | 空 | 留空自动探测系统 CA；私有 CA 才填绝对路径 |
+| `Log` | 同上 | | |
 
-```ini
-[GateServer]
-Port = 8080              # 监听端口，HTTPS 与明文共用这一项
-SslCert =                # 证书链（fullchain），留空 = 明文 HTTP
-SslKey =                 # 私钥，与 SslCert 同时填或同时留空
-SslReloadSeconds = 60    # 比对证书文件 mtime 的间隔，0 = 不热加载
+验证码有效期固定 600 秒，长度 4 位，由代码常量控制，不通过配置修改。
 
-[VerifyServer]
-Host = 127.0.0.1         # VerifyServer 地址（gRPC 客户端用）
-Port = 50051
+## 5.5 ChatServer
 
-[StatusServer]
-Host = 127.0.0.1         # StatusServer 地址（gRPC 客户端用）
-Port = 50052
+路径：每个实例一个文件，例如 `services/ChatServer/config/ChatServer.ini`（构建后变成 `bin/ChatServer/config.ini`）。
 
-[Mysql]
-Host = 127.0.0.1
-Port = 3306              # 经典协议端口
-QueryTimeoutMs = 5000    # 单条查询的 deadline，到点由 Asio 取消
-PoolSize = 8             # 可选，缺省按服务给定（Gate/Chat 8，Resource 6，Status 5）
-User = root
-Passwd = 123456
-Schema = xigu
-
-[Redis]
-Host = 127.0.0.1
-Port = 6380
-Passwd = 123456
-```
-
-| 段 | 字段 | 说明 |
+| 段 | 键 | 说明 |
 | --- | --- | --- |
-| `GateServer` | `Port` | 监听端口；启用 TLS 后仍是同一端口，只换了协议 |
-| `GateServer` | `SslCert` / `SslKey` | 证书链与私钥的绝对路径。两项都填才启用 HTTPS，只填一项启动失败 |
-| `GateServer` | `SslReloadSeconds` | 证书热加载间隔，续期覆盖文件后自动生效，无需重启 |
-| `VerifyServer` / `StatusServer` | `Host` / `Port` | 下游 gRPC 服务地址，用于建立 Stub 连接池（各 5 条） |
-| `Mysql` | `Port` | 经典协议端口，默认 3306；X 协议已不再使用 |
-| `Mysql` | `QueryTimeoutMs` | 单条查询的 deadline（默认 5000）。到点用 Asio 操作级取消打断，连接不再复用，由池换新建 |
-| `Mysql` | `PoolSize` | 连接池容量，缺省按服务的默认值 |
-| `Redis` | `Port` | 默认 6380（非 Redis 默认的 6379） |
+| `GateServer` | `Port` | 网关端口，仅用于日志/兼容，不影响长连接 |
+| `VerifyServer` | `Host` / `Port` | 同上 |
+| `StatusServer` | `Host` / `Port` | 租约与选路 |
+| `SelfServer` | `Name` | 实例名，必须与 StatusServer 白名单一致 |
+| | `Host` | 监听地址，必须 `0.0.0.0` |
+| | `AdvertiseHost` | 下发给客户端的地址 |
+| | `AdvertiseRpcHost` | 实例间 RPC 地址，容器内用回环 |
+| | `Capacity` | 期望承载会话数，参与选路 |
+| | `Port` / `RPCPort` | 客户端 TCP 与实例间 gRPC |
+| | `SslCert` / `SslKey` / `SslReloadSeconds` | 与网关相同规则 |
+| `Mysql` / `Redis` | 同上 | |
+| `PeerServer` | `Servers` | 对端实例名，逗号分隔 |
+| `<对端名>` | `Name` / `Host` / `Port` | 对端 RPC 地址 |
+| `Archive` | `Enabled` | 1 开启归档，0 关闭 |
+| | `RetentionDays` | 主表保留天数，默认 365 |
+| | `IntervalHours` | 执行间隔，默认 24 |
+| | `BatchSize` | 每批条数，默认 2000 |
+| | `FirstDelaySeconds` | 启动后首次延迟，默认 300 |
+| `Log` | 同上 | |
 
-> 证书怎么申请、怎么部署、怎么续期，见 [14 · 域名与 HTTPS 部署](14-tls-deployment.md)。
+新增实例的完整步骤见 [02 构建与运行](02-build.md#24-chatserver-多实例)。
 
----
+## 5.6 ResourceServer
 
-## 5.3 StatusServer `server/services/StatusServer/config.ini`
+路径：`bin/ResourceServer/config.ini`
 
-```ini
-[StatusServer]
-Host = 127.0.0.1
-Port = 50052             # gRPC 监听地址（Host 填 0.0.0.0 可对外）
+| 段 | 键 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `SelfServer` | `Port` | 9090 | 客户端资源通道端口 |
+| | `SslCert` / `SslKey` / `SslReloadSeconds` | 空 / 60 | TLS 规则同上 |
+| `Storage` | `Path` | storage | 资源根目录；头像/文件存 `<Path>/<uid>/<资源名>` |
+| | `QuotaMB` | 1024 | 每用户上限，0 表示不限；上传首片校验 |
+| | `StaleUploadHours` | 24 | `.part` 僵尸文件保留时长 |
+| | `SweepMinutes` | 60 | 清理线程巡检间隔 |
+| `Mysql` / `Redis` | 同上 | | |
+| `StatusServer` | `Host` / `Port` | 127.0.0.1:50052 | 查询接收方在线位置 |
+| `ChatServers` | `Servers` | chatserver1,chatserver2 | 实例名列表 |
+| `<实例名>` | `Host` / `Port` | 127.0.0.1:5005x | 各实例 gRPC 地址 |
+| `Log` | 同上 | | |
 
-# 资源服务器地址随 GetChatServer 下发；必须是客户端能访问到的地址
-[ResourceServer]
-Host = 127.0.0.1
-Port = 9090
+## 5.7 客户端
 
-[Mysql]  ...同 GateServer...
-[Redis]  ...同 GateServer...
+路径：可执行文件同目录 `config.ini`（Windows 为 `bin/`，macOS 为 `.app/Contents/MacOS/`）。
 
-[chatservers]
-Name = chatserver1,chatserver2     # 逗号分隔的实例名清单，顺序即遍历顺序
+| 段 | 键 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `GateServer` | `scheme` | http | `http` / `https` |
+| | `host` / `port` | 127.0.0.1 / 8080 | `port` 留空表示 80/443 |
+| `Network` | `tls` | false | 聊天与资源通道是否 TLS，必须与服务端证书开关一致 |
+| `Log` | `level` | 模板 info；配置缺省时 Debug=debug / Release=info | 客户端日志级别 |
+| | `console` | 模板 false；配置缺省时 Debug=true / Release=false | 是否输出控制台 |
+| | `file` | true | 是否写 `client.log` |
+| | `rules` | 空 | 透传 `QT_LOGGING_RULES`，例如 `xc.net.debug=false` |
+| `Storage` | `localCache` | true | false 表示不落盘，适合共享电脑 |
 
-[chatserver1]
-Name = chatserver1
-Host = 127.0.0.1
-Port = 8090                        # 客户端 TCP 端口（不是 RPC 端口）
+> 开启 TLS 后 `host` 必须是证书上的域名，填 IP 会因证书不匹配被拒。
 
-[chatserver2]
-Name = chatserver2
-Host = 127.0.0.1
-Port = 8091
-```
+## 5.8 Docker 环境变量
 
-| 段/字段 | 说明 |
-| --- | --- |
-| `[chatservers] Name` | 允许注册的实例名白名单。新增实例必须在此登记，否则 `RegisterInstance` 会被拒绝 |
-| `[ResourceServer] Host/Port` | 资源服务器地址，写入 `GetChatServerRsp.res_host/res_port`；留空时客户端只保存本机头像 |
+`server/deploy/docker/.env` 控制容器行为：
 
-实例地址不在这里配置：ChatServer 启动时通过 `RegisterInstance` 上报 `AdvertiseHost`、
-客户端端口、`AdvertiseRpcHost` 与 RPC 端口。选路算法（`InstanceRegistry::Pick`）
-从 `instances` 集合读出存活实例，跳过 `draining` 与地址不完整的条目，
-按 `sessions/capacity` 取负载最小的一台，平票按实例名排序。
-
----
-
-## 5.4 ChatServer `server/services/ChatServer/config/*.ini`
-
-每份 ini 对应一个实例。以 `ChatServer.ini`（实例 `chatserver1`）为例：
-
-```ini
-[GateServer]  Port = 8080            # 保留段，当前未被 ChatServer 读取
-[VerifyServer] Host/Port = 50051     # 保留段，当前未被 ChatServer 读取
-[StatusServer] Host/Port = 50052     # 保留段，当前未被 ChatServer 读取
-
-[SelfServer]
-Name = chatserver1       # 本实例名，必须与 StatusServer 登记的名字一致
-Host = 0.0.0.0           # gRPC 监听地址
-Port = 8090              # 面向客户端的 TCP 监听端口
-RPCPort = 50055          # 面向其他 ChatServer 实例的 gRPC 端口
-SslCert =                # 证书链；与 SslKey 同时填才加密客户端连接
-SslKey =                 # 私钥
-SslReloadSeconds = 60    # 证书热加载间隔，0 = 不检查
-
-[Mysql]  ...同 GateServer...
-[Redis]  ...同 GateServer...
-
-[PeerServer]
-Servers = chatserver2    # 除自己以外的全部实例名，逗号分隔
-
-[chatserver2]            # 每个对端一段
-Name = chatserver2
-Host = 127.0.0.1
-Port = 50056             # 对端的 RPCPort（gRPC），注意不是对端的 TCP 端口
-```
-
-| 段 | 字段 | 说明 |
+| 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `[SelfServer] Name` | 实例名，注册到 StatusServer；必须与资源服务器的 `[ChatServers]` 清单一致 |
-| `[SelfServer] AdvertiseHost` | 客户端可访问的地址，随登录路由下发；不能填 `0.0.0.0`；开 TLS 后必须是证书域名 |
-| `[SelfServer] SslCert/SslKey` | 证书链与私钥，两项都填才启用 TLS，只填一项启动失败 |
-| `[SelfServer] SslReloadSeconds` | 证书热加载间隔，续期覆盖文件后自动生效 |
-| `[SelfServer] AdvertiseRpcHost` | 实例间 RPC 使用的主机名；容器部署时填 `127.0.0.1`，与客户端地址不同 |
-| `[SelfServer] Capacity` | 期望承载的会话数，选路按 `sessions/capacity` 计算负载 |
-| `[SelfServer] Host` | gRPC 监听地址（`0.0.0.0` 表示监听全部网卡） |
-| `[SelfServer] Port` | TCP 监听端口，客户端连这里 |
-| `[SelfServer] RPCPort` | gRPC 监听端口，其他实例连这里 |
-| `[PeerServer] Servers` | 对端实例名清单，用于建立 `ChatConPool`（每个 5 条 Stub） |
-| `[<对端名>]` | 对端的 `Host` 与其 **`RPCPort`** |
+| `PUBLIC_HOST` | 127.0.0.1 | 客户端访问地址，写入聊天与资源的下发地址 |
+| `GATE_PORT` | 8080 | 网关端口；HTTPS 时改为 8443 |
+| `EMAIL_HOST` / `EMAIL_PORT` | smtp.qq.com / 465 | SMTP |
+| `EMAIL_USER` / `EMAIL_PASS` | 空 | 授权码 |
+| `EMAIL_FROM` | `EMAIL_USER` | 发件人 |
+| `XIGU_REPO` / `XIGU_BRANCH` | Gitee 仓库 / main | 容器启动时拉取的代码 |
+| `AUTO_PULL` | 1 | 启动时是否拉最新代码 |
+| `SKIP_BUILD` | 0 | 1 表示跳过编译，直接使用上次产物 |
 
-**两个 Port 的语义差异是这里最容易出错的地方**：`[SelfServer]` 同时有 `Port`（TCP）和 `RPCPort`（gRPC），
-而对端段里只有一个 `Port`，指的是对端的 **RPC 端口**。
+## 5.9 常见变更
 
-`ChatServer2.ini` 与 `ChatServer.ini` 完全对称：`SelfServer` 改为 `chatserver2` / 8091 / 50056，
-`PeerServer` 改为 `chatserver1`，对端段指向 `50055`。
-
----
-
-## 5.5 VerifyServer `server/services/VerifyServer/config.ini`
-
-```ini
-[VerifyServer]
-Host = 0.0.0.0
-Port = 50051             # gRPC 监听端口
-
-[Redis]
-Host = 127.0.0.1
-Port = 6380
-Passwd = 123456
-
-[Email]
-Host = smtp.qq.com       # SMTP 服务器
-Port = 465               # SSL 直连（隐式 TLS）；587 是 STARTTLS，需改代码
-User = xxx@qq.com        # 发件邮箱账号
-Pass = <授权码>           # 邮箱授权码，不是登录密码
-From = xxx@qq.com        # 发件人，留空则与 User 相同
-CA =                     # CA 证书包路径；留空按平台自动探测
-```
-
-| 字段 | 说明 |
+| 目标 | 操作 |
 | --- | --- |
-| `Port` | `465` = 连接即 TLS 的隐式 SSL，代码用 `SecureStreamSocket(addr, host, ctx)` 建连后交给 `SMTPClientSession`。`SecureSMTPClientSession`（STARTTLS）只适用于 587，换端口需同步改代码 |
-| `Pass` | 各大邮箱的"SMTP 授权码 / 应用专用密码"，不是网页登录密码 |
-| `CA` | 三级回退，见下 |
-
-### CA 路径解析（`EmailSender::ResolveCAPath`）
-
-1. 配置显式给出**且文件存在** → 使用该路径（用于私有 CA）；
-2. 配置给出但文件不存在 → 打印告警，继续自动探测（保证同一份 ini 在三平台都能启动）；
-3. 未配置 → 依次探测 `/etc/ssl/cert.pem`（macOS / Alpine）、
-   `/etc/ssl/certs/ca-certificates.crt`（Debian / Ubuntu）、
-   `/etc/pki/tls/certs/ca-bundle.crt`（RHEL / CentOS / Fedora）；
-4. 仍为空 → 构造 SSL Context 时启用 `loadDefaultCAs`，使用 OpenSSL 默认证书目录
-   （Windows 通常走到这一步）。
-
-证书校验失败会**直接导致发信失败**（`Send` 返回 false → 响应 `SendMailErr(3)`）。
-
----
-
-## 5.6 ResourceServer `server/services/ResourceServer/config.ini`
-
-```ini
-[SelfServer]
-Port = 9090                 # 面向客户端的 TCP 端口
-SslCert =                   # 证书链；与 SslKey 同时填才加密文件传输
-SslKey =
-SslReloadSeconds = 60
-
-[Storage]
-Path = storage              # 相对服务工作目录；文件存 <Path>/<uid>/<name>
-
-[Mysql]  ...同 GateServer...
-[Redis]  ...同 GateServer...
-
-# 图片上传完成后按接收方所在实例选择 gRPC 目标
-[ChatServers]
-Servers = chatserver1,chatserver2
-
-[chatserver1]
-Name = chatserver1
-Host = 127.0.0.1
-Port = 50055
-
-[chatserver2]
-Name = chatserver2
-Host = 127.0.0.1
-Port = 50056
-```
-
-| 段/字段 | 说明 |
-| --- | --- |
-| `[SelfServer] Port` | 分段上传/下载监听端口 |
-| `[Storage] Path` | 落盘根目录；Docker 部署挂到 `/var/lib/xiguchat/storage` |
-| `[Mysql]` | 最后一片头像写回 `user.icon`，并刷新 `ubaseinfo_`/`nameinfo_` 缓存；聊天图片回写消息状态 |
-| `[StatusServer]` | 在线位置查询；资源服务器不再直接读 Redis 的位置键 |
-| `[Redis]` | token 校验、`file_upload_<md5>` 续传进度（TTL 3600s）与用户资料缓存 |
-| `[ChatServers] Servers` | ChatServer 实例名列表，必须与各自 `[SelfServer] Name` 一致 |
-| `[chatserverN]` | 各实例的 gRPC `Host/Port`；找不到接收方位置或 RPC 失败时直接写库兜底 |
-
----
-
-## 5.7 常见变更场景
-
-| 场景 | 需要改动的位置 |
-| --- | --- |
-| 改 MySQL / Redis 地址或密码 | GateServer、StatusServer、ChatServer（每份实例 ini）、VerifyServer、ResourceServer 各自的 `config.ini` |
-| 改网关端口 | GateServer `[GateServer] Port` + 客户端 `config.ini` |
-| 新增 ChatServer 实例 | 新建 `ChatServer/config/<Name>.ini`；已存在实例的 `[PeerServer]` 与对端段互相登记；`StatusServer` 的 `[chatservers] Name` 与 `[<Name>]` 段 |
-| 改实例端口 | 该实例 ini 的 `[SelfServer]`；对端 ini 的对端段；`StatusServer` 的 `[<实例名>].Port` |
-| 换发件邮箱 | VerifyServer `[Email]` 的 `Host` / `User` / `Pass` / `From`（注意 465 vs 587） |
-| 部署到非 localhost | 各服务 ini 中的 `Host` 改为实际地址；ChatServer `[SelfServer].Host` 用 `0.0.0.0` 监听 |
+| 启用 HTTPS / TLS | 证书放入 `certs/fullchain.pem` 与 `certs/privkey.pem`；`GATE_PORT=8443`；客户端 `scheme=https`、`tls=true`、`host` 用域名 |
+| 更换网关端口 | 改 GateServer `Port` 与客户端 `port`；Docker 同步改 `GATE_PORT` |
+| 新增聊天实例 | 新建 `ChatServer3.ini`，登记 StatusServer `[chatservers]`，补各实例 `[PeerServer]` |
+| 调整用户配额 | 改 ResourceServer `[Storage] QuotaMB`，重启资源服务 |
+| 关闭本地缓存 | 客户端 `[Storage] localCache=false` |
+| 邮件发不出去 | 检查 `EMAIL_PASS` 是否为授权码；`CA` 留空；看 VerifyServer 日志的 SMTP 错误 |
+| 临时排障 | 各服务 `[Log] Level=debug`，复现后改回 `info` |

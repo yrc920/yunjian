@@ -174,8 +174,8 @@ bool MysqlDao::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 		info.notice = row[1].get<std::string>();
 		info.owner_id = row[2].get<int>();
 		info.created_at = row[3].isNull() ? 0 : row[3].get<int64_t>();
-		info.member_count = row[4].isNull() ? 0 : row[4].get<int>();
-		info.icon = row[5].get<std::string>();
+		info.icon = row[4].isNull() ? "" : row[4].get<std::string>();
+		info.member_count = row[5].isNull() ? 0 : row[5].get<int>();
 		info.my_role = row[6].get<int>();
 		info.muted = row[7].get<int>() != 0;
 		info.my_nick = row[8].get<std::string>();

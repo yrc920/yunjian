@@ -6,13 +6,6 @@ Port = 50052
 [ResourceServer]
 Host = 127.0.0.1
 Port = 9090
-[Mysql]
-Host = 127.0.0.1
-# 经典协议端口（Boost.MySQL）
-Port = 3306
-User = root
-Passwd = 123456
-Schema = xigu
 [Redis]
 Host = 127.0.0.1
 Port = 6380

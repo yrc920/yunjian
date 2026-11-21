@@ -1,5 +1,6 @@
 #include "windowchrome.h"
 
+#include <QGuiApplication>
 #include <QWindow>
 
 #import <Cocoa/Cocoa.h>
@@ -13,7 +14,16 @@ void WindowChrome::apply(QWindow *window, bool dark)
     if (!window)
         return;
 
-    NSView *view = (__bridge NSView *)(reinterpret_cast<void *>(window->winId()));
+    // 只有 cocoa 平台的 winId 才是 NSView*：离屏（offscreen）、minimal 等插件返回的是
+    // 自增句柄，强转后给 Objective-C 发消息会直接段错误。日志里已见过 0x1 的崩溃
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+        return;
+
+    const WId handle = window->winId();
+    if (handle == 0)
+        return;
+
+    NSView *view = (__bridge NSView *)(reinterpret_cast<void *>(handle));
     NSWindow *nsWindow = [view window];
     if (!nsWindow)
         return;

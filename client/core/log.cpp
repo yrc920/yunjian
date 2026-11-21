@@ -219,6 +219,8 @@ void Init()
     }
 
     qInstallMessageHandler(messageHandler);
+    //偏好设置文件位置随组织名/应用名变化，支持排查时直接看到实际路径
+    qCInfo(lcApp, "settings file=%s", QSettings().fileName().toUtf8().constData());
     qCInfo(lcApp, "client start, version=%s qt=%s os=%s log=%s",
            QCoreApplication::applicationVersion().toUtf8().constData(),
            qVersion(), QSysInfo::prettyProductName().toUtf8().constData(),

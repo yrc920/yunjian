@@ -5,6 +5,11 @@ Port = __GATE_PORT__
 SslCert = __TLS_CERT__
 SslKey = __TLS_KEY__
 SslReloadSeconds = 60
+# 口令哈希线程池：Argon2id 单次 64MiB，不能占住 IO 线程
+[Password]
+Threads = 2
+QueueLimit = 128
+
 [VerifyServer]
 Host = 127.0.0.1
 Port = 50051
@@ -24,3 +29,11 @@ Schema = xigu
 Host = 127.0.0.1
 Port = 6380
 Passwd = 123456
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

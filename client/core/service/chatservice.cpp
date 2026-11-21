@@ -535,11 +535,17 @@ bool ChatService::sendImage(const ConversationRef &conv, const QString &thumbnai
         qCWarning(lcApp) << "[chat] local image cache unavailable";
         return false;
     }
-    QDir().mkpath(QFileInfo(cache).absolutePath());
-    QFile::remove(cache);
-    if (!QFile::copy(uploadPath, cache)) {
-        qCWarning(lcApp) << "[chat] cache outgoing image failed:" << cache;
-        return false;
+    //转发已缓存的图片时 uploadPath 与 cache 是同一个文件：
+    //先删再复制会把源文件删掉，转发失败且原消息的图也没了
+    const bool same_file = QFileInfo(uploadPath).absoluteFilePath()
+        == QFileInfo(cache).absoluteFilePath();
+    if (!same_file) {
+        QDir().mkpath(QFileInfo(cache).absolutePath());
+        QFile::remove(cache);
+        if (!QFile::copy(uploadPath, cache)) {
+            qCWarning(lcApp) << "[chat] cache outgoing image failed:" << cache;
+            return false;
+        }
     }
     EnsureImageThumbnail(name); //气泡缩略图放在 thumbs 下，不覆盖这份压缩图
 

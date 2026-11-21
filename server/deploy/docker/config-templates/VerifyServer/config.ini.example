@@ -17,3 +17,11 @@ From = __EMAIL_FROM__
 # CA 证书包路径：留空自动探测系统证书库（容器内为
 # /etc/ssl/certs/ca-certificates.crt），只有私有 CA 才需要填绝对路径
 CA =
+
+# 日志：控制台 + 轮转文件 logs/<服务名>.log
+[Log]
+Level = info
+Dir = logs
+FileMaxMB = 32
+FileCount = 5
+Console = 1

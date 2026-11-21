@@ -28,16 +28,24 @@ LoginBridge::LoginBridge(QObject *parent) : PageBridge(parent)
         setError(message);
     });
 
-    connect(session, &SessionService::connectFailed, this, [this](const QString &message) {
+    connect(session, &SessionService::connectFailed, this,
+            [this](const QString &message, int code) {
         if (_autoLogin) {
             _autoLogin = false;
             _session = {};
-            _sessionEmail.clear();
-            // 令牌过期、被注销、或服务端不可达：清掉记录，退回手工登录
-            AutoLoginStore::Clear();
             setBusy(false);
-            setError(tr("自动登录未成功，请重新输入密码"));
-            emit autoLoginExpired();
+            // 只有凭证真的失效才清掉记录；服务未就绪、过于频繁、网络不通属于临时失败，
+            // 清掉会让用户在地铁里打开一次客户端就得重新输密码
+            const bool credential_invalid = code == server_error::TokenInvalid
+                || code == server_error::UidInvalid;
+            if (credential_invalid) {
+                _sessionEmail.clear();
+                AutoLoginStore::Clear();
+                setError(tr("登录凭证已失效，请重新输入密码"));
+                emit autoLoginExpired();
+                return;
+            }
+            setError(tr("%1，可稍后重试").arg(message));
             return;
         }
         setBusy(false);

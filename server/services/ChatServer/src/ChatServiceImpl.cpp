@@ -135,6 +135,7 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 		Json::Value element;
 		element["content"] = msg.msgcontent();
 		element["msgid"] = msg.msgid();
+		element["msg_type"] = msg.msg_type();
 		element["message_id"] = Json::Int64(msg.message_id());
 		element["thread_id"] = Json::Int64(request->thread_id());
 		element["status"] = msg.status();

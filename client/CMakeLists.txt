@@ -46,7 +46,7 @@ if(WIN32 AND NOT CMAKE_RC_COMPILER AND NOT DEFINED ENV{RC})
         HINTS "${XIGUCHAT_MINGW_BIN}" "$ENV{QT_MINGW_ROOT}/bin")
 endif()
 
-project(xiguchat VERSION 1.1.1 LANGUAGES CXX)
+project(xiguchat VERSION 1.2.0 LANGUAGES CXX)
 
 # macOS 的窗口装饰要调用 AppKit，单独开 Objective-C++；Windows 侧只有空实现
 if(APPLE)
@@ -337,6 +337,9 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_NAME "xiguchat"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.xiguchat.client"
         MACOSX_BUNDLE_ICON_FILE "xiguchat.icns"
+        # 版本号与 project(VERSION) 同源：Finder「显示简介」和崩溃报告都要读它
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
     target_sources(xiguchat PRIVATE resources/xiguchat.icns)
     set_source_files_properties(resources/xiguchat.icns PROPERTIES

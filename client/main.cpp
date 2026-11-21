@@ -29,7 +29,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("xiguchat"));
     QGuiApplication::setOrganizationName(QStringLiteral("XiguChat"));
-    QGuiApplication::setApplicationVersion(QStringLiteral("1.1.1"));
+    QGuiApplication::setApplicationVersion(QStringLiteral("1.2.0"));
     //日志要在其它单例之前就绪：启动阶段的失败同样要落到文件里
     Log::Init();
     QFont font = app.font();

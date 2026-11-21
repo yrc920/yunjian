@@ -124,7 +124,7 @@ CREATE TABLE `chat_message` (
   `created_at`   timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `state`        tinyint unsigned NOT NULL DEFAULT 0 COMMENT '0 正常 1 已撤回',
   `upload_state` tinyint unsigned NOT NULL DEFAULT 1 COMMENT '0 资源未上传 1 已就绪',
-  `msg_type`     tinyint unsigned NOT NULL DEFAULT 0 COMMENT '0 文本 1 图片 2 视频 3 文件 4 群系统消息',
+  `msg_type`     tinyint unsigned NOT NULL DEFAULT 0 COMMENT '0 文本 1 图片 2 视频 3 文件 4 群系统 7 合并转发',
   `mentions`     varchar(2048) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_chat_client_msg` (`thread_id`,`sender_id`,`client_msg_id`),

@@ -1,263 +1,215 @@
 # 01 · 架构设计
 
-## 1.1 设计取舍
+## 1.1 设计原则
 
-要用 C++ 做出一套能横向扩展的即时通讯后端，下面三个决定基本框定了后面的所有实现。
+| 原则 | 落地方式 |
+| --- | --- |
+| **控制面与数据面分离** | 登录路由、令牌、租约集中在 StatusServer；消息只在 ChatServer 与客户端之间流动 |
+| **状态外置** | 在线位置、租约、验证码、缓存全部在 Redis；服务进程本身无状态，可重启 |
+| **先持久化再投递** | 消息写入 MySQL 成功后才回执，投递失败不影响历史一致性 |
+| **按连接串行、按会话分片** | 单条连接的消息严格有序；不同连接在 4 个逻辑线程上并行 |
+| **失败快速、语义明确** | 数据库/缓存不可用时返回可重试错误码，不静默降级；超时全部有界 |
+| **一套代码多实例** | ChatServer 的实例名、端口、对端列表全部来自配置，镜像不变 |
 
-**按职责切分服务，而不是按数据切分。** 五个进程各自拥有一份配置、线程池与连接池，
-任一进程崩溃只影响它的直接依赖方，不会连带其他服务已经建立的连接。
-
-**无状态网关 + 有状态聊天节点 + 集中会话控制面。** GateServer 不保存会话，只做协议转换与 RPC 编排；
-长连接状态放在 ChatServer 进程内存里，用户落在哪个实例、由哪个 epoch 说了算，统一记在
-StatusServer 维护的租约表里（`sess_<uid>`），这样聊天节点可以随意加减。
-
-**进程内状态优先。** 同实例的消息直投，不落 Redis；消息正文统一写 MySQL，跨实例才走 gRPC。
-Redis 只承担跨节点寻址与登录计数，持久化交给 MySQL。
-
-## 1.2 系统分层
+## 1.2 分层
 
 ```mermaid
 flowchart TB
-    subgraph presentation["表现层 · client/"]
-        UI["qml/：Main + Login / Register / Reset<br/>ChatWindow / ChatBubble / SideButton"]
-        Bridge["bridge/：ShellBridge / LoginBridge / ChatBridge<br/>FriendListModel / ApplyListModel / MessageModel"]
-        CMgr["HttpMgr（QNetworkAccessManager）<br/>TcpMgr（QTcpSocket + 自定义帧）"]
-        UI --- Bridge --- CMgr
+    subgraph Client["客户端"]
+        QML["QML 界面"] --> Bridge["Bridge 模型与命令"]
+        Bridge --> Service["core/service 业务服务"]
+        Service --> Net["network：HTTP / TCP / 资源 TCP"]
+        Service --> Store["core/store 本地 SQLite"]
+        Service --> Mgr["UserMgr 唯一数据源"]
     end
 
-    subgraph access["接入层 · GateServer"]
-        Gate["CServer（acceptor） → HttpConnection<br/>LogicSystem（URL 路由）<br/>VerifyGrpcClient / StatusGrpcClient<br/>MysqlDao / RedisMgr / PasswordHash"]
+    subgraph Edge["接入层"]
+        Gate["GateServer"]
     end
 
-    subgraph support["支撑层"]
-        Verify["VerifyServer<br/>VerifyServiceImpl<br/>EmailSender（Poco SMTP/SSL）"]
-        Status["StatusServer<br/>StatusServiceImpl<br/>getChatServer() 最小连接数选路"]
+    subgraph Control["控制面"]
+        Verify["VerifyServer"]
+        Status["StatusServer"]
     end
 
-    subgraph msg["消息层 · ChatServer（多实例）"]
-        Chat["CServer → CSession → LogicSystem（4 分片逻辑队列）<br/>ChatServiceImpl（gRPC 服务端）<br/>ChatGrpcClient（gRPC 客户端）<br/>UserMgr（uid → session）"]
+    subgraph Data["数据面"]
+        Chat["ChatServer × N"]
+        Resource["ResourceServer"]
     end
 
-    subgraph res["资源层 · ResourceServer"]
-        Res["CServer → CSession（2+4 字节帧）<br/>LogicWorker 池（按会话）<br/>FileWorker / DownloadWorker 池（按文件名）"]
-    end
-
-    Store[("MySQL Boost.MySQL<br/>+ Redis hiredis")]
-    Mail["邮箱服务商"]
-
-    CMgr -->|"HTTP / JSON"| Gate
-    CMgr -->|"TCP / 自定义二进制帧"| Chat
-    CMgr -->|"TCP / 文件分片"| Res
-    Gate -->|"gRPC GetVerifyCode"| Verify
-    Gate -->|"gRPC GetChatServer"| Status
-    Gate --> Store
-    Verify -->|"SMTP 465 SSL"| Mail
-    Status -->|"实例表 sess_/inst_"| Store
-    Chat --> Store
-    Res --> Store
+    Net -->|"HTTP"| Gate
+    Net -->|"TCP"| Chat
+    Net -->|"TCP"| Resource
+    Gate --> Verify
+    Gate --> Status
+    Chat --> Status
 ```
 
-## 1.3 进程与线程模型
+**依赖方向**：`qml → bridge → core/service → network`，反向不允许。网络层只负责收发，不解释业务；业务层不直接操作 QML 对象；`UserMgr` 是内存数据的唯一写入点。
 
-### GateServer
+## 1.3 进程与线程
 
-| 线程 | 数量 | 职责 |
-| --- | --- | --- |
-| 主线程 | 1 | 运行 `io_context`；承载 acceptor 与信号处理 |
-| IOContextPool 线程 | `std::thread::hardware_concurrency()` | 每个线程一个 `io_context` + `work_guard`，承载 `HttpConnection` 的读写 |
-| gRPC 内部线程 | 由 gRPC 管理 | RPC 调用回调 |
+| 进程 | IO 线程 | 业务线程 | 关键约束 |
+| --- | --- | --- | --- |
+| GateServer | 1 个 `io_context` | `PasswordPool`（默认 2 线程） | 哈希不占 IO 线程；队列满回 `1101` |
+| StatusServer | gRPC 线程池 | 无 | 每次租约变更是一条 Lua 脚本，原子完成 |
+| ChatServer | `IOContextPool`（= CPU 核数） | 4 个逻辑分片 + 1 个投递线程 + 1 个归档线程 | 同连接串行；跨实例 RPC 只在投递线程 |
+| VerifyServer | gRPC 线程池 | 无 | 发信同步执行，超时由 SMTP 客户端控制 |
+| ResourceServer | `IOContextPool` | 4 个逻辑线程 + 4 个落盘线程 + 2 个下载线程 | 同一文件按名字哈希到固定线程，避免并发写 |
 
-HTTP 请求处理是**同步的**：`LogicSystem` 的 handler 在 IO 线程中直接执行，其中包含
-RPC 调用与数据库访问，会阻塞该 IO 线程。这是当前实现的吞吐瓶颈之一（见 `11-known-limitations.md`）。
+```mermaid
+flowchart LR
+    subgraph Chat["ChatServer 进程"]
+        IO["IO 线程池<br/>收发帧"] --> Q["4 个逻辑分片<br/>按 session_id 哈希"]
+        Q --> DB["MySQL / Redis"]
+        Q --> DQ["投递线程<br/>RPC 截止 800ms"]
+        Q --> AR["归档线程<br/>每 24h 一批"]
+    end
+```
 
-### ChatServer
+> **为什么按连接分片而不是按消息类型**：同一连接的消息必须按序处理（例如先发文本再撤回）。按连接哈希可以保证顺序，同时让不同连接并行。
 
-| 线程 | 数量 | 职责 |
-| --- | --- | --- |
-| 主线程 | 1 | 运行 `io_context`（acceptor + 信号） |
-| IOContextPool 线程 | CPU 核心数 | 承载 `CSession` 的异步读写 |
-| 逻辑线程 | 4 | `LogicSystem::DealMsg(shard)` 按会话 ID 哈希消费 4 个队列；同一连接严格串行，不同连接可并行 |
-| gRPC 等待线程 | 1（显式 `std::thread` + `server->Wait()`） | 等待服务关闭；RPC 由 gRPC 内部工作线程处理 |
-| gRPC 客户端线程 | gRPC 内部 | 跨实例转发 |
-
-**关键设计：按会话分片。** 同一会话的消息固定落到同一分片，顺序不变；
-不同会话可以并行，慢查询只影响该分片。`UserMgr` 会被 IO、gRPC 与多个逻辑线程访问，映射由互斥锁保护。
-`CSession::Send()` 将发送操作投递到 socket 所属 IO 线程，与读取、关闭串行执行。
-
-### ResourceServer
-
-| 线程 | 数量 | 职责 |
-| --- | --- | --- |
-| 主线程 | 1 | 运行 `io_context`（acceptor + 信号） |
-| IOContextPool 线程 | CPU 核心数 | 承载 `CSession` 的异步收发 |
-| LogicWorker | 4 | 按会话 UUID 分派，解析 JSON、校验 token、维护续传进度、投递文件任务 |
-| FileWorker | 4 | 按文件名分派，分片落盘，最后一片更新头像 |
-| DownloadWorker | 2 | 按文件名分派，按 seq 读取分片并编码 |
-
-资源服务没有 ChatServer 那样的单消费者队列，而是两级分派：同一连接固定到一个 LogicWorker，
-同一文件固定到一个 FileWorker，既保证分片顺序，又让不同文件并行。聊天图片完整落盘后，
-FileWorker 向 StatusServer 查询接收方所在实例，再通过 gRPC 通知该 ChatServer 更新状态并推送下载通知。详见
-[13-ResourceServer](13-resource-server.md)。
-
-### StatusServer / VerifyServer
-
-主线程阻塞在 gRPC `server->Wait()`，信号处理跑在独立线程的 `io_context` 上（异步等待 SIGINT/SIGTERM 后调用 `Shutdown()`）。
-
-## 1.4 核心流程时序
-
-### 1.4.1 注册
+## 1.4 注册
 
 ```mermaid
 sequenceDiagram
-    participant C as 客户端
+    autonumber
+    participant U as 客户端
     participant G as GateServer
     participant V as VerifyServer
     participant R as Redis
     participant M as MySQL
-    participant E as 用户邮箱
 
-    C->>G: POST /get_verifycode {email}
+    U->>G: POST /get_verifycode {email}
+    G->>R: 冷却 60s + 邮箱 5 次/小时 + IP 20 次/小时
     G->>V: gRPC GetVerifyCode(email)
-    V->>R: GET code_#lt;email#gt;
-    alt 命中
-        R-->>V: 复用旧验证码
-    else 未命中
-        V->>V: UUID 前 4 位
-        V->>R: SETEX code_#lt;email#gt; 600 #lt;code#gt;
-    end
-    V->>E: SMTP 465 SSL 投递验证码
-    V-->>G: {error}
-    G-->>C: {error, email}
-
-    C->>G: POST /user_register {user,email,passwd,confirm,verifycode}
-    G->>G: 校验 passwd == confirm
-    G->>R: GET code_#lt;email#gt; 与请求比对
-    G->>M: INSERT user + LAST_INSERT_ID
-    M-->>G: uid / 0 / -1
-    G-->>C: {error=0, uid, email, user}
+    V->>R: SETEX code_<email> 600s
+    V-->>G: 0 / 1023
+    G-->>U: {error, email}
+    U->>G: POST /user_register {email,user,passwd,confirm,verifycode}
+    G->>R: 校验验证码
+    G->>G: PasswordPool 哈希 Argon2id
+    G->>M: 查重 + INSERT + LAST_INSERT_ID
+    G->>R: 删除验证码（一次性）
+    G-->>U: {error, uid, email, user}
 ```
 
-### 1.4.2 登录与长连接建立
-
-登录由 **HTTP 取票 + TCP 认证**两段组成：GateServer 只负责核实身份并发放 token，
-真正的长连接在客户端与指定的 ChatServer 之间建立。
+## 1.5 登录与会话租约
 
 ```mermaid
 sequenceDiagram
-    participant C as 客户端
+    autonumber
+    participant U as 客户端
     participant G as GateServer
     participant S as StatusServer
+    participant C as ChatServer
     participant R as Redis
-    participant CS as ChatServer
+    participant Old as 旧实例
 
-    C->>G: POST /user_login {email, passwd}
-    G->>G: MysqlDao::CheckPwd() Argon2id 校验 → uid
+    U->>G: POST /user_login
+    G->>G: 失败计数检查 → 校验口令
     G->>S: GetChatServer(uid)
-    S->>S: 生成 UUID token
-    S->>R: SETEX utoken_#lt;uid#gt; 7 天 #lt;token#gt;
-    S->>R: SMEMBERS instances + HGETALL inst_*，按负载选路
-    S-->>G: {host, port, token}
-    G-->>C: {error=0, uid, token, host, port}
-
-    C->>CS: TCP connect host:port
-    C->>CS: 帧 [2001] {uid, token}
-    CS->>R: GET utoken_#lt;uid#gt; 快速校验（只读）
-    CS->>CS: 加载资料、好友与会话列表
-    CS->>S: AllocateSession(uid, token, session_id, instance)
-    S->>R: 写 sess_#lt;uid#gt;，epoch 取 max(计数+1, 毫秒)
-    S-->>CS: {epoch, lease_seconds, 被顶替的实例与 session_id}
-    S-)CS2: KickSession（异步，尽力通知旧连接）
-    CS->>CS: session->SetEpoch / UserMgr::SetUserSession
-    CS-->>C: [2002] 用户资料 + 好友申请 + 好友列表
-    Note over C: 登录成功，切换到聊天界面
+    S->>R: SETEX utoken_<uid> 7d
+    S->>R: 读实例集合，按 sessions/capacity 选路
+    S-->>G: token + host/port + 资源地址
+    G-->>U: 登录结果
+    U->>C: 2001 uid + token
+    C->>R: 比对 utoken_<uid>
+    C->>S: AllocateSession(uid, sid, instance)
+    S->>R: Lua：epoch+1，写 sess_<uid>，返回旧实例
+    S-->>C: epoch + 90s
+    S-)Old: KickSession（异步）
+    C-->>U: 2002 快照
 ```
 
-租约申请放在资料加载之后：新设备登录失败时不会把旧设备踢掉。
+租约的三种结局：
 
-### 1.4.3 跨实例文本消息
+| 场景 | 结果 |
+| --- | --- |
+| 续租成功 | `RenewSessions` 刷新 TTL；返回状态 0 |
+| 被更高 epoch 顶替 | 旧连接续租返回状态 2，ChatServer 主动断开并推 `2007(reason=1)` |
+| 租约过期 | 续租时按原 `session_id` 重新授予，避免状态服务短暂故障导致全员掉线 |
 
-发送方先拿回执（4008），接收方的投递结果不回传——即使对方离线，发送方看到的也是成功。
+## 1.6 单聊消息与跨实例转发
 
 ```mermaid
 sequenceDiagram
-    participant A as 客户端 A
-    participant C1 as ChatServer1
-    participant R as Redis
-    participant C2 as ChatServer2
-    participant B as 客户端 B
+    autonumber
+    participant A as 发送方
+    participant C1 as ChatServer 1
+    participant DB as MySQL
+    participant SR as SessionRouter
+    participant C2 as ChatServer 2
+    participant B as 接收方
 
-    A->>C1: [4007] {fromuid, touid, text_array}
-    C1-->>A: [4008] 发送方回执
-    C1->>C1: SessionRouter 查缓存（30 秒）
-    opt 缓存未命中
-        C1->>S: LookupRoute(touid)
-        S-->>C1: {online, instance, epoch}
-    end
-    alt 位置 == 本实例
-        C1->>B: UserMgr::GetSession(touid) → 直投 [4009]
-    else 位置 == 其他实例
-        C1->>C2: gRPC NotifyTextChatMsg(target, req)
-        C2->>B: UserMgr::GetSession(touid) → 直投 [4009]
+    A->>C1: 4007
+    C1->>DB: 写消息、推进会话
+    C1-->>A: 4008
+    C1->>SR: Lookup(uid)
+    alt 命中本实例
+        C1->>B: 4009
+    else 命中其他实例
+        C1->>C2: gRPC NotifyTextChatMsg
+        C2->>B: 4009
+    else 离线或路由失效
+        C1->>SR: Invalidate + 回源一次
     end
 ```
 
-## 1.5 消息路由策略
+路由缓存：在线 30 秒、私聊离线 1 秒、群聊离线 5 秒。缓存只用于加速，权威始终是 `sess_<uid>`。
 
-| 场景 | 路径 | 说明 |
-| --- | --- | --- |
-| 同实例在线 | `UserMgr` 内存映射 → `CSession::Send()` | 零网络开销，逻辑线程内完成 |
-| 跨实例在线 | `SessionRouter` 定位实例名 → gRPC Stub 连接池 → 对端 `ChatServiceImpl` → `UserMgr` → `Send()` | 一次 RPC 跳转 |
-| 目标离线 | 消息写 `chat_message` 后返回 | 下次登录按 `thread_id + message_id` 同步；不实时推送 |
+## 1.7 群消息广播
 
-位置权威在 StatusServer 的租约表里，ChatServer 只保留 30 秒的本地缓存（离线负缓存 5 秒）。
-缓存过期不会投错：对端找不到会话会返回 `UidInvalid`，发送方失效缓存后回源重试一次。
-群广播与资料推送走 `BatchLookupRoute`，一次查完全部成员。
+群消息不逐个成员查路由，而是：
 
-## 1.6 连接池与资源池
+1. 从 `conversation_member` 取全部成员；
+2. 调 `BatchLookupRoute` 一次拿到在线成员 → 实例映射；
+3. 本实例成员直接投递；
+4. 其他实例按实例聚合，**每个实例只发一次 gRPC**，由对方实例再分发给本地成员；
+5. 发送者自己跳过。
 
-| 资源 | 实现 | 容量 | 位置 |
-| --- | --- | --- | --- |
-| io_context 线程池 | `IOContextPool` | `hardware_concurrency()` | 四服务各自持有一份（模板相同、代码独立） |
-| Redis 连接 | `RedisConPool`（hiredis） | 10 | `RedisMgr` |
-| gRPC Stub | `RPConPool` / `ChatConPool` | 5 | `VerifyGrpcClient` / `ChatGrpcClient` |
-| MySQL 会话 | `MysqlPool`（`common/MysqlPool.h`） | Chat 8 / Gate 8 / Resource 6 | `MysqlDao` |
+这样 N 个成员最多产生"实例数"次 RPC，而不是 N 次。
 
-所有池均遵循同一模式：`std::queue` + `std::mutex` + `std::condition_variable`，
-`b_stop_` 标志用于关闭时唤醒所有等待者。
-
-## 1.7 会话生命周期（ChatServer）
+## 1.8 资源上传
 
 ```mermaid
-flowchart TB
-    A["accept → new CSession(io_context)<br/>UUID session_id，_user_uid = 0"] --> B["Start() → AsyncReadHead(4)"]
-    B --> C["解析 msg_id / msg_len<br/>network_to_host_short"]
-    C --> D{"msg_len == 0 或超过 MAX_LENGTH ?"}
-    D -->|是| X["Close() + DealExceptionSession()"]
-    D -->|否| E["AsyncReadBody(msg_len)<br/>asyncReadLen 循环应对拆包"]
-    E --> F["PostMsgToQue(LogicNode)"]
-    F --> G["逻辑线程按 msg_id 查表执行"]
-    G --> H["session->Send(json, msg_id)"]
-    H --> B
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant Chat as ChatServer
+    participant DB as MySQL
+    participant Res as ResourceServer
+    participant Redis as Redis
 
-    Close["异常 / 对端关闭"] --> I["CSession::Close()<br/>CServer::ClearSession(session_id)"]
-    I --> J{"_sessions 中存在 ?"}
-    J -->|否| K["直接返回（幂等）"]
-    J -->|是| L["erase"]
-    L --> M{"GetUserId() != 0 ?"}
-    M -->|否| K
-    M -->|是| N["按 session_id 解绑 UserMgr<br/>检查并清理 Redis 会话状态"]
+    C->>Chat: 4010 / 4013（先落库占位）
+    Chat-->>C: 4011 / 4014（message_id）
+    loop 每 64KB 一片
+        C->>Res: 6001 / 6007 {md5,name,seq,...} + 数据
+        Res->>Redis: 每 16 片或 1MB 落一次进度
+        Res-->>C: 回执（trans_size）
+    end
+    Res->>Res: 最后一片改名，去掉 .part
+    Res->>Chat: gRPC NotifyImageUploaded
+    Chat->>DB: upload_state=1
+    Chat-->>接收方: 4012 / 4015
 ```
 
-`_user_uid == 0` 作为"未登录"哨兵值——真实 uid 从 1000 起分配，
-未登录连接不操作 Redis 用户会话键；连接计数由定时器每 60 秒扫描上报。
+## 1.9 容错边界
 
-## 1.8 容错边界
-
-| 失效对象 | 当前行为 |
+| 故障 | 行为 |
 | --- | --- |
-| Redis 不可用 | 命令失败可能返回 false；池内无连接或阻塞调用无超时时也可能一直等待 |
-| MySQL 不可用 | 注册/登录/好友持久化失败 |
-| 某 ChatServer 实例崩溃 | 该实例上的连接断开；旧计数没有 TTL，StatusServer 仍可能向该实例分配新连接 |
-| StatusServer 不可用 | 登录返回 `RPCFailed(1002)` |
-| VerifyServer / SMTP 不可用 | 验证码接口返回 `SendMailErr(3)` |
-| 对端 ChatServer 不可达 | 跨实例转发返回 `RPCFailed`，消息静默丢弃 |
+| Redis 不可用 | 登录/续租失败并返回 `1101`；已建立连接继续工作到下一次续租 |
+| MySQL 不可用 | 查询带 5 秒 deadline，连接标记污染后丢弃；返回 `1002` |
+| 状态服务故障 | 续租失败，租约 90 秒后过期；恢复后按原 `session_id` 重新授予 |
+| 对端实例不可达 | 投递 RPC 截止 800 ms，消息已在库，接收方下次登录可见 |
+| 客户端断线 | 1/2/4/8/15 秒退避重连 6 次；被顶号或凭证失效不重连 |
+| 单帧过大 | 服务端回 `1106` 后继续服务；资源通道单帧上限 128 KB |
+
+## 1.10 扩展点
+
+| 维度 | 当前 | 扩展方式 |
+| --- | --- | --- |
+| 消息吞吐 | ChatServer 多实例 | 增加配置实例并登记白名单；状态服务自动参与选路 |
+| 在线状态 | Redis 单实例 | Redis Cluster 需把 `sess_/epoch_` 放同一 slot（按 uid 哈希） |
+| 资源存储 | 本地磁盘 | 替换 `FileSystem` 的落盘实现或前置对象存储 |
+| 消息保留 | 一年后归档到 `chat_message_archive` | 调整 `[Archive]`，或把归档表迁到冷存储 |

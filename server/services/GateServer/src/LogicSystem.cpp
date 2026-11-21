@@ -359,7 +359,12 @@ LogicSystem::LogicSystem() {
 			}
 
 			RedisMgr::GetInstance()->Del(CODEPREFIX + email);
-			spdlog::info("password reset ok account={} name={}", MaskEmail(email), name);
+			//改密后旧令牌立即失效：否则自动登录与已泄露的令牌可以绕过这次重置
+			const int uid = MysqlDao::GetInstance()->GetUidByName(name);
+			if (uid > 0)
+				RedisMgr::GetInstance()->Del(UserTokenKey(uid));
+			spdlog::info("password reset ok account={} name={} token revoked uid={}",
+				MaskEmail(email), name, uid);
 			result["error"] = 0;
 			result["email"] = email;
 			result["user"] = name;

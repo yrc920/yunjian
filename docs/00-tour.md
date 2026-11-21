@@ -1,111 +1,160 @@
 # 00 · 项目导览
 
-这份文档不解释所有细节，只回答三个问题：**进程怎么跑起来、一次登录经过哪些代码、出问题先看哪里。**
-需要改协议看 `03-protocol.md`，改表看 `04-data-model.md`，部署看 `02-build.md` 与 `14-tls-deployment.md`。
+这篇文档回答三个问题：**服务怎么分工**、**一次请求经过哪些文件**、**出问题先看哪里**。读完可以对代码建立整体坐标，再按需进入专题文档。
 
----
+## 0.1 五个服务、六个进程
 
-## 0.1 五个进程
+```mermaid
+flowchart LR
+    C["客户端"] -->|"HTTP"| G["GateServer"]
+    C -->|"TCP 长连接"| H["ChatServer"]
+    C -->|"TCP 资源通道"| R["ResourceServer"]
 
-| 进程 | 默认端口 | 职责 | 入口 |
-| --- | --- | --- | --- |
-| GateServer | HTTP/HTTPS 8080 | 注册、登录、改密、验证码；签发 token | `services/GateServer/src/GateServer.cpp` |
-| VerifyServer | gRPC 50051 | 生成验证码并通过 SMTP 发信 | `services/VerifyServer/src/VerifyServer.cpp` |
-| StatusServer | gRPC 50052 | 实例注册、选路、租约/epoch、在线位置 | `services/StatusServer/src/StatusServer.cpp` |
-| ChatServer × N | TCP 8090/8091 + gRPC 50055/50056 | 长连接、好友、消息、群聊、跨实例转发 | `services/ChatServer/src/ChatServer.cpp` |
-| ResourceServer | TCP 9090 | 头像、图片、视频、文件的分片上传与下载 | `services/ResourceServer/src/ResourceServer.cpp` |
+    G -->|"gRPC"| V["VerifyServer"]
+    G -->|"gRPC"| S["StatusServer"]
 
-启动顺序：VerifyServer → StatusServer → ChatServer（各实例）→ ResourceServer → GateServer。
-每个服务按**当前工作目录**读 `config.ini`，必须进入自己的产物目录启动。
+    H -->|"gRPC"| S
+    H <-->|"跨实例"| H2["ChatServer 实例 2"]
 
----
-
-## 0.2 一次登录走哪些代码
-
-1. **HTTP 取票**：客户端 `AuthService::login` → `POST /user_login`。
-   GateServer `LogicSystem` 解析并归一化邮箱 → `PasswordPool` 线程池里
-   `MysqlDao::CheckPwd`（Argon2 校验）→ `StatusGrpcClient::GetChatServer`。
-2. **选路与 token**：StatusServer `InstanceRegistry::Pick` 按 `sessions/capacity` 选实例，
-   `IssueToken` 写 `utoken_<uid>`（7 天）。
-3. **建立长连接**：客户端拿到 `host/port/token` → `TcpMgr::ConnectToServer` →
-   发 2001 `{uid, token}`。
-4. **ChatServer 认证**：`LogicSystem::LoginHandler` 读 `utoken_` 快速校验 →
-   `UserCache::Get` 取资料 → 拉好友/申请/会话首页 → `AllocateSession` 申请租约拿 epoch →
-   `SetEpoch + SetUserId + UserMgr::SetUserSession` → 回 2002。
-5. **登录后**：客户端 `SessionService::onChatLoggedIn` 写 `UserMgr`、打开本地 SQLite、
-   按 `sync_cursor` 拉增量消息；`ChatService` 负责后续发送与资源上传。
-
-关键边界：**租约申请在资料加载之后**，新设备登录失败不会把旧设备踢掉；
-旧连接由 StatusServer 异步 `KickSession`，即使通知丢失也会在下一次续租收到 Fenced。
-
----
-
-## 0.3 三条客户端通道
-
-| 通道 | 帧格式 | 代码 |
-| --- | --- | --- |
-| HTTP | 标准 HTTP/JSON | `client/network/httpmgr.cpp`、`GateServer` |
-| Chat TCP | 2 字节 ID + 2 字节长度 + JSON | `client/network/tcpmgr.cpp`、`ChatServer` |
-| Resource TCP | 2 字节 ID + 4 字节长度 +（4 字节头长 + JSON + 分片） | `client/network/filetcpmgr.cpp`、`ResourceServer` |
-
-三条通道都支持 TLS；开关在 `config.ini`，客户端由 `scheme` 与 `[Network] tls` 决定。
-
----
-
-## 0.4 日志
-
-- 目录：各服务产物目录下的 `logs/<服务名>.log`，按大小轮转，控制台同时输出。
-- 级别：`config.ini` 的 `[Log] Level`，排障时临时改 `debug`。
-- 常用关键字：
-  - `chat login uid=... epoch=... inst=...`：登录成功与落点。
-  - `[login] ... superseded`：顶号。
-  - `[lease] fenced`：续租发现被更高 epoch 顶替。
-  - `[route] batch lookup failed`：StatusServer 批量位置查询失败。
-  - `[delivery] queue full`：跨实例投递积压，实时性下降但消息已落库。
-  - `[archive] moved ...`：归档批次。
-  - `[resource] quota exceeded` / `download denied`：配额与鉴权。
-
----
-
-## 0.5 按症状排查
-
-| 症状 | 先看 | 常见原因 |
-| --- | --- | --- |
-| 登录返回 1002 | GateServer 日志、`/healthz` | MySQL/Redis 不可用，或 StatusServer 未启动 |
-| 登录返回 1104 | StatusServer 日志 | ChatServer 未注册、注册过期或被 drain |
-| 登录返回 1105 | GateServer/StatusServer 日志 | 登录失败次数或分配频率超限 |
-| 连上 ChatServer 立即断开 | ChatServer 日志 | 帧头 ID/长度非法、token 不匹配、心跳超时 |
-| 消息发送成功但对方收不到 | 发送方 `[delivery]`、接收方在线位置 | 对方离线、路由缓存过期、跨实例 RPC 失败；消息仍在库里 |
-| 图片一直转圈 | ResourceServer 日志、`upload_state` | 上传未完成、配额超限、完成通知失败（兜底应回写 `upload_state=1`） |
-| 群聊消息 1015 | ChatServer 日志 | 不在群里、群已解散、`thread_id` 与成员表不匹配 |
-| 客户端反复重连 | 2007 的 reason | 被顶号（reason=1）不应重连；网络断开才退避重连 |
-
----
-
-## 0.6 本地最小启动
-
-```bash
-# 依赖
-docker start mysql redis
-
-# 洗库
-docker exec -i mysql mysql -uroot -p123456 -e \
-  "DROP DATABASE IF EXISTS xigu; CREATE DATABASE xigu CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-docker exec -i mysql mysql -uroot -p123456 xigu < backup/xigu.sql
-
-# 后端
-cd server && export VCPKG_ROOT=~/vcpkg
-cmake --preset macos-clang && cmake --build --preset macos-clang
-cd build/macos-clang/bin
-(cd VerifyServer && ./VerifyServer) &
-(cd StatusServer && ./StatusServer) &
-(cd ChatServer && ./ChatServer) &
-(cd ChatServer2 && ./ChatServer) &
-(cd ResourceServer && ./ResourceServer) &
-(cd GateServer && ./GateServer) &
-
-# 测试
-cd server && ctest --preset macos-clang --output-on-failure
+    G --- DB[("MySQL")]
+    G --- RD[("Redis")]
+    H --- DB
+    H --- RD
+    R --- DB
+    R --- RD
 ```
 
-客户端：`cd client && cmake --preset macos-clang && cmake --build --preset macos-clang`。
+| 进程 | 入口 | 主要职责 | 详细文档 |
+| --- | --- | --- | --- |
+| GateServer | `services/GateServer/src/GateServer.cpp` | HTTP、口令校验、签发路由结果 | [07](07-gate-server.md) |
+| VerifyServer | `services/VerifyServer/src/VerifyServer.cpp` | 验证码与邮件 | [10](10-verify-server.md) |
+| StatusServer | `services/StatusServer/src/StatusServer.cpp` | 令牌、租约、实例表、踢人 | [08](08-status-server.md) |
+| ChatServer | `services/ChatServer/src/ChatServer.cpp` | 长连接、好友、消息、群聊 | [09](09-chat-server.md) |
+| ResourceServer | `services/ResourceServer/src/ResourceServer.cpp` | 头像与聊天资源传输 | [11](11-resource-server.md) |
+
+## 0.2 一次登录的代码路径
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as LoginBridge
+    participant Auth as AuthService
+    participant Gate as GateServer
+    participant Status as StatusServer
+    participant Chat as ChatServer
+
+    UI->>Auth: login(email, password)
+    Auth->>Gate: POST /user_login
+    Gate->>Gate: 限流计数 → PasswordPool 校验 Argon2id
+    Gate->>Status: GetChatServer(uid)
+    Status->>Status: 签发 utoken_<uid>、按负载选实例
+    Status-->>Gate: token + host/port + 资源地址
+    Gate-->>Auth: uid / token / 地址
+    Auth-->>UI: loginSucceeded(ServerInfo)
+    UI->>Chat: TCP 2001 uid + token
+    Chat->>Chat: Redis 校验 token → UserMgr 绑定连接
+    Chat->>Status: AllocateSession(uid, sid, instance)
+    Status-->>Chat: epoch + lease_seconds
+    Chat-->>UI: 2002 完整快照（资料 / 好友 / 申请 / 会话）
+```
+
+涉及的关键文件：
+
+| 步骤 | 文件 |
+| --- | --- |
+| HTTP 入口与四个接口 | `services/GateServer/src/LogicSystem.cpp` |
+| 口令哈希线程池 | `services/GateServer/src/PasswordPool.cpp` |
+| 选路与签发令牌 | `services/StatusServer/src/StatusServiceImpl.cpp` |
+| 登录、快照与租约 | `services/ChatServer/src/logic/LogicSystemSession.cpp` |
+| 连接与帧读写 | `services/ChatServer/src/CSession.cpp` |
+| 客户端登录页 | `client/bridge/loginbridge.cpp` |
+| 客户端会话建立 | `client/core/service/sessionservice.cpp` |
+
+## 0.3 一条消息的代码路径
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as 发送方客户端
+    participant C1 as ChatServer 1
+    participant DB as MySQL
+    participant R as SessionRouter
+    participant C2 as ChatServer 2
+    participant B as 接收方客户端
+
+    A->>C1: 4007 文本帧
+    C1->>C1: 校验登录态、限流、字段
+    C1->>DB: 批量写入 chat_message + 推进 conversation
+    C1-->>A: 4008 回执（服务端 message_id 与时间）
+    C1->>R: 查接收方所在实例
+    alt 同实例
+        C1->>B: 4009 通知
+    else 跨实例
+        C1->>C2: gRPC NotifyTextChatMsg
+        C2->>B: 4009 通知
+    end
+```
+
+要点：
+
+- **先落库再投递**。回执不依赖对方在线；投递失败只影响"立刻看到"，历史消息仍然完整。
+- **投递在独立线程**。跨实例 RPC 截止 800 ms，不会阻塞业务线程。
+- **同一连接严格有序**。消息按会话哈希进入 4 个逻辑分片之一，同一分片串行处理。
+
+## 0.4 代码地图
+
+| 想改什么 | 从哪里开始 |
+| --- | --- |
+| 新增长连接消息 | 两端 `const.h` / `global.h` 加号 → `RegisterCallBacks()` → 客户端 `TcpMgr` 注册处理 |
+| 改表结构字段 | `backup/xigu.sql` → 对应 DAO → 协议 JSON → 客户端模型 |
+| 改登录流程 | `LogicSystemSession.cpp` + `sessionservice.cpp` |
+| 改消息投递 | `LogicSystemChat.cpp` + `SessionRouter` + `ChatServiceImpl` |
+| 改资源上传 | `ResourceHandler.cpp` + `FileWorker.cpp` + 客户端 `fileservice.cpp` |
+| 改群权限 | `GroupDao.cpp` 的 `GroupRole` 判断 + `LogicSystemGroup.cpp` |
+| 改界面 | `client/qml/`，状态与命令走 `bridge/`，不要直接访问网络层 |
+
+## 0.5 日志
+
+| 进程 | 控制台 | 文件 |
+| --- | --- | --- |
+| 服务端全部 | stdout | `<服务目录>/logs/<服务名>.log`，32 MB × 5 |
+| 客户端 | Debug 构建默认开 | `<AppData>/XiguChat/xiguchat/logs/client.log`，8 MB × 4 |
+
+服务端日志级别在各自 `config.ini` 的 `[Log]` 调整；客户端在 `client/config.ini` 的 `[Log]` 调整。排障时先调到 `debug`，复现后改回 `info`。
+
+## 0.6 最小运行与验证
+
+```bash
+# 1. 依赖
+docker run -d --name chat-mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=123456 mysql:8
+docker run -d --name chat-redis -p 6380:6379 redis:latest redis-server --requirepass 123456
+docker exec -i chat-mysql mysql -uroot -p123456 -e \
+  "CREATE DATABASE xigu DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+docker exec -i chat-mysql mysql -uroot -p123456 xigu < backup/xigu.sql
+
+# 2. 构建
+cd server && cmake --preset macos-clang && cmake --build --preset macos-clang
+
+# 3. 启动（每个服务一个终端，必须在各自目录）
+cd build/macos-clang/bin
+(cd VerifyServer && ./VerifyServer)
+(cd StatusServer && ./StatusServer)
+(cd ChatServer && ./ChatServer)
+(cd ChatServer2 && ./ChatServer)
+(cd ResourceServer && ./ResourceServer)
+(cd GateServer && ./GateServer)
+
+# 4. 验证
+curl http://127.0.0.1:8080/healthz
+cd ../../.. && ctest --preset macos-clang
+```
+
+客户端使用 `backup/xigu.sql` 的演示账号登录（密码均为 `123456`）：
+
+| 账号 | 邮箱 |
+| --- | --- |
+| `test1` | `123@123.com` |
+| `test2` | `456@456.com` |
+| `test3` | `789@789.com` |
+
+下一步：读 [01 架构设计](01-architecture.md) 理解为什么这样分层，或直接进入 [09 ChatServer](09-chat-server.md) 看消息处理细节。

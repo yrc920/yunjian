@@ -5,10 +5,18 @@
 // 仍留在各自的 const.h：它们只在单条通道上出现，强行合并会把无关服务绑在一起。
 
 #include <cstdint>
+#include <string>
 
 // 登录令牌有效期：每次成功登录（含自动登录）按当前时间续期，
 // 连续一周没登录才失效，避免"用着用着突然要重新输密码"。
 constexpr int kTokenTtlSeconds = 7 * 24 * 3600;
+
+//访问令牌在 Redis 里的键：StatusServer 签发、ChatServer 校验、网关在重置密码时吊销，
+//三处必须用同一种拼法
+inline std::string UserTokenKey(int uid)
+{
+	return "utoken_" + std::to_string(uid);
+}
 
 //业务错误码：0 成功；1xxx 通用失败；11xx 控制面与限流失败。
 //消息 ID 从 2xxx 开始分段，两套编号不再重叠，日志与文档里可以直接区分

@@ -499,7 +499,9 @@ void ChatBridge::searchMessages(const QString &query, bool currentOnly)
         if (sender.isEmpty())
             sender = tr("群成员");
 
-        QString snippet = hit.message.content;
+        //合并转发在库里是快照 JSON，搜索结果不能把 JSON 当正文展示
+        QString snippet = hit.message.msg_type == static_cast<int>(ChatMsgType::MergeRecord)
+            ? tr("[聊天记录]") : hit.message.content;
         snippet.replace(QLatin1Char('\n'), QLatin1Char(' '));
         snippet = snippet.simplified();
         if (snippet.size() > 90)
@@ -1312,6 +1314,8 @@ int ChatBridge::mergeForwardMessages(const QVariantList &keys, qint64 targetThre
             item.insert("k", "video"); item.insert("c", tr("[视频]")); break;
         case ChatMsgType::File:
             item.insert("k", "file"); item.insert("c", tr("[文件]")); break;
+        case ChatMsgType::MergeRecord:
+            item.insert("k", "text"); item.insert("c", tr("[聊天记录]")); break;
         default: {
             QString text = message->_msg_content;
             if (text.size() > 200)
@@ -1330,7 +1334,11 @@ int ChatBridge::mergeForwardMessages(const QVariantList &keys, qint64 targetThre
         title = group && !group->_name.isEmpty() ? group->_name : tr("群聊");
     }
     else {
-        title = tr("与%1的聊天记录").arg(myName());
+        //单聊标题写对方的名字：myName() 是自己的显示名，写成"与我的聊天记录"会指错人
+        const auto peer = mgr->GetFriendById(_currentUid);
+        const QString name = peer ? DisplayName(peer->_back, peer->_nick, peer->_name)
+                                  : QString();
+        title = tr("与%1的聊天记录").arg(name.isEmpty() ? tr("对方") : name);
     }
 
     QJsonObject root;
@@ -1423,6 +1431,12 @@ int ChatBridge::forwardMessages(const QVariantList &keys, qint64 targetThreadId,
             if (QFileInfo::exists(localPath))
                 ok = chat->sendFile(target, localPath, message->_file_name,
                                     message->_file_size);
+            break;
+        case ChatMsgType::MergeRecord:
+            //合并记录本身就是文本帧，原样再发一次，不做二次截断
+            ok = !message->_msg_content.isEmpty()
+                && chat->sendText(target, message->_msg_content, {},
+                                  static_cast<int>(ChatMsgType::MergeRecord));
             break;
         default:
             break;

@@ -604,7 +604,7 @@ void SessionService::onChatLoginFailed(int code)
         scheduleReconnect(text, permanent);
         return;
     }
-    failAndReset(text);
+    failAndReset(text, code);
 }
 
 // 聊天服务器登录成功：会话就绪，开始定时心跳
@@ -784,9 +784,9 @@ void SessionService::startReconnectAttempt()
     FileService::GetInstance()->ConnectToResource(_pending); //资源连接不阻塞聊天重连
 }
 
-// 统一失败出口：停表、复位状态，把原因抛给界面
-void SessionService::failAndReset(const QString &msg)
+// 统一失败出口：停表、复位状态，把原因与错误码一起抛给界面
+void SessionService::failAndReset(const QString &msg, int code)
 {
     closeSession();
-    emit connectFailed(msg);
+    emit connectFailed(msg, code);
 }

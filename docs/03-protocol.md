@@ -1,427 +1,321 @@
 # 03 · 通信协议
 
-系统使用三种协议：
+## 3.1 号段与约定
 
-| 协议 | 参与方 | 用途 | 编码 |
-| --- | --- | --- | --- |
-| HTTP/1.1 | Client ↔ GateServer | 注册、登录、改密、验证码 | JSON |
-| TCP 自定义帧 | Client ↔ ChatServer | 长连接消息、好友、群聊、通知 | 4 字节头 + JSON |
-| TCP 自定义帧 | Client ↔ ResourceServer | 头像/图片/视频/文件分片 | 6 字节头 + 分片 |
-| gRPC | 服务之间 | 验证码、状态路由、跨实例转发 | protobuf |
-
-三条面向客户端的通道都支持 TLS：配置证书后 HTTP 变 HTTPS，两条 TCP 协议在加密流上跑，
-**帧格式、消息 ID 与 JSON 结构不变**。服务间 gRPC 仍是明文，只走回环或容器内网。
-
----
-
-## 3.1 消息 ID 编号规则
-
-消息 ID 是 `uint16`，按职责分段，段内请求与响应相邻：
-
-| 段 | 用途 | 范围 |
+| 号段 | 用途 | 载体 |
 | --- | --- | --- |
-| 1xxx | HTTP 网关操作与业务错误码 | 1001–1106 |
-| 2xxx | 连接、认证、心跳、登出 | 2001–2007 |
-| 3xxx | 用户搜索、好友、资料 | 3001–3017 |
-| 4xxx | 会话、消息、已读、撤回 | 4001–4021 |
-| 5xxx | 群聊资料、设置、成员 | 5001–5009 |
-| 6xxx | 资源通道（独立 TCP 连接） | 6001–6008 |
+| `1001–1004` | 客户端 HTTP 请求的内部关联 | HTTP |
+| `2001–2007` | 连接、登录、心跳、登出 | TCP 长连接 |
+| `3001–3017` | 用户搜索、好友、资料 | TCP 长连接 |
+| `4001–4021` | 单聊会话、消息、已读、撤回 | TCP 长连接 |
+| `5001–5009` | 群聊资料、成员与推送 | TCP 长连接 |
+| `6001–6008` | 头像与聊天资源传输 | 独立资源 TCP |
+| `0 / 1xxx / 11xx / 12xx` | 业务错误码 | 所有响应 |
 
-**响应 ID 固定为请求 ID + 1**（`ResponseId()`，定义在 `server/common/include/Protocol.h`）。
-通知类消息（`ID_NOTIFY_*`）没有响应，不参与这条约定。服务端 `MAX_REQUEST_ID = 7000`，
-读取帧头时先挡掉明显越界的 ID。
+三条硬约定：
 
-服务端定义在 `services/ChatServer/include/const.h` 的 `MSG_IDS`，客户端定义在
-`client/core/global.h` 的 `ReqId`；资源通道的 6xxx 在 `ResourceServer/include/const.h`。
-**修改协议必须同步两端**，客户端的 `static_assert` 会在请求/响应不再相邻时直接编译失败。
-
----
+1. **请求与响应相邻**：响应号固定为请求号 + 1，两端都有 `static_assert`。
+2. **先解析再分发**：服务端只解析一次 JSON，handler 拿到的是 `Json::Value`。
+3. **失败带 `error`**：所有响应第一个语义字段是 `error`，`0` 表示成功。
 
 ## 3.2 ChatServer 帧格式
 
-```
- 0        1        2        3        4 ...
-+--------+--------+--------+--------+------------------+
-|     msg_id      |   msg_len      |      payload      |
-|  (2 bytes, BE)  |  (2 bytes, BE) |  (msg_len bytes)  |
-+--------+--------+--------+---------------------------+
-|<---------- HEAD_TOTAL_LEN = 4 --->|
-```
-
-| 常量 | 值 | 含义 |
+| 字段 | 长度 | 说明 |
 | --- | --- | --- |
-| `HEAD_TOTAL_LEN` | 4 | 头部总长度 |
-| `HEAD_ID_LEN` | 2 | msg_id 长度 |
-| `HEAD_DATA_LEN` | 2 | msg_len 长度 |
-| `MAX_LENGTH` | 2048 | **payload** 上限；头部单独读取 |
-| `MAX_RESPONSE_LEN` | 65531 | 2 字节长度字段能承载的最大响应体 |
+| `msg_id` | 2 字节，大端 | 消息号 |
+| `length` | 2 字节，大端 | JSON 体字节数 |
+| `body` | `length` 字节 | 紧凑 JSON |
 
-服务端 `CSession::AsyncReadHead` 先读满 4 字节，转换网络序，检查
-`0 < msg_id <= MAX_REQUEST_ID` 与 `0 < msg_len <= MAX_LENGTH`，再分配 `RecvNode` 读包体。
-读满后投递到逻辑分片队列，由 `LogicSystem::DealMsg` 统一解析 JSON、校验身份、分发处理器。
-响应超过 `MAX_RESPONSE_LEN` 时回 `1106` 错误包，不直接断开连接。
-
-客户端 `TcpMgr` 用 `QDataStream::BigEndian` 组帧；接收侧累积到 `_buffer`，
-按同样的 4 字节头循环拆帧，半包状态由 `_b_recv_pending` 维护。
-
----
-
-## 3.3 ChatServer 消息表
-
-| ID | 名称 | 方向 | 说明 |
-| --- | --- | --- | --- |
-| 2001 | `MSG_CHAT_LOGIN` | C → S | 登录长连接 |
-| 2002 | `MSG_CHAT_LOGIN_RSP` | S → C | 登录回包 |
-| 2003 | `ID_HEART_BEAT_REQ` | C → S | 心跳 |
-| 2004 | `ID_HEARTBEAT_RSP` | S → C | 心跳回包 |
-| 2005 | `ID_LOGOUT_REQ` | C → S | 主动登出 |
-| 2006 | `ID_LOGOUT_RSP` | S → C | 登出结果 |
-| 2007 | `ID_NOTIFY_OFF_LINE_REQ` | S → C | 通知下线（reason 1 顶号 / 2 过期 / 3 下线） |
-| 3001 | `ID_SEARCH_USER_REQ` | C → S | 按 uid 或用户名搜索 |
-| 3002 | `ID_SEARCH_USER_RSP` | S → C | 搜索结果 |
-| 3003 | `ID_ADD_FRIEND_REQ` | C → S | 好友申请 |
-| 3004 | `ID_ADD_FRIEND_RSP` | S → C | 申请回执 |
-| 3005 | `ID_NOTIFY_ADD_FRIEND_REQ` | S → C | 有人申请加你为好友 |
-| 3006 | `ID_AUTH_FRIEND_REQ` | C → S | 同意好友申请 |
-| 3007 | `ID_AUTH_FRIEND_RSP` | S → C | 同意回包 |
-| 3008 | `ID_NOTIFY_AUTH_FRIEND_REQ` | S → C | 对方已通过你的申请 |
-| 3009 | `ID_DELETE_FRIEND_REQ` | C → S | 删除好友（只删自己一侧） |
-| 3010 | `ID_DELETE_FRIEND_RSP` | S → C | 删除回包 |
-| 3011 | `ID_UPDATE_FRIEND_REMARK_REQ` | C → S | 改好友备注与标签 |
-| 3012 | `ID_UPDATE_FRIEND_REMARK_RSP` | S → C | 备注修改回包 |
-| 3013 | `ID_GET_PROFILE_REQ` | C → S | 拉好友最新资料 |
-| 3014 | `ID_GET_PROFILE_RSP` | S → C | 最新资料回包 |
-| 3015 | `ID_NOTIFY_PROFILE_CHANGED` | S → C | 好友资料变更推送 |
-| 3016 | `ID_UPDATE_PROFILE_REQ` | C → S | 修改本人资料 |
-| 3017 | `ID_UPDATE_PROFILE_RSP` | S → C | 本人资料回包 |
-| 4001 | `ID_CREATE_PRIVATE_CHAT_REQ` | C → S | 创建或复用单聊 |
-| 4002 | `ID_CREATE_PRIVATE_CHAT_RSP` | S → C | 返回 thread_id 与对方资料 |
-| 4003 | `ID_LOAD_CHAT_THREAD_REQ` | C → S | 拉会话列表 |
-| 4004 | `ID_LOAD_CHAT_THREAD_RSP` | S → C | 会话列表与 load_more |
-| 4005 | `ID_LOAD_CHAT_MSG_REQ` | C → S | 拉历史消息 |
-| 4006 | `ID_LOAD_CHAT_MSG_RSP` | S → C | 历史消息与 load_more |
-| 4007 | `ID_TEXT_CHAT_MSG_REQ` | C → S | 文本消息 |
-| 4008 | `ID_TEXT_CHAT_MSG_RSP` | S → C | 文本回执 |
-| 4009 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | S → C | 文本投递 |
-| 4010 | `ID_IMG_CHAT_MSG_REQ` | C → S | 图片消息（先落库） |
-| 4011 | `ID_IMG_CHAT_MSG_RSP` | S → C | 图片回执 |
-| 4012 | `ID_NOTIFY_IMG_CHAT_MSG_REQ` | S → C | 图片已上传完成 |
-| 4013 | `ID_RESOURCE_CHAT_MSG_REQ` | C → S | 视频/文件消息（先落库） |
-| 4014 | `ID_RESOURCE_CHAT_MSG_RSP` | S → C | 视频/文件回执 |
-| 4015 | `ID_NOTIFY_RESOURCE_CHAT_MSG_REQ` | S → C | 视频/文件已上传完成 |
-| 4016 | `ID_MARK_READ_REQ` | C → S | 上报已读位置 |
-| 4017 | `ID_MARK_READ_RSP` | S → C | 已读回包 |
-| 4018 | `ID_NOTIFY_MSG_READ` | S → C | 对端已读 |
-| 4019 | `ID_RECALL_MSG_REQ` | C → S | 撤回消息 |
-| 4020 | `ID_RECALL_MSG_RSP` | S → C | 撤回回包 |
-| 4021 | `ID_NOTIFY_MSG_RECALLED` | S → C | 对端撤回 |
-| 5001 | `ID_CREATE_GROUP_REQ` | C → S | 建群 |
-| 5002 | `ID_CREATE_GROUP_RSP` | S → C | 建群结果 |
-| 5003 | `ID_GET_GROUP_INFO_REQ` | C → S | 拉群资料与成员 |
-| 5004 | `ID_GET_GROUP_INFO_RSP` | S → C | 群资料与成员 |
-| 5005 | `ID_UPDATE_GROUP_REQ` | C → S | 改群名/公告/群昵称/免打扰 |
-| 5006 | `ID_UPDATE_GROUP_RSP` | S → C | 群设置回包 |
-| 5007 | `ID_GROUP_MEMBER_OP_REQ` | C → S | 邀请/移除/设管理员/退群/解散 |
-| 5008 | `ID_GROUP_MEMBER_OP_RSP` | S → C | 成员操作回包 |
-| 5009 | `ID_NOTIFY_GROUP_CHANGED` | S → C | 群资料、成员、系统消息推送 |
-
-### 3.3.1 登录与保活
-
-**2001** `{uid:int, token:string}`
-
-**2002**
-
-```jsonc
-{
-  "error": 0,
-  "uid": 1002, "name": "xigu", "email": "a@b.com",
-  "nick": "xigu", "desc": "", "sex": 0, "icon": "",
-  "apply_list": [
-    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "status":0,
-     "id":1, "direction":0}          // 0 别人申请我，1 我申请别人
-  ],
-  "friend_list": [
-    {"name":"", "uid":0, "icon":"", "nick":"", "sex":0, "desc":"", "back":"", "tags":[]}
-  ],
-  "thread_list": [
-    {"thread_id":1, "thread_type":1, "time":0, "unread":0,
-     "uid":0, "name":"", "nick":"", "icon":"", "sex":0},
-    {"thread_id":2, "thread_type":2, "time":0, "unread":0,
-     "group_name":"", "owner":0, "member_count":0, "my_role":0, "muted":false, "at_me":false}
-  ],
-  "thread_more": false
-}
-```
-
-`thread_list` 首屏最多 50 条；`thread_more` 为真时客户端用最后一条的 `thread_id + time`
-继续发 4003。单聊带 `uid/name/nick/icon/sex`，群聊带 `group_*` 与 `my_role`。
-
-**2003 / 2004** 心跳请求与响应，包体都是空对象 `{}`；服务端不解析业务字段。
-
-**2005** 空对象；**2006** `{error, revoked}`。`revoked` 表示租约与 token 是否已删除。
-
-**2007** `{error, uid, reason}`，服务端推送；reason 1 同账号异地登录、2 登录过期、3 服务端下线。
-客户端收到后不得自动重连，必须回到登录页或提示用户。
-
-### 3.3.2 搜索与好友
-
-**3001** `{uid:string}` —— 纯数字按 uid 查，否则按用户名查。
-
-**3002** `{error, uid, name, nick, desc, sex, icon, relation}`。
-搜索只返回公开资料，不下发邮箱。`relation`：
-
-| 值 | 含义 |
+| 项 | 规则 |
 | --- | --- |
-| 0 | 无关系 |
-| 1 | 互为好友 |
-| 2 | 我已申请，待对方处理 |
-| 3 | 对方申请我，待我处理 |
-| 4 | 单向关系（曾被删除） |
-| -1 | 搜索的是自己 |
+| 字节序 | 网络序（大端） |
+| 请求体上限 | 8 KB（`MAX_LENGTH`） |
+| 响应体上限 | 65531 B；超出回 `1106` 而不是断开 |
+| 编码 | JSON，`JsonToCompact()` 紧凑输出，不缩进 |
+| 超大文本 | 客户端按 7000 字节分帧，每帧是一条独立消息 |
 
-**3003** `{uid:int, applyname:string, bakname:string, touid:int, tags:[string]}`
+## 3.3 消息目录
 
-`applyname` 是申请留言（空时服务端补默认句），`bakname` 是备注，`tags` 是分组。
-`friend_apply` 以 `(from_uid,to_uid)` 唯一，重复申请会覆盖留言/备注/标签并把 `status` 复位为 0。
-
-**3004** `{error}`。**3005** `{error, applyuid, name, desc, icon, sex, nick}`。
-
-**3006** `{fromuid:int, touid:int, back:string, tags:[string]}`
-
-**3007** `{error, name, nick, icon, sex, uid, thread_id, welcome_msgs, back}`。
-`welcome_msgs` 项为 `{msgid, content, message_id, thread_id, status, fromuid, touid, time}`。
-
-**3008** `{error, fromuid, touid, name, nick, icon, sex, thread_id, welcome_msgs, back, tags}`。
-`back/tags` 是申请方当初填的备注与分组，通过后回传，申请方不必重新登录才看到。
-
-**3009** `{touid:int}`；**3010** `{error, uid}`（`uid` 原样带回，失败时客户端可恢复乐观删除的行）。
-
-**3011** `{touid:int, remark:string, tags:[string]}`；**3012** `{error, touid, remark, tags}`。
-
-**3013** `{touid:int}`；**3014** `{error, uid, name, nick, desc, sex, icon}`。
-**3015** 推送同样的资料字段，客户端整体覆盖本地缓存。
-
-**3016** `{nick:string, desc:string, sex:int}`，`sex` 只接受 0/1/2；
-**3017** `{error, uid, nick, sex, desc}`。
-
-### 3.3.3 单聊会话与消息
-
-**4001** `{fromuid:int, touid:int}`；**4002** `{error, thread_id, uid, name, nick, icon, sex}`。
-
-**4003** `{fromuid:int, thread_id:int64, last_time:int64}`。
-`thread_id` 与 `last_time` 是上一页最后一条的复合游标；首屏都传 0。
-
-**4004** `{error, thread_list:[...], load_more:bool}`，条目与 2002 的 `thread_list` 相同。
-
-**4005** `{fromuid:int, thread_id:int64, message_id:int64}` —— 取比游标大的消息，首屏传 0。
-
-**4006**
-
-```jsonc
-{
-  "error": 0, "thread_id": 1, "thread_type": 1, "load_more": false,
-  "text_array": [
-    {"message_id":0, "thread_id":1, "fromuid":0, "touid":0, "msgid":"",
-     "content":"", "msg_type":0, "status":1, "time":0,
-     "read":false, "recalled":false, "mentions":""}
-  ]
-}
-```
-
-`msg_type`：0 文本、1 图片、2 视频、3 文件、4 群系统消息。
-图片的 `content` 是资源文件名；视频/文件的 `content` 是
-`{"name":原始文件名,"size":字节数,"resource":资源名,"thumb":首帧资源名}`。
-`read` 只对自己发的消息有意义；`recalled=true` 时正文已清空，客户端只渲染一行提示。
-
-**4007** `{fromuid, touid, thread_id, thread_type, mentions:[int], text_array:[{msgid, content}]}`
-
-`thread_type` 1 单聊 / 2 群聊；群聊的 `touid` 固定 0，`thread_id` 必须大于 0。
-
-**4008** `{error, fromuid, touid, thread_id, thread_type, text_array:[{msgid, content, message_id, status, time, mentions}]}`
-
-`status`：1 已发送、2 发送失败。写库失败且双方已不是好友时额外带 `not_friend: true`；
-群消息失败且群无效时带 `group_invalid: true`。
-
-**4009** 与 4008 的 `text_array` 结构相同，接收方看到的 `status=3`（未读）。
-
-**4010** `{fromuid, touid, thread_id, thread_type, md5, name, token, unique_id, mentions:[int]}`
-
-**4011** `{error, fromuid, touid, thread_id, thread_type, md5, name, unique_id, message_id, status:0, time}`
-
-**4012** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, time}`。
-接收方收到后先查本地缓存，没有就向资源服务器断点下载。
-
-**4013** `{fromuid, touid, thread_id, thread_type, msg_type, md5, name, file_name, file_size, thumb, token, unique_id, mentions:[int]}`
-
-`msg_type` 只接受 2 视频 / 3 文件；`thumb` 是视频首帧资源名，可为空。
-
-**4014** `{error, fromuid, touid, thread_id, thread_type, msg_type, name, unique_id, message_id, status:0, time}`
-
-**4015** `{error, message_id, thread_id, fromuid, touid, msgid, name, total_size, msg_type, content, time}`。
-接收方只建卡片，资源本体等用户点击后下载。
-
-**4016** `{thread_id:int64, message_id:int64}`；**4017** `{error, thread_id, message_id}`。
-单聊会推进 `conversation_member.last_read_message_id` 并通知对端；群聊只推进自己的游标。
-
-**4018** `{error, thread_id, message_id, uid}`，`uid` 是读取者。
-
-**4019** `{message_id:int64}`；**4020** `{error, thread_id, message_id, thread_type}`。
-**4021** `{error, thread_id, message_id, fromuid}`。撤回窗口 120 秒，超时返回 `1012`。
-
-### 3.3.4 群聊
-
-**5001** `{fromuid:int, name:string, members:[int]}`，一次最多 50 位好友。
-
-**5002**
-
-```jsonc
-{
-  "error": 0, "thread_id": 2, "thread_type": 2,
-  "group": {"thread_id":2, "name":"", "notice":"", "owner":0,
-            "member_count":0, "my_role":2, "muted":false, "my_nick":"", "created_at":0},
-  "members": [{"uid":0, "name":"", "nick":"", "icon":"", "sex":0, "role":0, "group_nick":""}]
-}
-```
-
-**5003** `{thread_id:int64}`；**5004** 与 5002 的 `group + members` 相同，另带 `thread_id`。
-
-**5005** `{thread_id:int64, action:string, value:string}`
-`action`：`name` 群名、`notice` 公告、`nickname` 我在本群昵称、`mute` 免打扰（`"1"`/`"0"`）。
-
-**5006** `{error, thread_id, action, value}`；`value` 是生效后的值。
-
-**5007** `{thread_id:int64, action:string, members:[int], target:int}`
-
-| action | 额外字段 | 说明 |
-| --- | --- | --- |
-| `invite` | `members` | 只能邀请自己的好友，已在群里的跳过 |
-| `remove` | `target` | 群主可移除任何人（群主除外），管理员只能移除普通成员 |
-| `set_admin` / `unset_admin` | `target` | 只有群主可以操作 |
-| `leave` | 无 | 群主不能直接退群，需先解散 |
-| `dismiss` | 无 | 只有群主可以解散；软删，成员与历史保留 |
-
-**5008** `{error, thread_id, action, member_count, added:[int], target, message}`。
-
-**5009** `{error, thread_id, thread_type:2, event:string, ...}`。
-`event`：`created` 新群、`info` 群名/公告变化、`members` 成员或角色变化、
-`removed` 我被移出、`dismissed` 群解散、`message` 一条群系统消息。
-`message` 事件带 `message` 对象，字段与 4006 的单条消息一致。
-
----
-
-## 3.4 ResourceServer 帧格式
-
-```
- 0        1        2        3        4        5        6 ...
-+--------+--------+--------+--------+--------+--------+------------------+
-|     msg_id      |            body_len            |      body        |
-|  (2 bytes, BE)  |         (4 bytes, BE)          | (body_len bytes) |
-+--------+--------+--------+--------+--------+--------+------------------+
-
-body = 4 字节 JSON 头长度(BE) + JSON 头 + 数据段（可为空）
-```
-
-| ID | 名称 | 方向 | 说明 |
+| 请求 | 响应 | 名称 | 方向 |
 | --- | --- | --- | --- |
-| 6001 | `ID_UPLOAD_FILE_REQ` | C → S | 通用文件分段上传 |
-| 6002 | `ID_UPLOAD_FILE_RSP` | S → C | 上传回执 |
-| 6003 | `ID_SYNC_FILE_REQ` | C → S | 续传前同步进度 |
-| 6004 | `ID_SYNC_FILE_RSP` | S → C | 已落盘位置 |
-| 6005 | `ID_DOWN_LOAD_FILE_REQ` | C → S | 断点下载 |
-| 6006 | `ID_DOWN_LOAD_FILE_RSP` | S → C | 下载分片 |
-| 6007 | `ID_UPLOAD_HEAD_ICON_REQ` | C → S | 头像分段上传 |
-| 6008 | `ID_UPLOAD_HEAD_ICON_RSP` | S → C | 头像上传回执 |
+| 2001 | 2002 | 聊天登录 | C → S |
+| 2003 | 2004 | 心跳 | C → S |
+| 2005 | 2006 | 登出 | C → S |
+| — | 2007 | 被踢下线通知 | S → C |
+| 3001 | 3002 | 搜索用户 | C → S |
+| 3003 | 3004 | 申请加好友 | C → S |
+| — | 3005 | 收到好友申请 | S → C |
+| 3006 | 3007 | 同意好友申请 | C → S |
+| — | 3008 | 对方同意了你的申请 | S → C |
+| 3009 | 3010 | 删除好友 | C → S |
+| 3011 | 3012 | 改备注与标签 | C → S |
+| 3013 | 3014 | 拉取好友资料 | C → S |
+| — | 3015 | 好友资料变更 | S → C |
+| 3016 | 3017 | 修改本人资料 | C → S |
+| 4001 | 4002 | 打开单聊 | C → S |
+| 4003 | 4004 | 会话列表分页 | C → S |
+| 4005 | 4006 | 历史消息分页 | C → S |
+| 4007 | 4008 | 文本 / 合并转发 | C → S |
+| — | 4009 | 新消息通知 | S → C |
+| 4010 | 4011 | 图片消息占位 | C → S |
+| — | 4012 | 图片已上传 | S → C |
+| 4013 | 4014 | 视频 / 文件占位 | C → S |
+| — | 4015 | 视频 / 文件已上传 | S → C |
+| 4016 | 4017 | 上报已读 | C → S |
+| — | 4018 | 对方已读 | S → C |
+| 4019 | 4020 | 撤回消息 | C → S |
+| — | 4021 | 对方撤回 | S → C |
+| 5001 | 5002 | 创建群聊 | C → S |
+| 5003 | 5004 | 拉群资料 | C → S |
+| 5005 | 5006 | 改群设置 | C → S |
+| 5007 | 5008 | 群成员操作 | C → S |
+| — | 5009 | 群资料 / 成员变化 | S → C |
 
-上传请求头：`{md5, name, seq, trans_size, total_size, last, uid, token, message_id?, touid?, thread_id?, thread_type?, unique_id?}`。
-`md5` 是 32 位十六进制，`name` 是落盘文件名，`seq` 从 1 开始，
-`trans_size` 是本片结束后的偏移，`last=1` 必须与 `trans_size==total_size` 同时成立。
-每片原始数据最多 64KB，单帧包体上限 128KB，单文件上限 4GB。
+## 3.4 连接与登录
 
-下载请求头：`{uid, token, owner_uid, name, seq}`；下载回包头带
-`{error, name, seq, is_last, current_size, total_size}`，数据段是本片内容。
-下载鉴权：本人、同会话成员，或该文件仍是对方当前头像。
+**2001 请求**
 
----
+```json
+{"uid": 1003, "token": "utoken 的值"}
+```
 
-## 3.5 HTTP 接口（GateServer）
+**2002 响应**
 
-所有接口都是 `POST`，请求与响应都是 JSON；成功时 `error=0`。
+| 字段 | 说明 |
+| --- | --- |
+| `error` | 0 成功；`1010` 令牌无效；`1011` uid 不存在；`1105` 登录过于频繁 |
+| `uid / name / email / nick / desc / sex / icon` | 本人资料 |
+| `thread_list` | 首屏最多 50 条会话 |
+| `thread_more` | 是否还有更多会话 |
+| `apply_list` | 收到与发出的好友申请，`direction` 0/1 区分 |
+| `friend_list` | 好友资料与备注、标签 |
 
-| 路径 | 请求 | 成功响应 |
+会话项字段：
+
+```json
+{"thread_id": 1, "thread_type": 1, "time": 1795148660, "unread": 2,
+ "uid": 1002, "name": "霄宫", "nick": "烟花", "icon": "", "sex": 1,
+ "group_name": "", "icon_owner": 0, "owner": 0, "member_count": 0,
+ "my_role": 0, "muted": false, "at_me": false}
+```
+
+单聊填 `uid/name/nick/icon/sex`；群聊填 `group_name/icon/icon_owner/owner/member_count/my_role/muted`。`at_me` 由服务端按 `mentions` 与已读游标计算。
+
+**2003 / 2004**：`{"error":0}`。客户端每 10 秒发送一次；服务端 30 秒扫描一次，20 秒无消息判定过期。
+
+**2005 / 2006**：登出后释放租约并删除 `utoken_<uid>`；客户端收到回包后关闭连接。
+
+**2007**：`{"error":0,"uid":1003,"reason":1}`；`reason` 1 顶号、2 登录过期、3 服务端下线。客户端收到后停止自动重连。
+
+## 3.5 好友与资料
+
+| 请求 | 字段 | 响应 |
 | --- | --- | --- |
-| `/healthz` | GET | `{status, redis, mysql, uptime_seconds}`，依赖异常时 HTTP 503 |
-| `/get_verifycode` | `{email}` | `{error, email}` |
-| `/user_register` | `{email,user,passwd,confirm,verifycode}` | `{error, uid, email, user}` |
-| `/reset_pwd` | `{email,user,passwd,verifycode}` | `{error, email, user}` |
-| `/user_login` | `{email,passwd}` | `{error, uid, email, token, host, port, res_host, res_port}` |
+| 3001 | `uid`（纯数字字符串，按 uid 搜；否则按用户名） | 资料 + `relation`：0 非好友、1 好友、2 我已申请、3 对方申请我、4 单向关系（一方已删除）、-1 自己 |
+| 3003 | `uid,touid,applyname,bakname,tags[]` | `{error}`；目标在线时服务端推 3005 |
+| 3005 | `applyuid,name,nick,desc,icon,sex` | 推送 |
+| 3006 | `fromuid,touid,back,tags[]` | 建双向好友 + 单聊会话 + 两条欢迎消息；推 3008 |
+| 3009 | `touid` | 只删自己一侧关系，不通知对方 |
+| 3011 | `touid,remark,tags[]` | 只影响自己这一侧 |
+| 3013 | `touid` | 最新资料 |
+| 3015 | `uid,name,nick,desc,sex,icon` | 推给在线好友 |
+| 3016 | `nick,sex,desc` | 本人资料更新；操作者取自会话 |
 
-- `passwd` 是客户端 xor 变形后的字符串（`123456` → `745230`），不是明文口令。
-- 邮箱在入口统一 trim + 小写；注册、登录、重置、验证码共用同一个 Redis 键。
-- 服务端校验用户名 2–20 字符、邮箱格式与长度、口令长度 6–15，
-  不依赖客户端校验。
-- `/get_verifycode` 同一邮箱 60 秒冷却，每小时 5 次；同一 IP 每小时 20 次。
-- `/user_login` 同一账号 60 秒 5 次失败、同一 IP 60 秒 20 次失败后返回 `1105`。
+`tags` 是字符串数组，单标签 ≤ 12 字符、最多 10 个。备注 ≤ 64 字节。
 
----
+## 3.6 单聊与会话
 
-## 3.6 gRPC 接口
+**4001 → 4002**：`{fromuid,touid}` → `{error,uid,thread_id,name,nick,icon,sex}`。会话不存在时创建。
 
-proto 单一源在 `server/proto/message.proto`。
+**4003 → 4004**：`{fromuid,thread_id,last_time}`，首次都传 0；服务端每页固定 100 条。响应 `{error,thread_list[],load_more}`，返回的 `thread_id` 与 `time` 可作为下一页游标。
 
-| 服务 | 方法 | 用途 |
+**4005 → 4006**：`{fromuid,thread_id,message_id}`，首次传 0。响应 `{error,thread_id,thread_type,load_more,text_array[]}`，每条：
+
+```json
+{"message_id": 12, "thread_id": 1, "fromuid": 1003, "touid": 1004,
+ "msgid": "客户端 UUID", "content": "正文", "msg_type": 0,
+ "time": 1795148660, "status": 1, "read": true, "recalled": false,
+ "mentions": "1002,1003"}
+```
+
+`msg_type`：0 文本、1 图片、2 视频、3 文件、4 群系统、7 合并转发。
+
+**4007 → 4008**：`{fromuid,touid,thread_id,thread_type,mentions[],text_array:[{msgid,content,type?}]}`。
+
+- `type` 可省略，只接受 0 与 7；`type=7` 时 `content` 是快照 JSON 且 ≤ 6000 字节。
+- 响应 `text_array` 带服务端 `message_id`、`status=1`、`time` 与 `msg_type`。
+- 单聊非好友：`error=1014`；群消息无效：`error=1002` 且 `group_invalid=true`。
+- 接收方通知 4009 结构相同，`status=3`。
+
+**4010 / 4013**：图片与视频/文件先落库占位。
+
+```json
+// 4010
+{"fromuid":1003,"touid":1004,"thread_id":1,"thread_type":1,
+ "md5":"...","name":"<md5>.jpg","token":"...","unique_id":"...","mentions":[]}
+// 4013
+{"msg_type":2,"md5":"...","name":"<md5>.mp4","file_name":"原文件名",
+ "file_size":123456,"thumb":"<md5>.jpg","content":"...","unique_id":"..."}
+```
+
+**4016 → 4017**：`{thread_id,message_id}`；单聊推进游标并推 4018 给对方，群聊只推进自己的游标。
+
+**4019 → 4020**：`{message_id}`，2 分钟内且必须是发送者；回包带 `thread_id/message_id/thread_type`。成功后双方气泡改为"撤回了一条消息"，正文清空。
+
+## 3.7 群聊
+
+**5001 → 5002**：`{fromuid,name,members[]}`；一次最多 50 人，成员必须是好友。响应 `{thread_id,thread_type,group,members[],system_message}`。
+
+**5003 → 5004**：`{thread_id}` → `{group,members[]}`；
+
+```json
+"group": {"thread_id":3,"name":"项目群","notice":"","icon":"<md5>.png",
+          "icon_owner":1003,"owner":1003,"member_count":3,
+          "my_role":2,"muted":false,"my_nick":"","created_at":1795148478}
+"members": [{"uid":1001,"name":"西故","nick":"xigu","icon":"","sex":0,
+             "role":2,"group_nick":""}]
+```
+
+`role`：0 成员、1 管理员、2 群主。
+
+**5005 → 5006**：`{thread_id,action,value}`；`action`：
+
+| action | value | 权限 |
 | --- | --- | --- |
-| `VerifyService` | `GetVerifyCode` | 生成验证码并发送邮件 |
-| `StatusService` | `GetChatServer` | 按负载选 ChatServer 并签发 token |
-| | `AllocateSession` | 申请租约、分配 epoch、顶掉旧会话 |
-| | `RenewSessions` | 批量续租并上报实例负载 |
-| | `ReleaseSession` / `LogoutSession` | 释放租约 / 登出并吊销 token |
-| | `LookupRoute` / `BatchLookupRoute` | 查询在线位置 |
-| | `RegisterInstance` / `UnregisterInstance` / `DrainInstance` | 实例注册、下线、排水 |
-| `ChatService` | `NotifyAddFriend` / `NotifyAuthFriend` | 跨实例好友通知 |
-| | `NotifyTextChatMsg` | 跨实例文本投递 |
-| | `KickSession` | 顶号时关闭旧连接 |
-| | `NotifyImageUploaded` | 资源落盘后回写消息状态并推送 |
-| | `BroadcastProfile` / `NotifyProfileChanged` | 资料变更分发 |
-| | `NotifyChatEvent` | 已读/撤回跨实例通知 |
-| | `NotifyGroupEvent` | 群事件按实例聚合投递 |
+| `name` | 1–30 字符 | 管理员及以上 |
+| `notice` | ≤ 200 字符 | 管理员及以上 |
+| `icon` | `<32 位 md5>.png`，空串表示恢复首字回退 | 管理员及以上 |
+| `nickname` | ≤ 16 字符 | 自己 |
+| `mute` | `"1"` / `"0"` | 自己 |
 
-gRPC 通用约定：调用本身返回 `OK`，业务结果放在响应报文的 `error` 字段。
+**5007 → 5008**：`{thread_id,action,members[],target}`。
 
----
+| action | 说明 |
+| --- | --- |
+| `invite` | 只能邀请好友，已在群里的跳过；单群上限 200 |
+| `remove` | 群主可移除任何人（自己除外）；管理员只能移除普通成员 |
+| `set_admin` / `unset_admin` | 只有群主 |
+| `leave` | 群主必须先解散 |
+| `dismiss` | 只有群主；软删，成员与消息保留 |
 
-## 3.7 错误码
+**5009 推送**：`{error,thread_id,thread_type:2,event,...}`；`event` 为 `created / info / members / removed / dismissed / message`。`info` 事件带变化的字段（群名、公告或 `icon + icon_owner`）。
 
-| 值 | 名称 | 含义 |
+## 3.8 资源通道
+
+独立 TCP，帧头为 **2 字节 ID + 4 字节长度**，包体由"4 字节 JSON 头长度 + JSON + 二进制数据"组成。
+
+| 请求 | 响应 | 用途 |
 | --- | --- | --- |
-| 0 | `Success` | 成功 |
-| 1001 | `Error_Json` | 请求不是 JSON 对象或字段类型不合法 |
-| 1002 | `RPCFailed` | RPC、数据库或缓存执行失败 |
-| 1003 | `VerifyExpired` | 验证码不存在或已过期 |
-| 1004 | `VerifyCodeErr` | 验证码不正确 |
-| 1005 | `UserExist` | 用户名或邮箱已注册 |
-| 1006 | `PasswdErr` | 密码错误；注册场景表示两次输入不一致 |
-| 1007 | `EmailNotMatch` | 重置密码时用户名与邮箱不匹配 |
-| 1008 | `PasswdUpFailed` | 重置密码写库失败 |
-| 1009 | `PasswdInvalid` | 登录邮箱或密码不正确 |
-| 1010 | `TokenInvalid` | 令牌缺失、失效或与 uid 不匹配 |
-| 1011 | `UidInvalid` | uid 不存在或当前连接无权操作 |
-| 1012 | `RecallExpired` | 超过 120 秒撤回窗口 |
-| 1013 | `RecallDenied` | 不是发送者或消息已撤回 |
-| 1014 | `NotFriend` | 双方已不是好友 |
-| 1015 | `GroupNotFound` | 群不存在、已解散或不在群里 |
-| 1016 | `GroupDenied` | 当前角色没有操作权限 |
-| 1017 | `GroupFull` | 群成员已达上限 |
-| 1018 | `GroupMemberExists` | 被邀请的人已经在群里 |
-| 1022 | `VerifyTooFrequent` | 验证码发送超过冷却或小时配额 |
-| 1023 | `VerifySendFailed` | 验证码已生成但邮件投递失败 |
-| 1101 | `ServiceUnavailable` | 依赖服务暂不可用，可稍后重试 |
-| 1102 | `SessionFenced` | 会话已被更高 epoch 顶替 |
-| 1103 | `SessionExpired` | 租约过期且未续租 |
-| 1104 | `InstanceUnknown` | 实例未注册或注册已过期 |
-| 1105 | `TooManyRequests` | 短时间请求次数超限 |
-| 1106 | `ResponseTooLarge` | 响应超过单帧上限 |
+| 6001 | 6002 | 通用文件分片上传 |
+| 6003 | 6004 | 查询续传进度 |
+| 6005 | 6006 | 分片下载 |
+| 6007 | 6008 | 头像上传（最后一片写 `user.icon`） |
 
-资源通道另有 `1201–1210`：`FileNotExists`、`FileSaveRedisFailed`、
-`FileWritePermissionFailed`、`FileDataInvalid`、`FileNameInvalid`、`FileTooLarge`、
-`FileSeqInvalid`、`FileReadPermissionFailed`、`FileOffsetInvalid`、`FileQuotaExceeded`。
-它们只出现在 ResourceServer 的回包里，与通用错误码分开编号。
+**上传请求头**
+
+```json
+{"uid":1003,"token":"...","md5":"32 位","name":"<md5>.jpg",
+ "seq":1,"trans_size":65536,"total_size":150000,"last":0,
+ "message_id":12,"touid":1004,"thread_id":1,"thread_type":1,
+ "unique_id":"...","msg_type":1}
+```
+
+`message_id / touid / thread_id / thread_type / unique_id / msg_type` 仅聊天资源需要，头像与普通上传省略。
+
+**上传响应**
+
+```json
+{"error":0,"md5":"...","name":"...","seq":1,"total_size":150000,
+ "trans_size":65536,"last":0,"uid":1003}
+```
+
+**同步进度 6003**：`{md5,uid,token}` → `{error,md5,name,seq,trans_size,total_size}`。
+
+**下载请求 6005**：`{uid,token,owner_uid,name,seq}`；响应同为 2+4 帧，JSON 头 `{error,name,seq,is_last,current_size,total_size}` 后跟该片原始字节。
+
+| 约束 | 值 |
+| --- | --- |
+| 分片大小 | 64 KB |
+| 单帧上限 | 128 KB |
+| 单文件上限 | 4 GB |
+| 续传进度 TTL | 1 小时 |
+| 错误码 | 12xx（见 3.11） |
+
+## 3.9 HTTP 接口
+
+| 方法 | 路径 | 请求 | 成功响应 |
+| --- | --- | --- | --- |
+| GET | `/healthz` | 无 | `{status,redis,mysql,uptime_seconds}` |
+| POST | `/get_verifycode` | `{email}` | `{error,email}` |
+| POST | `/user_register` | `{email,user,passwd,confirm,verifycode}` | `{error,uid,email,user}` |
+| POST | `/reset_pwd` | `{email,user,passwd,verifycode}` | `{error,email,user}`；同时吊销旧令牌 |
+| POST | `/user_login` | `{email,passwd}` | `{error,uid,email,token,host,port,res_host,res_port}` |
+
+- `passwd` 是客户端 XOR 变形后的字符串（`123456` → `745230`），服务端直接对它做 Argon2id。
+- 邮箱统一转小写后处理；`confirm` 必须与 `passwd` 完全一致。
+- 所有接口返回 `Content-Type: application/json`；错误码见 3.11。
+
+## 3.10 gRPC 接口
+
+| 服务 | 方法 | 调用方 → 提供方 |
+| --- | --- | --- |
+| `VerifyService` | `GetVerifyCode` | Gate → Verify |
+| `StatusService` | `GetChatServer` | Gate → Status |
+| | `AllocateSession` / `RenewSessions` / `ReleaseSession` / `LogoutSession` | Chat → Status |
+| | `LookupRoute` / `BatchLookupRoute` | Chat → Status |
+| | `RegisterInstance` / `UnregisterInstance` / `DrainInstance` | Chat → Status |
+| `ChatService` | `NotifyTextChatMsg` / `NotifyChatEvent` / `NotifyGroupEvent` | Chat ↔ Chat |
+| | `NotifyAddFriend` / `NotifyAuthFriend` / `NotifyProfileChanged` / `BroadcastProfile` | Chat ↔ Chat |
+| | `NotifyImageUploaded` | Resource → Chat |
+| | `KickSession` | Status → Chat |
+
+proto 文件：`server/proto/message.proto`。服务间 gRPC 全部使用 `InsecureChannelCredentials`，设计前提是只走回环或容器内网。
+
+## 3.11 错误码
+
+| 码 | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | Success | 成功 |
+| 1001 | Error_Json | 请求不是 JSON 对象或字段类型不合法 |
+| 1002 | RPCFailed | RPC / 数据库 / 缓存执行失败 |
+| 1003 | VerifyExpired | 验证码不存在或已过期 |
+| 1004 | VerifyCodeErr | 验证码不匹配 |
+| 1005 | UserExist | 用户名或邮箱已注册 |
+| 1006 | PasswdErr | 密码错误；注册时表示两次输入不一致 |
+| 1007 | EmailNotMatch | 重置密码时用户名与邮箱不匹配 |
+| 1008 | PasswdUpFailed | 重置密码写库失败 |
+| 1009 | PasswdInvalid | 邮箱与密码不匹配 |
+| 1010 | TokenInvalid | 令牌缺失、失效或与 uid 不匹配 |
+| 1011 | UidInvalid | uid 不存在或无权操作 |
+| 1012 | RecallExpired | 超过可撤回时间 |
+| 1013 | RecallDenied | 非发送者或已撤回 |
+| 1014 | NotFriend | 双方已不是好友 |
+| 1015 | GroupNotFound | 群不存在、已解散或不在群里 |
+| 1016 | GroupDenied | 当前角色无权限 |
+| 1017 | GroupFull | 群成员已达上限 |
+| 1018 | GroupMemberExists | 被邀请人已在群里 |
+| 1022 | VerifyTooFrequent | 验证码冷却或小时配额 |
+| 1023 | VerifySendFailed | 邮件投递失败 |
+| 1101 | ServiceUnavailable | 依赖服务暂不可用 |
+| 1102 | SessionFenced | 会话被更高 epoch 顶替 |
+| 1103 | SessionExpired | 租约过期 |
+| 1104 | InstanceUnknown | 实例未注册或已过期 |
+| 1105 | TooManyRequests | 请求过于频繁 |
+| 1106 | ResponseTooLarge | 响应超过单帧上限 |
+| 1201 | FileNotExists | 传输记录不存在 |
+| 1202 | FileSaveRedisFailed | 进度写 Redis 失败 |
+| 1203 | FileWritePermissionFailed | 目标文件不可写 |
+| 1204 | FileDataInvalid | 分片数据与偏移不一致 |
+| 1205 | FileNameInvalid | 文件名非法 |
+| 1206 | FileTooLarge | 超过 4 GB |
+| 1207 | FileSeqInvalid | 分片序号不连续 |
+| 1208 | FileReadPermissionFailed | 源文件不可读 |
+| 1209 | FileOffsetInvalid | 偏移越界 |
+| 1210 | FileQuotaExceeded | 超出用户配额 |
+
+## 3.12 兼容性
+
+- **只增不改**：新增字段必须可选，客户端缺省按 0/空处理；删除字段前先确认两端版本。
+- **消息号不复用**：废弃的号保留空位，避免旧客户端误解新消息。
+- **资源协议独立版本**：`server/resources` 与聊天帧解耦，升级资源通道不影响登录与消息。
+- 合并转发快照是"展示数据"，不引用原消息 id；原消息被删除或撤回不影响已发出的快照。
