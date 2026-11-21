@@ -5,6 +5,8 @@
 #include "SessionRouter.h"
 #include "ChatGrpcClient.h"
 #include "ConfigMgr.h"
+#include <algorithm>
+#include <cctype>
 #include <ctime>
 #include "Log.h"
 
@@ -139,6 +141,8 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 	group_json["thread_id"] = Json::Int64(info.thread_id);
 	group_json["name"] = info.name;
 	group_json["notice"] = info.notice;
+	group_json["icon"] = info.icon;
+	group_json["icon_owner"] = info.icon_owner;
 	group_json["owner"] = info.owner_id;
 	group_json["member_count"] = info.member_count;
 	group_json["my_role"] = info.my_role;
@@ -221,6 +225,8 @@ void LogicSystem::GetGroupInfo(std::shared_ptr<CSession> session,
 	group_json["thread_id"] = Json::Int64(info.thread_id);
 	group_json["name"] = info.name;
 	group_json["notice"] = info.notice;
+	group_json["icon"] = info.icon;
+	group_json["icon_owner"] = info.icon_owner;
 	group_json["owner"] = info.owner_id;
 	group_json["member_count"] = info.member_count;
 	group_json["my_role"] = info.my_role;
@@ -283,6 +289,20 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 		}
 		field = MysqlDao::GroupField::Notice;
 	}
+	else if (action == "icon") {
+		//值为资源名（32 位 md5 + .png），空串表示恢复成名字回退
+		if (!value.empty()) {
+			const bool shape = value.size() == 36 && value.compare(32, 4, ".png") == 0
+				&& std::all_of(value.begin(), value.begin() + 32,
+					[](unsigned char c) { return std::isxdigit(c) != 0; });
+			if (!shape) {
+				response["error"] = ErrorCodes::Error_Json;
+				response["message"] = "群头像格式不正确";
+				return;
+			}
+		}
+		field = MysqlDao::GroupField::Icon;
+	}
 	else if (action == "nickname") {
 		if (Utf8CharCount(value) > MAX_GROUP_NICK_LEN) {
 			response["error"] = ErrorCodes::Error_Json;
@@ -310,12 +330,15 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 	response["value"] = applied;
 
 	//群名与公告要让所有成员看到；群昵称与免打扰是个人设置，不推送
-	if (action == "name" || action == "notice") {
+	if (action == "name" || action == "notice" || action == "icon") {
 		std::vector<int> members;
 		if (!MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members))
 			return;
 		Json::Value detail;
 		detail[action] = applied;
+		//群头像还要带上上传者：客户端下载时按它定位存储目录
+		if (action == "icon")
+			detail["icon_owner"] = uid;
 		PushGroupChanged(thread_id, members, uid, "info", detail);
 
 		//系统消息留痕：改群名与改公告都写一行，成员翻历史时能看懂发生了什么
@@ -324,6 +347,7 @@ void LogicSystem::UpdateGroup(std::shared_ptr<CSession> session,
 			: std::to_string(uid);
 		const std::string text = action == "name"
 			? actor + " 修改群名为「" + applied + "」"
+			: action == "icon" ? actor + " 更换了群头像"
 			: actor + " 更新了群公告";
 		ChatMessageInfo message;
 		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {

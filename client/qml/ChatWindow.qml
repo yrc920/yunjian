@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 import QtQuick.Controls
 import XiguChat
 
@@ -13,8 +14,32 @@ Item {
 
     readonly property int sidebarWidth: 72
 
+    // 第二栏宽度可拖动：240–420，双击分隔条恢复 280；只在拖动结束时落盘
+    property int indexWidth: 280
+    readonly property int minIndexWidth: 240
+    readonly property int maxIndexWidth: Math.max(minIndexWidth, width - sidebarWidth - 380)
+    property QtObject layoutPrefs: Settings {
+        category: "Layout"
+        property int indexWidth: 280
+    }
 
-    readonly property int indexWidth: 280
+    // 窄窗口把第二栏收成头像条：优先保证内容区宽度，列表仍然可点。
+    // 设置页有自己的分栏，不参与折叠。
+    readonly property bool compactIndex: width < 1000 && bridge.mode !== ChatBridge.SettingsMode
+    readonly property int indexPanelWidth: compactIndex ? 72 : indexWidth
+
+    // 搜索快捷键：聊天与联系人共用一套入口，设置页不响应
+    Shortcut {
+        sequences: [StandardKey.Find]
+        enabled: bridge.mode !== ChatBridge.SettingsMode
+        onActivated: {
+            if (bridge.mode === ChatBridge.ChatMode)
+                chatSearch.forceInputFocus()
+            else
+                addSearch.forceInputFocus()
+        }
+    }
+
     readonly property int listHeaderHeight: 78
 
     readonly property int friendCount: bridge.friends.totalCount
@@ -23,16 +48,56 @@ Item {
     readonly property int chatCount: bridge.conversations.activeCount
     // 联系人空态：没有好友也没有待处理申请时才显示引导卡
     readonly property bool contactGuideVisible: bridge.mode === ChatBridge.ContactMode
-        && friendCount === 0 && pendingCount === 0
+        && friendCount === 0 && pendingCount === 0 && !compactIndex
     // 有好友或有申请时，列表顶部保留「新的朋友」入口
     readonly property bool newFriendEntryVisible: bridge.mode === ChatBridge.ContactMode
-        && (friendCount > 0 || pendingCount > 0)
+        && (friendCount > 0 || pendingCount > 0) && !compactIndex
     // 标签条只在联系人模式且有标签时出现；筛选只影响列表，不影响入口与空态判断
     readonly property bool tagBarVisible: bridge.mode === ChatBridge.ContactMode
-        && bridge.tagOptions.length > 0
+        && bridge.tagOptions.length > 0 && !compactIndex
     readonly property bool tagEmptyVisible: tagBarVisible && bridge.tagFilter.length > 0
         && visibleFriendCount === 0
     property bool tagFilterOpen: false //标签「更多」浮层是否展开
+
+    // 任一模态浮层打开时，主内容不接收拖拽与快捷键
+    readonly property bool modalOpen: dialogs.visible || createGroupDialog.visible
+        || profileDialogs.visible || viewer.visible
+        || bridge.clearConfirmVisible || bridge.deleteConfirmVisible || bridge.logoutConfirmVisible
+
+    // 会话列表：↑/↓ 逐条切换并直接打开，Esc 回输入框
+    function stepConversation(delta) {
+        const count = bridge.conversations.count
+        if (count <= 0)
+            return
+        const base = conversationList.currentIndex < 0 ? (delta > 0 ? -1 : 0)
+                                                       : conversationList.currentIndex
+        const next = Math.max(0, Math.min(count - 1, base + delta))
+        conversationList.currentIndex = next
+        conversationList.positionViewAtIndex(next, ListView.Contain)
+        Qt.callLater(function() {
+            const item = conversationList.currentItem
+            if (!item)
+                return
+            item.forceActiveFocus()
+            item.activate()
+        })
+    }
+
+    // 联系人列表：↑/↓ 只移动焦点，Enter 才打开资料，避免每按一次就换页
+    function stepFriend(delta) {
+        const count = bridge.friends.count
+        if (count <= 0)
+            return
+        const base = friendsList.currentIndex < 0 ? (delta > 0 ? -1 : 0)
+                                                  : friendsList.currentIndex
+        const next = Math.max(0, Math.min(count - 1, base + delta))
+        friendsList.currentIndex = next
+        friendsList.positionViewAtIndex(next, ListView.Contain)
+        Qt.callLater(function() {
+            if (friendsList.currentItem)
+                friendsList.currentItem.forceActiveFocus()
+        })
+    }
     onTagBarVisibleChanged: if (!tagBarVisible) tagFilterOpen = false
     property bool functionMenuOpen: false
 
@@ -43,7 +108,7 @@ Item {
         if (!hostWindow)
             return
         const count = bridge.unreadTotal
-        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") xiguchat" : "xiguchat"
+        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") XiguChat" : "XiguChat"
     }
     onUnreadTotalChanged: refreshWindowTitle()
     onHostWindowChanged: if (hostWindow) bridge.setWindowActive(hostWindow.active)
@@ -51,8 +116,10 @@ Item {
         refreshWindowTitle()
         if (hostWindow)
             bridge.setWindowActive(hostWindow.active)
+        // 列表栏宽度取本机值，夹在允许范围内
+        root.indexWidth = Math.max(root.minIndexWidth, Math.min(420, layoutPrefs.indexWidth))
     }
-    Component.onDestruction: if (hostWindow) hostWindow.title = "xiguchat"
+    Component.onDestruction: if (hostWindow) hostWindow.title = "XiguChat"
     Connections {
         target: root.hostWindow
         function onActiveChanged() {
@@ -198,11 +265,40 @@ Item {
         color: Theme.chatBg
     }
 
+    // 整窗接收文件：拖到任意位置都交给输入区的同一套处理，覆盖层只负责提示
+    DropArea {
+        id: windowDrop
+        anchors.fill: parent
+        z: 600
+        enabled: root.visiblePane === ChatBridge.ChatPage && !root.modalOpen
+
+        Rectangle {
+            anchors.fill: parent
+            visible: windowDrop.containsDrag
+            color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.06)
+            border.width: 2
+            border.color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.35)
+
+            Text {
+                anchors.centerIn: parent
+                text: "松开以发送文件"
+                color: Theme.primary
+                font.pixelSize: Theme.fontBody
+                font.weight: Font.Medium
+            }
+        }
+
+        onEntered: (drag) => { drag.accepted = drag.hasUrls }
+        onDropped: (drop) => {
+            if (drop.hasUrls)
+                chatPage.acceptFiles(drop.urls)
+            drop.acceptProposedAction()
+        }
+    }
+
     Row {
         anchors.fill: parent
-        enabled: !dialogs.visible && !createGroupDialog.visible && !profileDialogs.visible
-            && !viewer.visible && !bridge.clearConfirmVisible
-            && !bridge.deleteConfirmVisible && !bridge.logoutConfirmVisible
+        enabled: !root.modalOpen
 
         // 一级导航：从上到下依次是聊天、联系人、设置；底部固定外观切换与本人头像
         Rectangle {
@@ -246,17 +342,17 @@ Item {
                 id: appearanceButton
                 width: 40
                 height: 40
-                radius: 8
+                radius: 10
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: ownAvatar.top
                 anchors.bottomMargin: 17
                 color: appearanceArea.containsMouse || activeFocus ? Theme.selected : "transparent"
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
-                Accessible.name: Theme.dark ? "切换到日间模式" : "切换到夜间模式"
-                Accessible.onPressAction: Theme.toggle()
-                Keys.onSpacePressed: Theme.toggle()
-                Keys.onReturnPressed: Theme.toggle()
+                Accessible.name: Theme.dark ? "切换到浅色" : "切换到深色"
+                Accessible.onPressAction: Theme.toggleMode()
+                Keys.onSpacePressed: Theme.toggleMode()
+                Keys.onReturnPressed: Theme.toggleMode()
                 AppIcon {
                     anchors.centerIn: parent
                     name: Theme.dark ? "sun" : "moon"
@@ -268,7 +364,8 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: Theme.toggle()
+                    // 一键切换：设置页里才有「跟随系统 / 浅色 / 深色」
+                    onClicked: Theme.toggleMode()
                 }
             }
 
@@ -309,7 +406,7 @@ Item {
         Rectangle {
             id: indexPanel
             visible: bridge.mode !== ChatBridge.SettingsMode
-            width: root.indexWidth
+            width: root.indexPanelWidth
             height: parent.height
             color: Theme.panelBg
 
@@ -322,6 +419,7 @@ Item {
                 Text {
                     x: 22
                     y: 21
+                    visible: !root.compactIndex
                     text: bridge.mode === ChatBridge.ChatMode ? "聊天" : "联系人"
                     color: Theme.textPrimary
                     font.pixelSize: 22
@@ -330,16 +428,17 @@ Item {
                 Text {
                     x: 23
                     y: 51
+                    visible: !root.compactIndex
                     text: bridge.mode === ChatBridge.ChatMode
                         ? root.chatCount + " 个会话"
                         : bridge.friends.count + " 位好友"
                     color: Theme.textSecondary
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSmall
                 }
 
                 Rectangle {
                     anchors.right: parent.right
-                    anchors.rightMargin: 18
+                    anchors.rightMargin: root.compactIndex ? 21 : 18
                     anchors.verticalCenter: parent.verticalCenter
                     width: 30
                     height: 30
@@ -374,6 +473,7 @@ Item {
                 y: listHeader.height + 2
                 width: parent.width - 32
                 height: 38
+                visible: !root.compactIndex
 
                 SearchField {
                     id: chatSearch
@@ -462,16 +562,17 @@ Item {
                 width: parent.width - 24
                 height: visible ? 30 : 0
 
-                // 用文字度量估每个标签的宽度，决定这一行能放几个，避免依赖滚动
-                TextMetrics {
-                    id: tagMetrics
+                // 用文字度量估每个标签的宽度，决定这一行能放几个，避免依赖滚动。
+                // 这里必须用 FontMetrics 的纯函数：TextMetrics 要写 text 再读 boundingRect，
+                // 在绑定求值里属于副作用，会触发 shownTags 的绑定循环
+                FontMetrics {
+                    id: tagFont
                     font.pixelSize: Theme.fontSmall
                 }
 
                 readonly property int moreWidth: 52
                 function chipWidth(text) {
-                    tagMetrics.text = text
-                    return Math.max(34, tagMetrics.boundingRect.width + 24)
+                    return Math.max(34, Math.ceil(tagFont.advanceWidth(text)) + 24)
                 }
                 // 完整放得下的标签数；预留「更多」的位置，避免它压住最后一个
                 function countVisibleTags() {
@@ -631,26 +732,84 @@ Item {
                 font.pixelSize: Theme.fontSmall
             }
 
+            // 折叠态没有整行的「新的朋友」，用一个头像位保留申请入口
+            Item {
+                id: compactNewFriend
+                visible: root.compactIndex && bridge.mode === ChatBridge.ContactMode
+                    && root.pendingCount > 0
+                x: 0
+                y: listHeader.height + 6
+                width: root.indexPanelWidth
+                height: 56
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 48
+                    height: 48
+                    radius: 12
+                    color: compactFriendArea.containsMouse ? Theme.selected : Theme.panelAlt
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "contacts"
+                        size: 20
+                        color: Theme.primary
+                    }
+
+                    Rectangle {
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.rightMargin: -4
+                        anchors.topMargin: -4
+                        width: 16
+                        height: 16
+                        radius: 8
+                        color: Theme.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: root.pendingCount > 9 ? "9+" : root.pendingCount
+                            color: "#FFFFFF"
+                            font.pixelSize: 10
+                        }
+                    }
+
+                    MouseArea {
+                        id: compactFriendArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: bridge.openApplyList()
+                    }
+                }
+
+                ToolTip.visible: compactFriendArea.containsMouse
+                ToolTip.text: "新的朋友"
+                ToolTip.delay: 350
+            }
+
             // 会话列表：单聊与群聊合成一张表，按最后消息时间倒序；
             // 联系人列表仍用好友模型，两边不再共用同一个 delegate
             ListView {
                 id: conversationList
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: searchArea.bottom
-                anchors.topMargin: 17
+                anchors.top: root.compactIndex ? listHeader.bottom : searchArea.bottom
+                anchors.topMargin: root.compactIndex ? 6 : 17
                 anchors.bottom: parent.bottom
                 clip: true
                 visible: bridge.mode === ChatBridge.ChatMode
                 model: bridge.conversations
                 spacing: 2
                 boundsBehavior: Flickable.StopAtBounds
+                activeFocusOnTab: true
+                Keys.onDownPressed: (event) => { root.stepConversation(1); event.accepted = true }
+                Keys.onUpPressed: (event) => { root.stepConversation(-1); event.accepted = true }
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                 delegate: Item {
                     id: convRow
                     width: conversationList.width
-                    height: 76
+                    height: root.compactIndex ? 56 : 76
                     readonly property bool chosen: (root.visiblePane === ChatBridge.ChatPage
                         || root.visiblePane === ChatBridge.GroupInfoPage)
                         && bridge.currentThreadId === model.threadId
@@ -662,12 +821,18 @@ Item {
                     Keys.onSpacePressed: activate()
                     Keys.onReturnPressed: activate()
                     Keys.onEnterPressed: activate()
+                    Keys.onDownPressed: (event) => { root.stepConversation(1); event.accepted = true }
+                    Keys.onUpPressed: (event) => { root.stepConversation(-1); event.accepted = true }
+                    Keys.onEscapePressed: (event) => { chatPage.focusComposer(); event.accepted = true }
                     onActiveFocusChanged: {
                         if (activeFocus)
                             conversationList.positionViewAtIndex(index, ListView.Contain)
                     }
+                    // 程序化打开会话（通知、快捷键）时也同步游标，键盘导航从当前会话继续
+                    onChosenChanged: if (chosen) conversationList.currentIndex = index
 
                     function activate() {
+                        conversationList.currentIndex = index
                         if (group)
                             bridge.openGroup(model.threadId)
                         else
@@ -714,10 +879,11 @@ Item {
                     }
 
                     Rectangle {
-                        x: 10
-                        width: parent.width - 20
-                        height: parent.height - 2
-                        radius: 7
+                        x: root.compactIndex ? 8 : 10
+                        y: root.compactIndex ? 4 : 0
+                        width: root.compactIndex ? convRow.width - 16 : parent.width - 20
+                        height: root.compactIndex ? 48 : parent.height - 2
+                        radius: 10
                         color: convRow.chosen ? Theme.selected
                                : (convArea.containsMouse || convRow.activeFocus ? Theme.panelAlt : "transparent")
                         border.width: 1
@@ -730,22 +896,23 @@ Item {
                         height: 18
                         radius: 1
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: convRow.chosen
-                        color: Theme.accent
+                        visible: convRow.chosen && !root.compactIndex
+                        color: Theme.primary
                     }
                     Avatar {
                         id: convAvatar
-                        x: 22
+                        x: root.compactIndex ? (parent.width - width) / 2 : 22
                         width: 40
                         height: 40
                         radius: 11
                         anchors.verticalCenter: parent.verticalCenter
                         source: model.icon
                         name: model.displayName
+                        group: convRow.group
                     }
                     // 置顶像别在信封上的一枚小图钉：只占头像左上角，不抢未读与名字的位置
                     Rectangle {
-                        visible: model.pinned
+                        visible: model.pinned && !root.compactIndex
                         x: convAvatar.x - 3
                         y: convAvatar.y - 3
                         width: 16
@@ -768,6 +935,7 @@ Item {
                         anchors.rightMargin: 38
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
+                        visible: !root.compactIndex
 
                         Item {
                             width: parent.width
@@ -801,7 +969,7 @@ Item {
                                 Text {
                                     anchors.centerIn: parent
                                     text: "群"
-                                    font.pixelSize: 9
+                                    font.pixelSize: 10
                                     color: Theme.primary
                                 }
                             }
@@ -812,7 +980,7 @@ Item {
                                 text: model.lastTime
                                 textFormat: Text.PlainText
                                 color: Theme.textHint
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontCaption
                                 visible: text.length > 0
                             }
                         }
@@ -847,7 +1015,7 @@ Item {
                             anchors.centerIn: parent
                             text: model.unread > 99 ? "99+" : model.unread
                             color: Theme.primaryText
-                            font.pixelSize: 9
+                            font.pixelSize: 10
                         }
                     }
                     Rectangle {
@@ -870,6 +1038,11 @@ Item {
                         }
                     }
 
+                    // 折叠态只有头像，名字用悬停提示补回来
+                    ToolTip.visible: root.compactIndex && convArea.containsMouse
+                    ToolTip.text: model.displayName
+                    ToolTip.delay: 350
+
                     // 悬停才出现的「…」：会话管理不必依赖右键，触控板与不熟悉右键的用户也能找到
                     Rectangle {
                         id: convMore
@@ -879,8 +1052,8 @@ Item {
                         width: 24
                         height: 24
                         radius: 6
-                        visible: convArea.containsMouse || convMoreArea.containsMouse
-                            || convRow.activeFocus
+                        visible: (convArea.containsMouse || convMoreArea.containsMouse
+                            || convRow.activeFocus) && !root.compactIndex
                         color: convMoreArea.containsMouse ? Theme.selected : "transparent"
                         AppIcon {
                             anchors.centerIn: parent
@@ -917,13 +1090,19 @@ Item {
                 id: friendsList
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: root.tagBarVisible ? contactTagBar.bottom : searchArea.bottom
-                anchors.topMargin: root.tagBarVisible ? 10 : 17
+                anchors.top: root.compactIndex ? listHeader.bottom
+                           : (root.tagBarVisible ? contactTagBar.bottom : searchArea.bottom)
+                anchors.topMargin: root.compactIndex
+                    ? (compactNewFriend.visible ? 62 : 6)
+                    : (root.tagBarVisible ? 10 : 17)
                 anchors.bottom: parent.bottom
                 clip: true
                 model: bridge.friends
                 spacing: 2
                 boundsBehavior: Flickable.StopAtBounds
+                activeFocusOnTab: true
+                Keys.onDownPressed: (event) => { root.stepFriend(1); event.accepted = true }
+                Keys.onUpPressed: (event) => { root.stepFriend(-1); event.accepted = true }
                 visible: bridge.mode === ChatBridge.ContactMode && !root.contactGuideVisible
 
                 // 联系人列表顶部固定「新的朋友」；没有好友但有申请时只显示这一行
@@ -937,7 +1116,7 @@ Item {
                         x: 12
                         width: parent.width - 24
                         height: 62
-                        radius: 7
+                        radius: 10
                         color: root.visiblePane === ChatBridge.ApplyFriendPage ? Theme.selected
                                : (newFriendArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
                         border.width: 1
@@ -983,7 +1162,7 @@ Item {
                                 visible: root.pendingCount > 0
                                 text: root.pendingCount + " 条申请待处理"
                                 textFormat: Text.PlainText
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontCaption
                                 color: Theme.textSecondary
                                 elide: Text.ElideRight
                             }
@@ -1034,7 +1213,7 @@ Item {
                 delegate: Item {
                     id: friendRow
                     width: friendsList.width
-                    height: 60
+                    height: root.compactIndex ? 56 : 60
                     readonly property bool chosen: root.visiblePane === ChatBridge.FriendInfoPage
                         && bridge.profile.uid === model.uid
                     activeFocusOnTab: true
@@ -1044,12 +1223,16 @@ Item {
                     Keys.onSpacePressed: activate()
                     Keys.onReturnPressed: activate()
                     Keys.onEnterPressed: activate()
+                    Keys.onDownPressed: (event) => { root.stepFriend(1); event.accepted = true }
+                    Keys.onUpPressed: (event) => { root.stepFriend(-1); event.accepted = true }
+                    Keys.onEscapePressed: (event) => { addSearch.forceInputFocus(); event.accepted = true }
                     onActiveFocusChanged: {
                         if (activeFocus)
                             friendsList.positionViewAtIndex(index, ListView.Contain)
                     }
 
                     function activate() {
+                        friendsList.currentIndex = index
                         bridge.openProfile(model.uid)
                     }
 
@@ -1057,10 +1240,11 @@ Item {
                     // 避免在一张每天要扫很多遍的列表里出现不可逆操作
 
                     Rectangle {
-                        x: 10
-                        width: parent.width - 20
-                        height: parent.height - 2
-                        radius: 7
+                        x: root.compactIndex ? 8 : 10
+                        y: root.compactIndex ? 4 : 0
+                        width: root.compactIndex ? friendRow.width - 16 : parent.width - 20
+                        height: root.compactIndex ? 48 : parent.height - 2
+                        radius: 10
                         color: friendRow.chosen ? Theme.selected
                                : (friendArea.containsMouse || friendRow.activeFocus ? Theme.panelAlt : "transparent")
                         border.width: 1
@@ -1073,12 +1257,12 @@ Item {
                         height: 18
                         radius: 1
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: friendRow.chosen
+                        visible: friendRow.chosen && !root.compactIndex
                         color: Theme.accent
                     }
                     Avatar {
                         id: friendAvatar
-                        x: 22
+                        x: root.compactIndex ? (parent.width - width) / 2 : 22
                         width: 36
                         height: 36
                         radius: 10
@@ -1093,6 +1277,7 @@ Item {
                         anchors.rightMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 4
+                        visible: !root.compactIndex
 
                         Text {
                             width: parent.width
@@ -1125,6 +1310,11 @@ Item {
                             friendRow.activate()
                         }
                     }
+
+                    // 折叠态只有头像，名字用悬停提示补回来
+                    ToolTip.visible: root.compactIndex && friendArea.containsMouse
+                    ToolTip.text: model.displayName
+                    ToolTip.delay: 350
                 }
             }
 
@@ -1205,7 +1395,7 @@ Item {
 
         //设置栏与列表栏同宽，切换模式时左侧不跳动
         SettingsPanel {
-            width: root.indexWidth
+            width: root.indexPanelWidth
             height: parent.height
             visible: bridge.mode === ChatBridge.SettingsMode
             controller: bridge
@@ -1213,8 +1403,51 @@ Item {
 
         // 右侧内容区：按 pane 切换页面，实例常驻以保留输入草稿和滚动位置
         Item {
-            width: parent.width - root.sidebarWidth - root.indexWidth
+            id: contentPane
+            width: parent.width - root.sidebarWidth - root.indexPanelWidth
             height: parent.height
+
+            // 分隔条跨在第二栏右边缘上：拖动改宽度，双击恢复 280
+            Item {
+                id: splitter
+                x: -3
+                width: 6
+                height: parent.height
+                z: 100
+                visible: !root.compactIndex
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: splitterArea.pressed || splitterArea.containsMouse
+                        ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.18)
+                        : "transparent"
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                }
+
+                MouseArea {
+                    id: splitterArea
+                    anchors.fill: parent
+                    cursorShape: Qt.SizeHorCursor
+                    property real pressSceneX: 0
+                    property int startWidth: 0
+                    onPressed: (mouse) => {
+                        pressSceneX = mapToItem(null, mouse.x, mouse.y).x
+                        startWidth = root.indexWidth
+                    }
+                    onPositionChanged: (mouse) => {
+                        if (!pressed)
+                            return
+                        const dx = mapToItem(null, mouse.x, mouse.y).x - pressSceneX
+                        root.indexWidth = Math.round(Math.max(root.minIndexWidth,
+                            Math.min(root.maxIndexWidth, startWidth + dx)))
+                    }
+                    onReleased: root.layoutPrefs.indexWidth = root.indexWidth
+                    onDoubleClicked: {
+                        root.indexWidth = 280
+                        root.layoutPrefs.indexWidth = 280
+                    }
+                }
+            }
 
             Column {
                 anchors.centerIn: parent
@@ -1327,11 +1560,11 @@ Item {
         id: functionMenu
         visible: root.functionMenuOpen && bridge.mode === ChatBridge.ChatMode
         // 加号左边沿：面板宽减右边距和按钮宽，菜单从这里向右伸
-        x: root.sidebarWidth + root.indexWidth - 48
+        x: root.sidebarWidth + root.indexPanelWidth - 48
         y: 58
         width: 152
         height: 88
-        radius: 8
+        radius: 10
         color: Theme.panelBg
         border.width: 1
         border.color: Theme.line

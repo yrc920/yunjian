@@ -1,17 +1,23 @@
 import QtQuick
 
-// 表单输入只暴露焦点与组合态，装饰角色不会读取密码内容。
+// 表单输入：默认保持占位文案的老样子，labeled 打开后标签只在聚焦或有内容时浮到边框上。
+// 密码可见开关只改 echoMode，不在 QML 里缓存明文。
 Rectangle {
     id: root
     property alias text: input.text
     // 与服端表的字符上限保持一致，超出部分直接输入不进去
     property alias maximumLength: input.maximumLength
+    property string label: ""
     property string placeholder: ""
+    property bool labeled: false
     property bool password: false
     property bool reveal: false
     property bool invalid: false
     readonly property bool inputFocused: input.activeFocus
     readonly property bool composing: input.inputMethodComposing
+    // 浮起条件：开了标签，且已经聚焦或已有内容；空态由框内提示承担
+    readonly property bool floating: labeled && label.length > 0
+        && (input.activeFocus || input.length > 0)
     signal textEdited()
     signal accepted()
     signal revealToggled()
@@ -19,11 +25,35 @@ Rectangle {
 
     height: Theme.fieldHeight
     radius: Theme.radius
-    color: Theme.fieldBg
-    // 焦点用主色描边，校验失败时优先显示错误色
-    border.width: input.activeFocus ? 1.5 : 1
+    color: Theme.panelBg
+    // 焦点只用 1px 主色描边与标签变色表达；外发光会让输入框看起来像描了两道边
+    border.width: 1
     border.color: invalid ? Theme.danger : input.activeFocus ? Theme.primary : Theme.fieldBorder
     Behavior on border.color { ColorAnimation { duration: 130 } }
+
+    // 浮动标签：用底色在边框线上挖出缺口，标签始终压在这条线上
+    Item {
+        x: 8
+        width: labelText.implicitWidth + 10
+        height: 16
+        y: root.floating ? -8 : -2
+        opacity: root.floating ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 120 } }
+        Behavior on y { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.panelBg
+        }
+        Text {
+            id: labelText
+            anchors.centerIn: parent
+            text: root.label
+            color: root.invalid ? Theme.danger : root.inputFocused ? Theme.primary : Theme.textSecondary
+            font.pixelSize: Theme.fontCaption
+        }
+    }
 
     // 右侧留出眼睛按钮的位置，密码可见时再收回；组合态期间隐藏占位文案
     TextInput {
@@ -31,7 +61,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.leftMargin: 14
-        anchors.rightMargin: root.password ? 48 : 14
+        anchors.rightMargin: root.password ? 46 : 14
         anchors.verticalCenter: parent.verticalCenter
         height: parent.height
         verticalAlignment: TextInput.AlignVCenter
@@ -46,16 +76,18 @@ Rectangle {
         passwordCharacter: "•"
         passwordMaskDelay: 0
         inputMethodHints: root.password ? Qt.ImhHiddenText | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase : Qt.ImhNone
-        Accessible.name: root.placeholder
+        Accessible.name: root.label.length > 0 ? root.label : root.placeholder
         onTextEdited: root.textEdited()
         onAccepted: root.accepted()
     }
+    // 框内提示：未浮起时写标签词；浮起后若还留了占位文案（如「6–15 位」），在聚焦空态继续给出
     Text {
         anchors.left: parent.left
         anchors.leftMargin: 14
         anchors.verticalCenter: parent.verticalCenter
         visible: input.length === 0 && !input.inputMethodComposing
-        text: root.placeholder
+        text: root.floating ? root.placeholder
+                            : (root.labeled && root.label.length > 0 ? root.label : root.placeholder)
         color: Theme.textHint
         font.pixelSize: Theme.fontBody
     }

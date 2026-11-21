@@ -68,6 +68,7 @@ public:
 	bool Get(const std::string& key, std::string& value); //读字符串，key 不存在返回 false
 	bool Set(const std::string& key, const std::string& value);
 	bool SetEx(const std::string& key, const std::string& value, int seconds); //SETEX，写入与过期原子完成
+	bool Expire(const std::string& key, int seconds); //只改过期时间；key 不存在返回 false
 	bool Del(const std::string& key);
 
 	//自增并在首次写入时设置过期秒数，返回自增后的值，失败返回 -1

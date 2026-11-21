@@ -103,7 +103,7 @@ Rectangle {
             width: parent.width
             text: "回车也能找 · Esc 收起"
             color: Theme.textHint
-            font.pixelSize: 10
+            font.pixelSize: Theme.fontCaption
             horizontalAlignment: Text.AlignHCenter
         }
 
@@ -156,7 +156,7 @@ Rectangle {
                             text: "@" + (root.result.name || "") + "  ·  ID  " + (root.result.uid || "")
                             textFormat: Text.PlainText
                             color: Theme.textSecondary
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                             elide: Text.ElideRight
                         }
                     }
@@ -168,7 +168,7 @@ Rectangle {
                     text: root.result.desc || ""
                     textFormat: Text.PlainText
                     color: Theme.textSecondary
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     maximumLineCount: 2
                     elide: Text.ElideRight
@@ -183,7 +183,7 @@ Rectangle {
                     text: root.controller.searchMessage
                     textFormat: Text.PlainText
                     color: Theme.textSecondary
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     wrapMode: Text.Wrap
                 }
 
@@ -243,7 +243,7 @@ Rectangle {
                         text: root.controller.applyMessage || "申请没有发出去，请稍后再试"
                         textFormat: Text.PlainText
                         color: Theme.danger
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     }
                     AppButton {
@@ -259,7 +259,7 @@ Rectangle {
                     visible: root.controller.searchState === ChatBridge.SearchAlreadyApplied
                     text: "已经发过申请，等待对方通过"
                     color: Theme.textSecondary
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                 }
             }
         }
@@ -288,7 +288,7 @@ Rectangle {
                 width: parent.width
                 text: "名字或 ID，再核对一下"
                 color: Theme.textHint
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontCaption
             }
             AppLink {
                 text: "重新搜索"

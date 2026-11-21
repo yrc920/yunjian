@@ -48,6 +48,11 @@ endif()
 
 project(xiguchat VERSION 1.1.1 LANGUAGES CXX)
 
+# macOS 的窗口装饰要调用 AppKit，单独开 Objective-C++；Windows 侧只有空实现
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 # ---------- C++ 标准 ----------
 # 项目统一使用 C++17，编译期强制（不满足则报错）
 set(CMAKE_CXX_STANDARD 17)
@@ -102,6 +107,7 @@ set(CORE_SOURCES
     core/usermgr.cpp
     core/store/localstore.cpp
     core/service/authservice.cpp
+    core/service/autologinstore.cpp
     core/service/sessionservice.cpp
     core/service/chatservice.cpp
     core/service/groupservice.cpp
@@ -119,6 +125,7 @@ set(CORE_HEADERS
     core/userdata.h
     core/usermgr.h
     core/store/localstore.h
+    core/service/autologinstore.h
     core/service/authservice.h
     core/service/sessionservice.h
     core/service/chatservice.h
@@ -195,10 +202,15 @@ set(BRIDGE_SOURCES
     bridge/chatbridge.cpp
     bridge/imagecropper.cpp
     bridge/traycontroller.cpp
+    bridge/windowchrome.cpp
 )
+if(APPLE)
+    list(APPEND BRIDGE_SOURCES bridge/windowchrome_mac.mm)
+endif()
 set(BRIDGE_HEADERS
     bridge/shellbridge.h
     bridge/pagebridge.h
+    bridge/windowchrome.h
     bridge/loginbridge.h
     bridge/registerbridge.h
     bridge/resetbridge.h
@@ -250,6 +262,7 @@ set(QML_FILES
     qml/AppIcon.qml
     qml/PaperCompanion.qml
     qml/AuthPage.qml
+    qml/AppearanceMenu.qml
     qml/Login.qml
     qml/Register.qml
     qml/Reset.qml
@@ -280,6 +293,7 @@ set(QML_FILES
     qml/ToolIcon.qml
     qml/SideButton.qml
     qml/AppInput.qml
+    qml/AppTextArea.qml
     qml/AppButton.qml
     qml/AppLink.qml
     qml/CodeButton.qml

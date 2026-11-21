@@ -49,8 +49,8 @@ constexpr int RENEW_INTERVAL_SECONDS = 30;
 //实例心跳随续租一起提交（30 秒一次）、90 秒过期：容忍两次遗漏，崩溃后不再分配新连接
 constexpr int INSTANCE_TTL_SECONDS = 90;
 constexpr int INSTANCE_HEARTBEAT_SECONDS = 30;
-//令牌 7 天有效，登录时刷新；过期后必须重新走密码登录
-constexpr int TOKEN_TTL_SECONDS = 7 * 24 * 3600;
+//令牌 7 天有效，每次成功登录由 ChatServer 续期；过期后必须重新走密码登录
+//有效期常量在 common/Protocol.h 的 kTokenTtlSeconds，三个服务共用一份
 //单次批量查询上限，超过由调用方分批
 constexpr int MAX_BATCH_LOOKUP = 200;
 //同一 uid 在 10 秒内允许的登录次数，防止客户端重连 bug 造成互踢死循环

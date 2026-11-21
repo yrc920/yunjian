@@ -13,6 +13,8 @@ FocusScope {
 
     property var controller: null
     property bool open: false
+    //true 时标题改成"合并转发"，目标选择后的动作由调用方决定
+    property bool mergeMode: false
     property int count: 0
     property string filter: ""
     signal targetChosen(double threadId, int kind, int uid)
@@ -82,7 +84,7 @@ FocusScope {
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: "转发 " + root.count + " 条消息到"
+                text: (root.mergeMode ? "合并转发 " : "转发 ") + root.count + " 条消息到"
                 font.pixelSize: 15
                 font.bold: true
                 color: Theme.textPrimary
@@ -179,6 +181,9 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 34
                     height: 34
+                    group: modelData.kind === 2
+                    showGroupBadge: false
+                    textSize: 13
                     name: modelData.displayName || ""
                     source: modelData.icon || ""
                 }
@@ -200,7 +205,10 @@ FocusScope {
                     }
                     Text {
                         width: parent.width
-                        text: modelData.kind === 2 ? "群聊" : "单聊"
+                        text: modelData.kind === 2
+                            ? (modelData.memberCount > 0
+                                ? "群聊 · " + modelData.memberCount + " 人" : "群聊")
+                            : "单聊"
                         font.pixelSize: 10
                         color: Theme.textHint
                     }

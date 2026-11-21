@@ -25,6 +25,8 @@ QString typePreview(const std::shared_ptr<TextChatData> &message)
             : QStringLiteral("[文件] ") + message->_file_name;
     case ChatMsgType::System:
         return message->_msg_content;
+    case ChatMsgType::MergeRecord:
+        return QStringLiteral("[聊天记录]");
     default:
         return message->_msg_content;
     }
@@ -106,6 +108,14 @@ ConversationModel::ConversationModel(QObject *parent) : QAbstractListModel(paren
     connect(mgr, &UserMgr::FriendIconChanged, this, [this](int uid) {
         for (int row = 0; row < _rows.size(); ++row) {
             if (_rows[row].kind == 1 && _rows[row].uid == uid) {
+                const auto idx = index(row, 0);
+                emit dataChanged(idx, idx, {AvatarRole});
+            }
+        }
+    });
+    connect(mgr, &UserMgr::GroupIconChanged, this, [this](qint64 thread_id) {
+        for (int row = 0; row < _rows.size(); ++row) {
+            if (_rows[row].kind == 2 && _rows[row].thread == thread_id) {
                 const auto idx = index(row, 0);
                 emit dataChanged(idx, idx, {AvatarRole});
             }
@@ -282,7 +292,7 @@ QVariant ConversationModel::data(const QModelIndex &index, int role) const
         switch (role) {
         case UidRole: return 0;
         case DisplayNameRole: return group->_name;
-        case AvatarRole: return QString();
+        case AvatarRole: return mgr->GroupIconPath(row.thread);
         case InitialRole: return group->_name.isEmpty() ? QStringLiteral("#")
                                                        : group->_name.left(1).toUpper();
         case LastTextRole: return lastText(group);

@@ -143,6 +143,11 @@ Canvas {
         case "open":
             c.beginPath(); rounded(4, 5, 15, 15, 2); c.stroke()
             line(11, 13, 20, 4); poly([15, 4, 20, 4, 20, 9], false); break
+        case "edit":
+            // 铅笔：笔杆 + 笔尖，16px 下也能看出是"编辑"
+            c.beginPath(); c.moveTo(5, 19); c.lineTo(6.5, 13.5); c.lineTo(15, 5)
+            c.lineTo(19, 9); c.lineTo(10.5, 17.5); c.closePath(); c.stroke()
+            line(14, 6, 18, 10); break
         case "more":
             dot(5, 12, 1.5); dot(12, 12, 1.5); dot(19, 12, 1.5); break
         case "pin":

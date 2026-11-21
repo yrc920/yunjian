@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QList>
+#include <QHash>
 #include <QSet>
 #include <QSize>
 #include <memory>
@@ -72,6 +73,8 @@ public:
     void RemoveDownloadFile(const QString &name);
     //头像下载完成后同时替换好友列表与好友申请里的同一 uid，避免两个列表显示不同头像
     void SetContactIcon(int uid, const QString &icon);
+    void SetGroupIcon(qint64 thread_id, const QString &icon);
+    QString GroupIconPath(qint64 thread_id) const;
 
     void AppendApplyList(QJsonArray array);
     //登录下发的会话列表：单聊补 thread_id，群聊写入群会话；两者共用同一份游标
@@ -255,6 +258,7 @@ signals:
     //群资料、成员或我在群里的设置变化；消息变化仍走 ConversationChanged
     void GroupInfoChanged(qint64 thread_id);
     void GroupListChanged(); //群会话增删或排序依据变化，会话模型整表重建
+    void GroupIconChanged(qint64 thread_id); //群头像下载完成，只刷新对应行
 
 private:
     UserMgr();
@@ -280,6 +284,7 @@ private:
     QMap<QString, std::shared_ptr<DownloadFileInfo>> _downloads; //按资源名索引
     QMap<qint64, int> _unread; //thread_id -> 未读条数，只在当前登录会话内有效
     QSet<qint64> _at_me_threads; //有未读 @我 的群会话
+    QHash<qint64, QString> _group_icon_paths; //群头像的本地缓存路径，按 thread_id 索引
     qint64 _active_thread = 0; //正在看的会话，0 表示不在会话里
     //消息窗口所属会话：只用于"保留整段消息窗口"，与已读判定无关。
     //切到设置/联系人、窗口失焦或上翻历史时不能清掉，否则下一条消息会把历史替换成一条

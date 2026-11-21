@@ -80,6 +80,8 @@ CREATE TABLE `conversation` (
   `dm_key`          varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '单聊去重键：小uid:大uid',
   `name`            varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `owner_id`        int NOT NULL DEFAULT 0,
+  `icon`            varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '群头像资源名，单聊为空',
+  `icon_owner`      int NOT NULL DEFAULT 0 COMMENT '群头像上传者，下载时按它定位目录',
   `state`           tinyint unsigned NOT NULL DEFAULT 0 COMMENT '0 正常 1 已解散',
   `dissolved_at`    datetime DEFAULT NULL,
   `notice`          varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',

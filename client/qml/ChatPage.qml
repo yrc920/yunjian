@@ -58,8 +58,15 @@ Item {
     //附件先横向排，放不下换行；区域最多两行高，编辑区高度保持不变
     readonly property real attachmentCardWidth: Math.min(250,
         Math.max(170, Math.floor((width - 84) / 3)))
-    readonly property int composerHeight: 216
-        + (attachmentView.visible ? attachmentView.height : 0)
+    // 输入区：编辑区在上、工具与发送在下；附件插在编辑区上方，多时只让附件区滚动。
+    // 输入区高度：基础 118，可向上拉到 298（拖动上沿），双击恢复；只在松手时落盘
+    property int composerExtra: 0
+    property QtObject layoutPrefs: Settings {
+        category: "Layout"
+        property int composerExtra: 0
+    }
+    readonly property int composerHeight: 118 + composerExtra
+        + (attachmentView.visible ? attachmentView.height + 8 : 0)
 
     property int saveAsMessageId: 0
     property string actionMessage: ""
@@ -71,6 +78,8 @@ Item {
     property var selectedItems: []
     readonly property int selectedCount: selectedItems.length
     property bool forwardOpen: false
+    property bool mergeMode: false //本次转发是否走合并转发
+    property var recordView: null //正在查看的聊天记录快照
     property bool deleteConfirmOpen: false
     property var pendingDeleteItems: []
 
@@ -116,7 +125,11 @@ Item {
             root.bridge.setChatAtBottom(true)
         Qt.callLater(messageList.positionViewAtEnd)
     }
-    Component.onCompleted: composerBridge.switchConversation(input.textDocument, currentThreadId)
+    Component.onCompleted: {
+        // 输入区高度取本机值，夹在允许范围内
+        root.composerExtra = Math.max(0, Math.min(180, layoutPrefs.composerExtra))
+        composerBridge.switchConversation(input.textDocument, currentThreadId)
+    }
     onVisibleChanged: if (visible && !inputLocked) input.forceActiveFocus()
     onInputLockedChanged: {
         if (inputLocked) {
@@ -258,8 +271,19 @@ Item {
                 textFormat: Text.PlainText
                 font.pixelSize: 20
                 font.bold: true
-                color: Theme.textPrimary
+                color: titleHover.containsMouse ? Theme.primary : Theme.textPrimary
                 elide: Text.ElideRight
+                Behavior on color { ColorAnimation { duration: 120 } }
+
+                // 标题就是资料入口：单聊看好友，群聊看群资料
+                MouseArea {
+                    id: titleHover
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
+                }
             }
             Text {
                 visible: root.subtitle.length > 0
@@ -543,7 +567,7 @@ Item {
         anchors.topMargin: 24
         anchors.bottomMargin: 24
         clip: true
-        spacing: 18
+        spacing: 14
         model: root.messages
         boundsBehavior: Flickable.StopAtBounds
 
@@ -570,7 +594,7 @@ Item {
                         text: model.timeText
                         textFormat: Text.PlainText
                         color: Theme.textHint
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                         horizontalAlignment: Text.AlignHCenter
                         elide: Text.ElideRight
                     }
@@ -604,7 +628,7 @@ Item {
                             anchors.centerIn: parent
                             text: "以下 " + (root.bridge ? root.bridge.entryUnread : 0) + " 条未读"
                             color: Theme.accent
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                         }
                     }
                 }
@@ -623,13 +647,13 @@ Item {
                                                : "「" + model.name + "」撤回了一条消息"
                             textFormat: Text.PlainText
                             color: Theme.textHint
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                         }
                         Text {
                             visible: model.recallText.length > 0
                             text: "重新编辑"
                             color: Theme.primary
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
@@ -656,7 +680,7 @@ Item {
                             text: model.text
                             textFormat: Text.PlainText
                             color: Theme.textSecondary
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                         }
                     }
                 }
@@ -665,7 +689,8 @@ Item {
                     id: loader
                     width: parent.width
                     visible: !model.recalled && !model.isSystem
-                    sourceComponent: model.msgType >= 2 ? mediaComponent : bubbleComponent
+                    sourceComponent: (model.msgType === 2 || model.msgType === 3)
+                        ? mediaComponent : bubbleComponent
                 }
             }
 
@@ -694,10 +719,15 @@ Item {
                             root.showActionMessage(root.blockedText.length > 0
                                 ? root.blockedText : "对方还不是你的好友，发送朋友验证后才能重发")
                         else if (code === 2)
-                            root.showActionMessage(model.msgType >= 2
+                            root.showActionMessage(model.msgType === 2 || model.msgType === 3
                                 ? "无法重发：原文件已不在本机" : "这条消息无法重发")
                     }
                     transferProgress: model.transferProgress
+                    mergeRecord: model.msgType === 7
+                    recordTitle: model.msgType === 7 ? root.recordField(model.text, "title") : ""
+                    recordCount: model.msgType === 7 ? root.recordField(model.text, "count") : 0
+                    recordLines: model.msgType === 7 ? root.recordLines(model.text) : []
+                    onRecordClicked: root.openRecord(model.text)
                     onImageClicked: root.openImage(model.messageId, model.imageSource)
                     onContextRequested: (x, y) => root.showMessageMenu(
                         model.messageId, model.msgId, model.msgType, model.text, model.imageSource,
@@ -940,7 +970,44 @@ Item {
         }
     }
 
-    // 输入区：工具与发送在顶部，附件在编辑区上方逐条排列，编辑区保持固定高度。
+    // 回到最新：上滑看历史时出现，点一下回到底部并恢复自动跟随
+    Rectangle {
+        id: toLatest
+        anchors.right: parent.right
+        anchors.rightMargin: 28
+        anchors.bottom: composer.top
+        anchors.bottomMargin: 12
+        width: 40
+        height: 40
+        radius: 20
+        z: 20
+        visible: !root.stickBottom && messageList.count > 0
+            && !root.selecting && !root.inputLocked
+        color: toLatestArea.containsMouse ? Theme.panelAlt : Theme.panelBg
+        border.width: 1
+        border.color: Theme.line
+
+        AppIcon {
+            anchors.centerIn: parent
+            name: "chevronRight"
+            size: 16
+            rotation: 90
+            color: Theme.textSecondary
+        }
+
+        MouseArea {
+            id: toLatestArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                root.stickBottom = true
+                Qt.callLater(messageList.positionViewAtEnd)
+            }
+        }
+    }
+
+    // 输入区：编辑区在上、工具与发送在下，附件逐条排在最上方。
     // 附件多时只让附件列表变高并自身滚动，不再挤压文字输入空间。
     Rectangle {
         id: composer
@@ -958,16 +1025,49 @@ Item {
         border.color: composerDrop.containsDrag || input.activeFocus ? Theme.primary : Theme.line
         Behavior on border.color { ColorAnimation { duration: 130 } }
 
+        // 上沿拖动改高度：向上拉高输入区，双击回到默认高度
         Item {
-            id: topBar
+            id: composerResize
+            anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: parent.top
-            height: 44
+            height: 8
+            z: 6
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.SizeVerCursor
+                property real pressSceneY: 0
+                property int startExtra: 0
+                onPressed: (mouse) => {
+                    pressSceneY = mapToItem(null, mouse.x, mouse.y).y
+                    startExtra = root.composerExtra
+                }
+                onPositionChanged: (mouse) => {
+                    if (!pressed)
+                        return
+                    const dy = mapToItem(null, mouse.x, mouse.y).y - pressSceneY
+                    root.composerExtra = Math.round(Math.max(0, Math.min(180, startExtra - dy)))
+                }
+                onReleased: root.layoutPrefs.composerExtra = root.composerExtra
+                onDoubleClicked: {
+                    root.composerExtra = 0
+                    root.layoutPrefs.composerExtra = 0
+                }
+            }
+        }
+
+        // 底部工具条：左边工具、右边发送，错误提示夹在中间
+        Item {
+            id: bottomBar
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 46
 
             Row {
                 id: tools
-                x: 8
+                x: 6
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 2
                 ToolIcon {
@@ -1006,16 +1106,16 @@ Item {
                 visible: text.length > 0
                 elide: Text.ElideRight
                 color: Theme.danger
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontCaption
             }
 
             AppButton {
                 id: sendButton
                 anchors.right: parent.right
-                anchors.rightMargin: 8
+                anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
                 width: 76
-                height: 30
+                height: 32
                 text: "发送"
                 iconName: "send"
                 enabled: (input.length > 0 || root.hasAttachment) && !input.inputMethodComposing
@@ -1032,7 +1132,7 @@ Item {
             id: attachmentView
             visible: composerBridge.attachments.length > 0
             x: 12
-            y: 45
+            y: 10
             width: parent.width - 24
             height: visible ? Math.min(flow.height, 98) : 0
             contentWidth: width
@@ -1095,7 +1195,7 @@ Item {
                                 text: (modelData.kind === "video" ? "视频" : "文件") + " · "
                                     + root.formatSize(modelData.size || 0)
                                 color: Theme.textHint
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontCaption
                                 elide: Text.ElideRight
                             }
                         }
@@ -1151,10 +1251,10 @@ Item {
         // 编辑区自己滚动：TextEdit 不提供滚动条，外层 Flickable 只负责视口和滚轮
         Flickable {
             id: inputView
-            x: 16
-            y: 45 + attachmentView.height
-            width: parent.width - 32
-            height: parent.height - y - 10
+            x: 14
+            y: 10 + (attachmentView.visible ? attachmentView.height + 8 : 0)
+            width: parent.width - 28
+            height: parent.height - y - 56
             contentWidth: width
             contentHeight: Math.max(input.contentHeight, height)
             clip: true
@@ -1223,7 +1323,7 @@ Item {
 
             Text {
                 visible: input.length === 0 && !input.inputMethodComposing
-                text: "写点什么…（Enter 发送）"
+                text: "发消息"
                 color: Theme.textHint
                 font.pixelSize: Theme.fontBody
             }
@@ -1390,6 +1490,12 @@ Item {
             input.cursorPosition = pos
         //面板保持打开：连续发几个表情不用反复点工具按钮，发送或按 Esc 时再收起
         input.forceActiveFocus()
+    }
+
+    // 从列表按 Esc 回到输入框；插入表情后的聚焦也走这里
+    function focusComposer() {
+        if (visible)
+            input.forceActiveFocus()
     }
 
     // 光标移出视口时把编辑区滚到可见位置，留 4px 余量避免贴边
@@ -1809,15 +1915,55 @@ Item {
     }
     function chooseForwardTarget(threadId, kind, uid) {
         const requested = selectedCount
-        const count = root.bridge.forwardMessages(selectedItems, threadId, kind, uid)
+        const merge = root.mergeMode
+        const count = merge
+            ? root.bridge.mergeForwardMessages(selectedItems, threadId, kind, uid)
+            : root.bridge.forwardMessages(selectedItems, threadId, kind, uid)
         forwardOpen = false
+        root.mergeMode = false
         if (count > 0) {
-            showActionMessage(count === requested
-                ? "已转发 " + count + " 条消息"
+            showActionMessage(merge ? "已合并转发 " + count + " 条消息"
+                : count === requested ? "已转发 " + count + " 条消息"
                 : "已转发 " + count + " 条，" + (requested - count) + " 条未转发")
             cancelSelecting()
         } else {
-            showActionMessage("没有可转发的消息")
+            showActionMessage(merge ? "没有可合并转发的消息" : "没有可转发的消息")
+        }
+    }
+
+    // 聊天记录快照是紧凑 JSON：字段缺失或损坏时退回空值，不让气泡整块消失
+    function recordField(text, key) {
+        try {
+            const obj = JSON.parse(text)
+            if (key === "count")
+                return obj.count || (obj.items ? obj.items.length : 0)
+            return obj[key] || ""
+        } catch (e) {
+            return key === "count" ? 0 : ""
+        }
+    }
+    // 卡片里最多三行预览，和微信一致：只给"谁说了什么"
+    function recordLines(text) {
+        try {
+            const obj = JSON.parse(text)
+            const items = obj.items || []
+            const lines = []
+            for (let i = 0; i < items.length && i < 3; ++i) {
+                const item = items[i]
+                const body = item.c || ""
+                lines.push(item.n ? item.n + "：" + body : body)
+            }
+            return lines
+        } catch (e) {
+            return []
+        }
+    }
+    function openRecord(text) {
+        try {
+            const obj = JSON.parse(text)
+            if (obj && obj.items && obj.items.length > 0)
+                recordView = obj
+        } catch (e) {
         }
     }
 
@@ -1923,6 +2069,20 @@ Item {
                 }
             }
             Text {
+                text: "合并转发"
+                font.pixelSize: 11
+                color: root.selectedCount > 0 ? Theme.primary : Theme.textHint
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: root.selectedCount > 0
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                        root.mergeMode = true
+                        root.forwardOpen = true
+                    }
+                }
+            }
+            Text {
                 text: "删除"
                 font.pixelSize: 11
                 color: root.selectedCount > 0 ? Theme.danger : Theme.textHint
@@ -1940,6 +2100,7 @@ Item {
         controller: root.bridge
         open: root.forwardOpen
         count: root.selectedCount
+        mergeMode: root.mergeMode
         onTargetChosen: (threadId, kind, uid) => root.chooseForwardTarget(threadId, kind, uid)
         onCloseRequested: root.forwardOpen = false
     }
@@ -2021,5 +2182,141 @@ Item {
                 }
             }
         }
+    }
+
+    // 聊天记录查看器：只读，按时间顺序列出快照里的每一条
+    Popup {
+        id: recordPopup
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        width: Math.min(460, parent ? parent.width - 48 : 460)
+        height: Math.min(540, 132 + recordColumn.height)
+        padding: 0
+        visible: root.recordView !== null
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Theme.overlay }
+        background: Rectangle {
+            radius: 12
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        Item {
+            anchors.fill: parent
+            anchors.margins: 16
+
+            Row {
+                id: recordHeader
+                width: parent.width
+                height: 22
+                spacing: 6
+                AppIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "chat"
+                    size: 15
+                    color: Theme.primary
+                }
+                Text {
+                    width: parent.width - 76
+                    text: root.recordView ? (root.recordView.title || "聊天记录") : ""
+                    textFormat: Text.PlainText
+                    color: Theme.textPrimary
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
+                Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.recordView ? (root.recordView.items.length + " 条") : ""
+                    color: Theme.textSecondary
+                    font.pixelSize: Theme.fontCaption
+                }
+            }
+
+            Rectangle {
+                id: recordRule
+                anchors.top: recordHeader.bottom
+                anchors.topMargin: 8
+                width: parent.width
+                height: 1
+                color: Theme.line
+            }
+
+            Flickable {
+                anchors.top: recordRule.bottom
+                anchors.topMargin: 10
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: recordClose.top
+                anchors.bottomMargin: 12
+                clip: true
+                contentWidth: width
+                contentHeight: recordColumn.height
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                Column {
+                    id: recordColumn
+                    width: parent.width
+                    spacing: 14
+
+                    Repeater {
+                        model: root.recordView ? root.recordView.items : []
+                        delegate: Column {
+                            width: recordColumn.width
+                            spacing: 3
+
+                            Item {
+                                width: parent.width
+                                height: 16
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 90
+                                    text: modelData.n || ""
+                                    textFormat: Text.PlainText
+                                    color: Theme.primary
+                                    font.pixelSize: Theme.fontCaption
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: Qt.formatDateTime(
+                                        new Date((modelData.t || 0) * 1000), "MM-dd hh:mm")
+                                    color: Theme.textHint
+                                    font.pixelSize: Theme.fontCaption
+                                }
+                            }
+                            Text {
+                                width: parent.width
+                                text: modelData.c || ""
+                                textFormat: Text.PlainText
+                                color: Theme.textPrimary
+                                font.pixelSize: 13
+                                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                            }
+                        }
+                    }
+                }
+            }
+
+            AppButton {
+                id: recordClose
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 34
+                variant: "secondary"
+                text: "关闭"
+                onClicked: root.recordView = null
+            }
+        }
+
+        onClosed: root.recordView = null
     }
 }

@@ -159,9 +159,9 @@ bool MysqlDao::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 	try {
 		//JOIN 成员行同时完成"是不是群成员"的校验，非成员查不到任何行
 		auto row = con->sql(
-			"SELECT c.name, c.notice, c.owner_id, UNIX_TIMESTAMP(c.created_at), "
+			"SELECT c.name, c.notice, c.owner_id, UNIX_TIMESTAMP(c.created_at), c.icon, "
 			"(SELECT COUNT(*) FROM conversation_member g WHERE g.thread_id = c.thread_id), "
-			"cm.role, cm.muted, cm.nickname, cm.last_read_message_id "
+			"cm.role, cm.muted, cm.nickname, cm.last_read_message_id, c.icon_owner "
 			"FROM conversation c JOIN conversation_member cm "
 			"ON cm.thread_id = c.thread_id AND cm.uid = ? "
 			"WHERE c.thread_id = ? AND c.thread_type = 2 AND c.state = 0")
@@ -175,10 +175,12 @@ bool MysqlDao::GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 		info.owner_id = row[2].get<int>();
 		info.created_at = row[3].isNull() ? 0 : row[3].get<int64_t>();
 		info.member_count = row[4].isNull() ? 0 : row[4].get<int>();
-		info.my_role = row[5].get<int>();
-		info.muted = row[6].get<int>() != 0;
-		info.my_nick = row[7].get<std::string>();
-		info.last_read_message_id = row[8].isNull() ? 0 : row[8].get<int64_t>();
+		info.icon = row[5].get<std::string>();
+		info.my_role = row[6].get<int>();
+		info.muted = row[7].get<int>() != 0;
+		info.my_nick = row[8].get<std::string>();
+		info.last_read_message_id = row[9].isNull() ? 0 : row[9].get<int64_t>();
+		info.icon_owner = row[10].isNull() ? 0 : row[10].get<int>();
 		LoadGroupMembers(*con, thread_id, members);
 		return true;
 	}
@@ -206,19 +208,22 @@ int MysqlDao::UpdateGroupField(long long thread_id, int uid, GroupField field,
 			return ErrorCodes::GroupNotFound;
 		role = member.role;
 
-		if (field == GroupField::Name || field == GroupField::Notice) {
+		if (field == GroupField::Name || field == GroupField::Notice
+			|| field == GroupField::Icon) {
 			if (role < static_cast<int>(GroupRole::Admin))
 				return ErrorCodes::GroupDenied;
-			if (field == GroupField::Name) {
-				con->sql("UPDATE conversation SET name = ? "
+			if (field == GroupField::Icon) {
+				//头像与上传者一起写：下载时需要按上传者定位存储目录
+				con->sql("UPDATE conversation SET icon = ?, icon_owner = ? "
 					"WHERE thread_id = ? AND thread_type = 2")
-					.bind(value).bind(thread_id).execute();
+					.bind(value).bind(uid).bind(thread_id).execute();
+				return ErrorCodes::Success;
 			}
-			else {
-				con->sql("UPDATE conversation SET notice = ? "
-					"WHERE thread_id = ? AND thread_type = 2")
-					.bind(value).bind(thread_id).execute();
-			}
+			//列名来自固定分支，不接受外部拼串
+			const char* column = field == GroupField::Name ? "name" : "notice";
+			con->sql(std::string("UPDATE conversation SET ") + column + " = ? "
+				"WHERE thread_id = ? AND thread_type = 2")
+				.bind(value).bind(thread_id).execute();
 			return ErrorCodes::Success;
 		}
 
@@ -562,7 +567,7 @@ bool MysqlDao::GetGroupMemberIds(long long thread_id, std::vector<int>& members)
 }
 
 bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::string& mentions,
-	const std::vector<std::pair<std::string, std::string>>& contents,
+	const std::vector<ChatContentItem>& contents,
 	std::vector<ChatMessageInfo>& messages)
 {
 	messages.clear();
@@ -590,13 +595,13 @@ bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::
 			"msg_type, mentions) VALUES ";
 		for (std::size_t i = 0; i < contents.size(); ++i) {
 			if (i > 0) insert_sql += ',';
-			insert_sql += "(?, ?, 0, ?, ?, 0, ?)";
+			insert_sql += "(?, ?, 0, ?, ?, ?, ?)";
 		}
 		insert_sql += " ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)";
 		auto insert = con->sql(insert_sql);
 		for (const auto& item : contents)
-			insert.bind(thread_id).bind(sender_id).bind(item.first)
-				.bind(item.second).bind(mentions);
+			insert.bind(thread_id).bind(sender_id).bind(item.client_msg_id)
+				.bind(item.content).bind(item.msg_type).bind(mentions);
 		insert.execute();
 
 		//与单聊一致：按客户端消息ID一次取回 id 与落库时间
@@ -611,7 +616,7 @@ bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::
 		auto select = con->sql(select_sql);
 		select.bind(thread_id).bind(sender_id);
 		for (const auto& item : contents)
-			select.bind(item.first);
+			select.bind(item.client_msg_id);
 		auto res = select.execute();
 
 		std::unordered_map<std::string, std::pair<long long, long long>> saved;
@@ -623,7 +628,7 @@ bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::
 			row = res.fetchOne();
 		}
 		for (const auto& item : contents) {
-			auto iter = saved.find(item.first);
+			auto iter = saved.find(item.client_msg_id);
 			if (iter == saved.end()) {
 				con->rollback();
 				return false;
@@ -633,9 +638,9 @@ bool MysqlDao::SaveGroupMessages(int sender_id, long long thread_id, const std::
 			info.thread_id = thread_id;
 			info.sender_id = sender_id;
 			info.recv_id = 0;
-			info.client_msg_id = item.first;
-			info.content = item.second;
-			info.msg_type = 0;
+			info.client_msg_id = item.client_msg_id;
+			info.content = item.content;
+			info.msg_type = item.msg_type;
 			info.status = 1;
 			info.mentions = mentions;
 			info.created_at = iter->second.second;

@@ -118,8 +118,8 @@ Item {
                 spacing: 12
                 AppButton {
                     objectName: "editProfileButton"
-                    width: 146
-                    height: 42
+                    width: 104
+                    height: 36
                     text: "编辑资料"
                     onClicked: {
                         forceActiveFocus()
@@ -161,7 +161,7 @@ Item {
                     width: parent.width * (root.controller ? root.controller.avatarProgress / 100 : 0)
                     height: parent.height
                     radius: parent.radius
-                    color: Theme.accent
+                    color: Theme.primary
                     Behavior on width { NumberAnimation { duration: 120 } }
                 }
             }
@@ -175,15 +175,11 @@ Item {
             }
 
             Spacer { gap: 30 }
+            // 分隔线只留一条发丝线：之前压了一小段主色短线，看起来像进度条
             Rectangle {
                 width: parent.width
                 height: 1
                 color: Theme.line
-                Rectangle {
-                    width: 28
-                    height: 2
-                    color: Theme.accent
-                }
             }
             Spacer { gap: 12 }
 

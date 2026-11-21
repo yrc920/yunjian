@@ -239,7 +239,7 @@ bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
 			"   AND m.message_id > cm.last_read_message_id AND m.sender_id <> ?), "
 			"(c.thread_type = 2 AND EXISTS (SELECT 1 FROM chat_message m2 "
 			"   WHERE m2.thread_id = c.thread_id AND m2.message_id > cm.last_read_message_id "
-			"   AND m2.sender_id <> ? AND FIND_IN_SET(?, m2.mentions))) "
+			"   AND m2.sender_id <> ? AND FIND_IN_SET(?, m2.mentions))), c.icon, c.icon_owner "
 			"FROM conversation c "
 			"JOIN conversation_member cm ON cm.thread_id = c.thread_id AND cm.uid = ? "
 			"LEFT JOIN user u ON u.uid = CASE WHEN c.thread_type = 1 THEN "
@@ -277,6 +277,8 @@ bool MysqlDao::GetChatThreads(int uid, long long last_thread_id, int limit,
 					info.my_role = row[11].isNull() ? 0 : row[11].get<int>();
 					info.muted = !row[13].isNull() && row[13].get<int>() != 0;
 					info.group_member_count = row[14].isNull() ? 0 : row[14].get<int>();
+					info.group_icon = row[17].isNull() ? "" : row[17].get<std::string>();
+					info.group_icon_owner = row[18].isNull() ? 0 : row[18].get<int>();
 				}
 				info.unread = row[15].isNull() ? 0 : row[15].get<int>();
 				info.at_me = !row[16].isNull() && row[16].get<int>() != 0;
@@ -392,7 +394,7 @@ long long MysqlDao::EnsureChatThread(int sender_id, int recv_id, long long threa
 }
 
 bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
-	const std::vector<std::pair<std::string, std::string>>& contents,
+	const std::vector<ChatContentItem>& contents,
 	std::vector<ChatMessageInfo>& messages)
 {
 	messages.clear();
@@ -429,16 +431,17 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 
 		//一条语句写入整批；同一条重发时保留库里原来的 message_id
 		std::string insert_sql =
-			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content) VALUES ";
+			"INSERT INTO chat_message (thread_id, sender_id, recv_id, client_msg_id, content, msg_type) "
+			"VALUES ";
 		for (std::size_t i = 0; i < contents.size(); ++i) {
 			if (i > 0) insert_sql += ',';
-			insert_sql += "(?, ?, ?, ?, ?)";
+			insert_sql += "(?, ?, ?, ?, ?, ?)";
 		}
 		insert_sql += " ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)";
 		auto insert = con->sql(insert_sql);
 		for (const auto& item : contents)
 			insert.bind(thread_id).bind(sender_id).bind(recv_id)
-				.bind(item.first).bind(item.second);
+				.bind(item.client_msg_id).bind(item.content).bind(item.msg_type);
 		insert.execute();
 
 		//批量插入不能用 LAST_INSERT_ID 推断 id（自增只保证单条语句内连续），
@@ -454,7 +457,7 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 		auto select = con->sql(select_sql);
 		select.bind(thread_id).bind(sender_id);
 		for (const auto& item : contents)
-			select.bind(item.first);
+			select.bind(item.client_msg_id);
 		auto res = select.execute();
 
 		std::unordered_map<std::string, std::pair<long long, long long>> saved;
@@ -466,7 +469,7 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 			row = res.fetchOne();
 		}
 		for (const auto& item : contents) {
-			auto iter = saved.find(item.first);
+			auto iter = saved.find(item.client_msg_id);
 			if (iter == saved.end()) { //写入被忽略或读取失败，整批回滚
 				con->rollback();
 				return false;
@@ -476,8 +479,9 @@ bool MysqlDao::SaveChatMessages(int sender_id, int recv_id, long long thread_id,
 			info.thread_id = thread_id;
 			info.sender_id = sender_id;
 			info.recv_id = recv_id;
-			info.client_msg_id = item.first;
-			info.content = item.second;
+			info.client_msg_id = item.client_msg_id;
+			info.content = item.content;
+			info.msg_type = item.msg_type;
 			info.created_at = iter->second.second;
 			messages.push_back(std::move(info));
 		}

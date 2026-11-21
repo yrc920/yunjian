@@ -2,58 +2,86 @@ pragma Singleton
 import QtQuick
 import QtCore
 
-// 纸白与墨绿共用一套语义色；外观选择保存在本机。
-// 页面只引用这里的语义名，不在各自的 QML 里再判断日/夜。
+// 墨蓝是钢笔墨水，纸白是信纸，火漆红只做印记：界面里唯一的暖色。
+// 外观三态（跟随系统 / 浅色 / 深色）保存在本机，手动选择沿用旧版的 dark 键。
 QtObject {
     id: theme
-    property bool dark: false
+
+    // 跟随系统时由主窗口写入 Qt.styleHints.colorScheme；Unknown 按浅色处理
+    property bool systemDark: false
+    property bool followSystem: true
+    // 手动选择只在脱离跟随系统后生效
+    property bool manualDark: false
+    readonly property bool dark: followSystem ? systemDark : manualDark
+    readonly property string mode: followSystem ? "system" : manualDark ? "dark" : "light"
+
     // 外观写入本机 Settings，切换后重启仍然保持
     property QtObject preferences: Settings {
         category: "Appearance"
-        property alias dark: theme.dark
+        property alias followSystem: theme.followSystem
+        property alias dark: theme.manualDark
     }
-    function toggle() { dark = !dark }
+
+    // 手动切换：按当前实际外观翻到另一侧，并退出跟随系统。
+    // 必须先取反再退出跟随：顺序反了会读到 manualDark 的旧值，系统深色时点了没反应
+    function toggleMode() {
+        manualDark = !dark
+        followSystem = false
+    }
+
+    function setMode(value) {
+        if (value === "system") {
+            followSystem = true
+            return
+        }
+        followSystem = false
+        manualDark = value === "dark"
+    }
 
     // 基础界面色
-    readonly property color bgTop: dark ? "#17231F" : "#F5F5EE"
-    readonly property color panelBg: dark ? "#202E28" : "#FDFDF8"
-    readonly property color panelAlt: dark ? "#293830" : "#EBEFE5"
-    readonly property color chatBg: dark ? "#192720" : "#F2F4ED"
-    readonly property color sidebarBg: dark ? "#132019" : "#E3E9DC"
-    readonly property color selected: dark ? "#34493B" : "#DDE8D6"
-    readonly property color line: dark ? "#35443B" : "#DCE3D5"
+    readonly property color bgTop: dark ? "#0F151B" : "#F4F6F8"
+    readonly property color panelBg: dark ? "#161E26" : "#FFFFFF"
+    readonly property color panelAlt: dark ? "#1E2832" : "#EBEFF4"
+    readonly property color chatBg: dark ? "#0F151B" : "#F6F8FA"
+    readonly property color sidebarBg: dark ? "#131A21" : "#EDF1F6"
+    readonly property color selected: dark ? "#22384C" : "#E7EFF7"
+    readonly property color line: dark ? "#2B3742" : "#E0E6ED"
 
-    readonly property color textPrimary: dark ? "#E7EDDF" : "#233D30"
-    readonly property color textSecondary: dark ? "#A8B7AA" : "#566B58"
-    readonly property color textHint: dark ? "#84978A" : "#60705E"
-    readonly property color ink: dark ? "#B7CFAB" : "#294836"
-    readonly property color danger: dark ? "#F09B87" : "#B64937"
-    readonly property color success: dark ? "#ACCDA4" : "#4B7950"
-    readonly property color accent: dark ? "#ED9D80" : "#B4543C"
+    readonly property color textPrimary: dark ? "#E9EFF5" : "#111A24"
+    readonly property color textSecondary: dark ? "#A7B4C1" : "#55636F"
+    readonly property color textHint: dark ? "#7F8D9A" : "#6E7C89"
+    readonly property color ink: dark ? "#BBD0E2" : "#24476B"
+    readonly property color danger: dark ? "#E0806A" : "#B4453A"
+    readonly property color success: dark ? "#8FD0AE" : "#2E7D5B"
+    readonly property color accent: dark ? "#E0806A" : "#B44A34"
     readonly property color stamp: accent
 
     // 强调色：primary 用于主操作，accent 只做少量标记，danger 用于失败
-    readonly property color primary: dark ? "#BCD2AD" : "#2C503B"
-    readonly property color primaryHover: dark ? "#CDE1BF" : "#3D634A"
-    readonly property color primaryPressed: dark ? "#A7BF97" : "#1E3D2C"
-    readonly property color primaryText: dark ? "#1C3022" : "#F6F9EE"
-    readonly property color primarySoft: dark ? "#334739" : "#E2ECD9"
+    readonly property color primary: dark ? "#7FA9CF" : "#24476B"
+    readonly property color primaryHover: dark ? "#93B9DA" : "#2E5680"
+    readonly property color primaryPressed: dark ? "#6C97BE" : "#1A3550"
+    readonly property color primaryText: dark ? "#0E1A24" : "#F7FAFC"
+    readonly property color primarySoft: dark ? "#22384C" : "#E7EFF7"
 
-    readonly property color bubbleSelf: dark ? "#3C523B" : "#E0EBCF"
+    readonly property color bubbleSelf: dark ? "#22384C" : "#E7EFF7"
     readonly property color bubbleSelfText: textPrimary
-    readonly property color bubbleOther: dark ? "#29382E" : "#FFFFFF"
-    readonly property color fieldBg: dark ? "#1A2820" : "#FBFCF5"
-    readonly property color fieldBorder: dark ? "#425545" : "#CCD7C4"
-    readonly property color overlay: dark ? "#AF080F0B" : "#60253629"
-    readonly property color paper: dark ? "#D8D9BD" : "#FFFDF0"
-    readonly property color paperFold: dark ? "#ABB99A" : "#E1E8CE"
-    readonly property color paperInk: "#344B37"
+    readonly property color bubbleOther: dark ? "#1E2832" : "#FFFFFF"
+    readonly property color fieldBg: dark ? "#171F27" : "#FFFFFF"
+    readonly property color fieldBorder: dark ? "#33404C" : "#D8DFE8"
+    readonly property color overlay: dark ? "#A60A0E12" : "#5E0E1620"
+    // 信纸与蜡印：吉祥物、信封表情与应用图标共用同一组颜色
+    readonly property color paper: dark ? "#E6E1D2" : "#FBF8EF"
+    readonly property color paperFold: dark ? "#D6CDB4" : "#EFE8D6"
+    readonly property color paperInk: "#1E3A57"
 
     // 字号与控件尺寸，页面不再各写像素值
-    readonly property int fontTitle: 26
+    readonly property int fontHero: 24
+    readonly property int fontDisplay: 22
     readonly property int fontBody: 14
     readonly property int fontSmall: 12
-    readonly property int radius: 8
+    readonly property int fontCaption: 11
+    readonly property int radius: 10
     readonly property real bubbleMaxWidth: 460
-    readonly property int fieldHeight: 46
+    readonly property int fieldHeight: 48
+    readonly property int buttonHeight: 44
 }

@@ -142,6 +142,7 @@ enum class ChatMsgType : int {
     Video = 2,
     File = 3,
     System = 4,
+    MergeRecord = 7, //合并转发：content 是聊天记录快照 JSON
 };
 
 //会话类型：与 chat_thread.thread_type 一致，决定消息写到哪张表、名字从哪里取
@@ -226,6 +227,8 @@ struct GroupInfo {
     qint64 _thread_id = 0;
     QString _name;
     QString _notice;
+    QString _icon; //群头像资源名，空表示用名字回退
+    int _icon_owner = 0; //群头像上传者 uid，下载时按它定位目录
     QString _my_nick; //我在本群的昵称，空表示用账号昵称
     int _owner_id = 0;
     int _my_role = static_cast<int>(GroupRole::Member);

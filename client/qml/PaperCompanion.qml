@@ -122,7 +122,7 @@ Item {
             }
         }
         // 边角线在角色留意输入时轻轻展开。
-        Rectangle { x: 18; y: 52; width: root.attentive ? 12 : 6; height: 2; radius: 1; rotation: 20; color: Theme.stamp; opacity: root.attentive ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 180 } } }
-        Rectangle { x: 205; y: 31; width: 12; height: 2; radius: 1; rotation: -35; color: Theme.stamp; opacity: root.revealing ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 180 } } }
+        Rectangle { x: 18; y: 52; width: root.attentive ? 12 : 6; height: 2; radius: 1; rotation: 20; color: Theme.paperInk; opacity: root.attentive ? 0.5 : 0; Behavior on opacity { NumberAnimation { duration: 180 } } }
+        Rectangle { x: 205; y: 31; width: 12; height: 2; radius: 1; rotation: -35; color: Theme.paperInk; opacity: root.revealing ? 0.5 : 0; Behavior on opacity { NumberAnimation { duration: 180 } } }
     }
 }

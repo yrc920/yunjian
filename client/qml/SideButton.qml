@@ -1,6 +1,6 @@
 import QtQuick
 
-// 侧栏入口，选中状态用左侧短线与浅底色区分。
+// 侧栏入口，选中状态用浅底色与主色图标区分；不再贴边画竖线，避免被窗口圆角裁成碎线。
 Rectangle {
     id: root
 
@@ -12,7 +12,7 @@ Rectangle {
 
     width: 52
     height: 62
-    radius: 8
+    radius: 10
     activeFocusOnTab: true
     color: active ? Theme.selected : (area.containsMouse ? Theme.panelAlt : "transparent")
     border.width: activeFocus ? 1 : 0
@@ -25,19 +25,9 @@ Rectangle {
 
     Behavior on color { ColorAnimation { duration: 150 } }
 
-    Rectangle {
-        x: -10
-        y: 21
-        width: 3
-        height: 20
-        radius: 1.5
-        color: Theme.accent
-        visible: root.active
-    }
-
     AppIcon {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 10
+        y: 9
         size: 22
         name: root.kind === "contact" ? "contacts" : root.kind
         color: root.active ? Theme.primary : Theme.textSecondary
@@ -45,11 +35,11 @@ Rectangle {
 
     Text {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 38
+        y: 37
         text: root.label
         color: root.active ? Theme.textPrimary : Theme.textSecondary
-        font.pixelSize: 10
-        font.bold: root.active
+        font.pixelSize: Theme.fontCaption
+        font.weight: root.active ? Font.Medium : Font.Normal
     }
 
     Rectangle {

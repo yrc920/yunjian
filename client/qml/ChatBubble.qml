@@ -13,6 +13,12 @@ Item {
     property string text: ""
     property bool isSelf: false
     property bool isImage: false
+    // 合并转发：气泡换成聊天记录卡片，正文不再渲染
+    property bool mergeRecord: false
+    property string recordTitle: ""
+    property int recordCount: 0
+    property var recordLines: [] //最多三条预览，形如"张三：内容"
+    signal recordClicked()
     property string imageSource: ""
     property int imageWidth: 0
     property int imageHeight: 0
@@ -57,8 +63,10 @@ Item {
         Math.min(Math.ceil(label.implicitWidth), maxTextWidth))
     readonly property real bubbleWidth: Math.max(36, textWidth + 30)
     readonly property real bubbleHeight: label.contentHeight + 22
-    readonly property real bodyWidth: isImage ? pictureWidth : bubbleWidth
-    readonly property real bodyHeight: isImage ? pictureHeight : bubbleHeight
+    readonly property real recordHeight: 40 + Math.max(1, recordLines.length) * 17 + 30
+    readonly property real bodyWidth: mergeRecord ? 250 : (isImage ? pictureWidth : bubbleWidth)
+    readonly property real bodyHeight: mergeRecord ? recordHeight
+        : (isImage ? pictureHeight : bubbleHeight)
     readonly property color bubbleColor: isSelf ? Theme.bubbleSelf : Theme.bubbleOther
 
     //群聊里要在气泡上方让出一行名字；单聊保持原来的紧凑高度
@@ -73,7 +81,7 @@ Item {
         text: root.senderName
         textFormat: Text.PlainText
         color: Theme.textSecondary
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontCaption
         elide: Text.ElideRight
     }
 
@@ -122,12 +130,12 @@ Item {
     // 文字气泡：只有文本消息才有底色、边框和内边距
     Rectangle {
         id: textBubble
-        visible: !root.isImage
+        visible: !root.isImage && !root.mergeRecord
         x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
         y: root.nameOffset
         width: root.bubbleWidth
         height: root.bubbleHeight
-        radius: 9
+        radius: 14
         color: root.bubbleColor
         border.width: root.highlighted ? 2 : (root.isSelf ? 0 : 1)
         border.color: root.highlighted ? Theme.accent : Theme.line
@@ -135,6 +143,7 @@ Item {
 
         TextEdit {
             id: label
+            visible: !root.mergeRecord
             x: 15
             y: 11
             width: root.textWidth
@@ -194,6 +203,111 @@ Item {
         }
     }
 
+    // 聊天记录卡片：独立浅色面板，标题 + 三行预览 + 查看入口
+    Rectangle {
+        id: recordFrame
+        visible: root.mergeRecord
+        x: root.isSelf ? userAvatar.x - 11 - width : userAvatar.width + 11
+        y: root.nameOffset
+        width: 250
+        height: root.recordHeight
+        radius: 14
+        //深色下用比页面稍亮的气泡底色，纯 panelBg 会像在背景上挖了个洞
+        color: Theme.dark ? Theme.bubbleOther : Theme.panelBg
+        border.width: 1
+        border.color: root.highlighted ? Theme.accent : Theme.line
+
+        Item {
+            id: recordHead
+            x: 12
+            y: 10
+            width: parent.width - 24
+            height: 20
+
+            AppIcon {
+                id: recordIcon
+                anchors.verticalCenter: parent.verticalCenter
+                name: "chat"
+                size: 14
+                color: Theme.primary
+            }
+            Text {
+                anchors.left: recordIcon.right
+                anchors.leftMargin: 6
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.recordTitle.length > 0 ? root.recordTitle : "聊天记录"
+                textFormat: Text.PlainText
+                color: Theme.textPrimary
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
+            }
+        }
+
+        Column {
+            id: recordPreview
+            x: 12
+            y: 34
+            width: parent.width - 24
+            spacing: 3
+
+            Repeater {
+                model: root.recordLines
+                delegate: Text {
+                    width: recordPreview.width
+                    text: modelData
+                    textFormat: Text.PlainText
+                    color: Theme.textSecondary
+                    font.pixelSize: Theme.fontCaption
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: recordFoot.top
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            anchors.bottomMargin: 8
+            height: 1
+            color: Theme.line
+        }
+
+        Item {
+            id: recordFoot
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            height: 24
+
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "查看 " + root.recordCount + " 条转发消息"
+                color: Theme.primary
+                font.pixelSize: Theme.fontCaption
+            }
+            AppIcon {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                name: "chevronRight"
+                size: 12
+                color: Theme.primary
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.recordClicked()
+        }
+    }
+
     // 图片容器：没有气泡底色和文字内边距，仅保留圆角裁切
     Rectangle {
         id: pictureFrame
@@ -202,7 +316,7 @@ Item {
         y: root.nameOffset
         width: root.pictureWidth
         height: root.pictureHeight
-        radius: 10
+        radius: 14
         color: Theme.fieldBg
         border.width: root.highlighted ? 2 : (root.localImage ? 0 : 1)
         border.color: root.highlighted ? Theme.accent : Theme.line
@@ -306,7 +420,7 @@ Item {
             visible: root.statusText.length > 0
             text: root.statusText
             color: (root.status === 4 || root.statusText === "已读") ? Theme.textSecondary : Theme.textHint
-            font.pixelSize: 10
+            font.pixelSize: Theme.fontCaption
         }
         Item {
             visible: root.retryable
@@ -317,7 +431,7 @@ Item {
                 anchors.centerIn: parent
                 text: "! 点击重发"
                 color: Theme.danger
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontCaption
             }
             MouseArea {
                 anchors.fill: parent

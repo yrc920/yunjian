@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import XiguChat
 
 // 群资料页：群名、公告、我的群昵称、免打扰、成员与退群/解散。
@@ -20,6 +21,8 @@ Item {
     property var cardMember: ({})
     property int pendingRemoveUid: 0
     property string pendingRemoveName: ""
+
+    property string iconError: "" //群头像上传失败的提示，成功或重新选图时清掉
 
     signal backRequested()
 
@@ -117,12 +120,81 @@ Item {
             // 群名：群主与管理员可以直接改
             Item {
                 width: parent.width
-                height: 62
+                height: 72
+
+                // 群头像与列表同一套规则：名字前两字 + 派生底色
+                Avatar {
+                    id: groupAvatar
+                    x: 0
+                    width: 56
+                    height: 56
+                    radius: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    group: true
+                    showGroupBadge: !root.canManage
+                    source: String(root.info.iconSource || "")
+                    name: String(root.info.name || "群聊")
+                    textSize: 20
+                }
+
+                // 常驻的相机角标：不悬停也知道点头像能换图（管理员才可见）
+                Rectangle {
+                    visible: root.canManage
+                    anchors.right: groupAvatar.right
+                    anchors.bottom: groupAvatar.bottom
+                    anchors.rightMargin: -3
+                    anchors.bottomMargin: -3
+                    width: 20
+                    height: 20
+                    radius: 10
+                    color: Theme.panelBg
+                    border.width: 1
+                    border.color: Theme.line
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "image"
+                        size: 11
+                        color: Theme.primary
+                    }
+                }
+
+                // 悬停再压一层遮罩，强化"可换图"
+                Rectangle {
+                    anchors.fill: groupAvatar
+                    radius: groupAvatar.radius
+                    color: "#59000000"
+                    visible: root.canManage && avatarArea.containsMouse
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "image"
+                        size: 18
+                        color: "#FFFFFF"
+                    }
+                }
+
+                // 头像就是入口：管理员点一下直接换图
+                MouseArea {
+                    id: avatarArea
+                    anchors.fill: groupAvatar
+                    enabled: root.canManage
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: iconPicker.open()
+
+                    ToolTip.visible: containsMouse && enabled
+                    ToolTip.text: "更换群头像"
+                    ToolTip.delay: 300
+                }
+
                 Text {
                     id: groupName
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 120
+                    anchors.left: groupAvatar.right
+                    anchors.leftMargin: 14
+                    anchors.top: parent.top
+                    anchors.topMargin: 10
+                    width: parent.width - 164
                     text: String(root.info.name || "群聊")
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
@@ -130,6 +202,36 @@ Item {
                     font.bold: true
                     elide: Text.ElideRight
                 }
+                // 铅笔常驻：跟文字的 contentWidth 走，短名字也紧贴名字后面；
+                // 悬停时加深颜色，点击进改名弹层
+                AppIcon {
+                    id: nameEdit
+                    anchors.left: groupName.left
+                    anchors.leftMargin: Math.min(groupName.contentWidth, groupName.width - 24) + 8
+                    anchors.verticalCenter: groupName.verticalCenter
+                    name: "edit"
+                    size: 15
+                    color: nameHover.containsMouse ? Theme.primary : Theme.textHint
+                    visible: root.canManage
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                }
+
+                MouseArea {
+                    id: nameHover
+                    anchors.fill: groupName
+                    anchors.rightMargin: -30
+                    anchors.topMargin: -4
+                    anchors.bottomMargin: -4
+                    enabled: root.canManage
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: nameEditor.open()
+
+                    ToolTip.visible: containsMouse && enabled
+                    ToolTip.text: "修改群名"
+                    ToolTip.delay: 300
+                }
+
                 Text {
                     id: memberLabel
                     anchors.left: groupName.left
@@ -139,18 +241,14 @@ Item {
                     color: Theme.textSecondary
                     font.pixelSize: 11
                 }
-                Text {
+                AppButton {
                     visible: root.canManage
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "修改群名"
-                    color: Theme.primary
-                    font.pixelSize: 12
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: nameEditor.open()
-                    }
+                    width: 92
+                    height: 32
+                    text: "编辑资料"
+                    onClicked: editProfile.begin()
                 }
             }
 
@@ -347,7 +445,7 @@ Item {
                                 : modelData.role === 1 ? "（管理员）" : "")
                             textFormat: Text.PlainText
                             color: Theme.textSecondary
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontCaption
                             horizontalAlignment: Text.AlignHCenter
                             elide: Text.ElideRight
                         }
@@ -403,6 +501,7 @@ Item {
                 AppButton {
                     width: 116
                     height: 36
+                    variant: "secondary"
                     text: "退出群聊"
                     enabled: !root.isOwner
                     onClicked: leaveConfirm.open()
@@ -411,6 +510,7 @@ Item {
                     width: 116
                     height: 36
                     visible: root.isOwner
+                    variant: "danger"
                     text: "解散群聊"
                     onClicked: dismissConfirm.open()
                 }
@@ -572,6 +672,7 @@ Item {
         height: 172
         padding: 0
         closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: Theme.overlay }
         background: Rectangle {
             radius: 10
             color: Theme.panelBg
@@ -619,10 +720,11 @@ Item {
         anchors.centerIn: parent
         modal: true
         focus: true
-        width: 380
-        height: 236
+        width: 400
+        height: 320
         padding: 0
         closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: Theme.overlay }
         background: Rectangle {
             radius: 10
             color: Theme.panelBg
@@ -635,11 +737,12 @@ Item {
             width: parent.width - 36
             spacing: 12
             Text { text: "编辑群公告"; color: Theme.textPrimary; font.pixelSize: 15; font.bold: true }
-            AppInput {
+            AppTextArea {
                 id: noticeInput
                 width: parent.width
-                maximumLength: 200
-                placeholder: "最多 200 个字符"
+                height: 150
+                maxLength: 200
+                placeholder: "写点群规、活动安排，最多 200 个字符"
                 text: root.notice
             }
             Row {
@@ -655,6 +758,7 @@ Item {
                     width: 84
                     height: 34
                     text: "保存"
+                    enabled: !noticeInput.overLimit
                     onClicked: {
                         controller.updateGroupField("notice", noticeInput.text.trim())
                         noticeEditor.close()
@@ -674,6 +778,7 @@ Item {
         height: 172
         padding: 0
         closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: Theme.overlay }
         background: Rectangle {
             radius: 10
             color: Theme.panelBg
@@ -726,6 +831,7 @@ Item {
         height: 420
         padding: 0
         closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: Theme.overlay }
         background: Rectangle {
             radius: 10
             color: Theme.panelBg
@@ -890,5 +996,126 @@ Item {
                 }
             }
         }
+    }
+
+    // 编辑群资料：头像、群名、公告一次改完；单项仍可在页面上就地改
+    Popup {
+        id: editProfile
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        width: 380
+        height: 362
+        padding: 0
+        closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: Theme.overlay }
+        background: Rectangle {
+            radius: 10
+            color: Theme.panelBg
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        property string draftName: ""
+        property string draftNotice: ""
+
+        function begin() {
+            draftName = String(root.info.name || "")
+            draftNotice = root.notice
+            root.iconError = ""
+            open()
+        }
+
+        Column {
+            x: 18
+            y: 16
+            width: parent.width - 36
+            spacing: 12
+            Text { text: "编辑群资料"; color: Theme.textPrimary; font.pixelSize: 15; font.bold: true }
+
+            Row {
+                spacing: 12
+                Avatar {
+                    width: 48
+                    height: 48
+                    radius: 12
+                    group: true
+                    source: String(root.info.iconSource || "")
+                    name: editProfile.draftName.length > 0 ? editProfile.draftName : "群聊"
+                    textSize: 16
+                }
+                AppLink {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "更换头像"
+                    onClicked: iconPicker.open()
+                }
+            }
+
+            AppInput {
+                width: parent.width
+                maximumLength: 30
+                placeholder: "群名称"
+                text: editProfile.draftName
+                onTextEdited: editProfile.draftName = text
+            }
+
+            AppTextArea {
+                width: parent.width
+                height: 84
+                maxLength: 200
+                placeholder: "群公告（可留空）"
+                text: editProfile.draftNotice
+                onTextEdited: editProfile.draftNotice = text
+            }
+
+            Text {
+                width: parent.width
+                visible: root.iconError.length > 0
+                text: root.iconError
+                color: Theme.danger
+                font.pixelSize: Theme.fontSmall
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            }
+
+            Row {
+                spacing: 10
+                anchors.right: parent.right
+                AppButton {
+                    width: 84
+                    height: 34
+                    variant: "secondary"
+                    text: "取消"
+                    onClicked: editProfile.close()
+                }
+                AppButton {
+                    width: 84
+                    height: 34
+                    text: "保存"
+                    enabled: editProfile.draftName.trim().length > 0
+                    onClicked: {
+                        const name = editProfile.draftName.trim()
+                        if (name.length > 0)
+                            controller.updateGroupField("name", name)
+                        controller.updateGroupField("notice", editProfile.draftNotice.trim())
+                        editProfile.close()
+                    }
+                }
+            }
+        }
+    }
+
+    FileDialog {
+        id: iconPicker
+        title: "选择群头像"
+        nameFilters: ["图片 (*.png *.jpg *.jpeg *.webp *.bmp)"]
+        onAccepted: {
+            root.iconError = ""
+            controller.updateGroupIcon(selectedFile)
+        }
+    }
+
+    Connections {
+        target: root.controller
+        function onGroupIconFailed(message) { console.log("group icon failed:", message); root.iconError = message }
     }
 }

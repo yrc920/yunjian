@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 import QtQuick.Window
 import XiguChat
 
@@ -7,7 +8,7 @@ import XiguChat
 Window {
     id: window
     visible: true
-    title: "xiguchat"
+    title: "XiguChat"
     color: Theme.bgTop
 
     //通知点击后要回到哪条会话；关闭到托盘时用 quitting 区分"隐藏"和"真退出"
@@ -17,6 +18,33 @@ Window {
     property bool quitting: false
     //上一个页面类型：登录→聊天、聊天→登录时用来判断是否需要重新居中
     property string lastPage: ""
+
+    // 聊天窗口的尺寸与位置记在本机；认证页尺寸固定，不参与记忆
+    Settings {
+        id: windowPrefs
+        category: "Window"
+        property int chatWidth: 1060
+        property int chatHeight: 740
+        property int chatX: -1
+        property int chatY: -1
+    }
+    Timer {
+        id: windowSaver
+        interval: 400
+        onTriggered: window.saveGeometry()
+    }
+    function saveGeometry() {
+        if (shell.page !== "chat" || !visible)
+            return
+        windowPrefs.chatWidth = width
+        windowPrefs.chatHeight = height
+        windowPrefs.chatX = x
+        windowPrefs.chatY = y
+    }
+    onWidthChanged: if (shell.page === "chat" && visible) windowSaver.restart()
+    onHeightChanged: if (shell.page === "chat" && visible) windowSaver.restart()
+    onXChanged: if (shell.page === "chat" && visible) windowSaver.restart()
+    onYChanged: if (shell.page === "chat" && visible) windowSaver.restart()
 
     onClosing: (close) => {
         if (!quitting && tray.available && shell.page === "chat") {
@@ -92,15 +120,20 @@ Window {
         const limitH = Math.max(480, areaH - 16)
         const enteringChat = name === "chat" && lastPage !== "chat"
         if (name === "chat") {
-            minimumWidth = Math.min(960, limitW)
-            minimumHeight = Math.min(680, limitH)
-            width = Math.min(Math.max(width, 1060), limitW)
-            height = Math.min(Math.max(height, 740), limitH)
-            //从认证页进入聊天时重新居中，避免登录后还要手动拖窗口；
+            minimumWidth = Math.min(900, limitW)
+            minimumHeight = Math.min(620, limitH)
+            // 尺寸取上次退出时的值，并夹在最小尺寸与屏幕可用区之间
+            width = Math.min(Math.max(windowPrefs.chatWidth, minimumWidth), limitW)
+            height = Math.min(Math.max(windowPrefs.chatHeight, minimumHeight), limitH)
+            //从认证页进入聊天时恢复上次位置，没有合适的位置就居中；
             //已经是聊天页时保留用户自己拉过的位置，但不能跑到屏幕外
             if (enteringChat) {
-                x = areaX + Math.max(8, (areaW - width) / 2)
-                y = areaY + Math.max(8, (areaH - height) / 2)
+                const sx = windowPrefs.chatX
+                const sy = windowPrefs.chatY
+                const restored = sx >= areaX && sy >= areaY
+                    && sx + width <= areaX + areaW && sy + height <= areaY + areaH
+                x = restored ? sx : areaX + Math.max(8, (areaW - width) / 2)
+                y = restored ? sy : areaY + Math.max(8, (areaH - height) / 2)
             } else {
                 if (x < areaX || x + width > areaX + areaW)
                     x = areaX + Math.max(8, (areaW - width) / 2)
@@ -108,8 +141,8 @@ Window {
                     y = areaY + Math.max(8, (areaH - height) / 2)
             }
         } else {
-            // 认证页高度按内容区分：登录 560、注册 740、重置 680；超出屏幕时由 AuthPage 内部滚动
-            const h = name === "register" ? 740 : name === "reset" ? 680 : 560
+            // 认证页高度按内容区分：登录 580、注册 664、找回 620；超出屏幕时由 AuthPage 内部滚动
+            const h = name === "register" ? 664 : name === "reset" ? 620 : 580
             const pageH = Math.min(h, limitH)
             minimumWidth = 420
             minimumHeight = pageH
@@ -123,7 +156,29 @@ Window {
         lastPage = name
         loader.setSource(pageFile(name))
     }
-    Component.onCompleted: showPage(shell.page)
+    // 系统外观由平台上报，Unknown 视为浅色；是否采纳由 Theme 的跟随开关决定
+    function syncSystemScheme() {
+        Theme.systemDark = Qt.styleHints.colorScheme === Qt.ColorScheme.Dark
+    }
+    Connections {
+        target: Qt.styleHints
+        function onColorSchemeChanged() { window.syncSystemScheme() }
+    }
+
+    Component.onCompleted: {
+        syncSystemScheme()
+        showPage(shell.page)
+        Qt.callLater(syncChrome)
+    }
+
+    // 标题栏与界面外观保持一致：macOS 隐藏标题文字，并在深色下把标题栏一起变深
+    function syncChrome() {
+        WindowChrome.apply(window, Theme.dark)
+    }
+    Connections {
+        target: Theme
+        function onDarkChanged() { window.syncChrome() }
+    }
     Connections {
         target: shell
         function onPageChanged() { window.showPage(shell.page) }
@@ -170,6 +225,7 @@ Window {
         enabled: shell.notice.length === 0
     }
     Rectangle {
+        id: appearanceButton
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 16
@@ -181,9 +237,9 @@ Window {
         color: modeArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
         activeFocusOnTab: visible
         Accessible.role: Accessible.Button
-        Accessible.name: Theme.dark ? "切换浅色外观" : "切换深色外观"
-        Keys.onReturnPressed: Theme.toggle()
-        Keys.onSpacePressed: Theme.toggle()
+        Accessible.name: Theme.dark ? "切换到浅色" : "切换到深色"
+        Keys.onReturnPressed: Theme.toggleMode()
+        Keys.onSpacePressed: Theme.toggleMode()
         AppIcon {
             anchors.centerIn: parent
             name: Theme.dark ? "sun" : "moon"
@@ -195,7 +251,8 @@ Window {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: Theme.toggle()
+            // 一键切换：点了就换，跟随系统的三选一留在设置页
+            onClicked: Theme.toggleMode()
         }
     }
 

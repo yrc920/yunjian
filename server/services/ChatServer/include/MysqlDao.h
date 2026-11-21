@@ -76,7 +76,7 @@ public:
 		std::vector<ChatMessageInfo>& messages, bool& has_more);
 	//批量写入消息; thread_id 为0时先找到或创建会话, 相同 (会话,发送者,client_msg_id) 视为重发
 	bool SaveChatMessages(int sender_id, int recv_id, long long thread_id,
-		const std::vector<std::pair<std::string, std::string>>& contents,
+		const std::vector<ChatContentItem>& contents,
 		std::vector<ChatMessageInfo>& messages);
 	//写入一条资源消息(图片/视频/文件): 资源还没上传, 先落库占位, 由资源服务器完成后回写状态
 	bool SaveResourceMessage(int sender_id, int recv_id, long long thread_id,
@@ -100,8 +100,8 @@ public:
 	bool GetGroupInfo(int uid, long long thread_id, GroupInfo& info,
 		std::vector<GroupMemberInfo>& members);
 	//群设置字段: 与 conversation / conversation_member 的列一一对应
-	enum class GroupField { Name = 1, Notice = 2, MyNickname = 3, Muted = 4 };
-	//修改群设置: 群名与公告需要管理员及以上, 群昵称与免打扰改自己那一行。
+	enum class GroupField { Name = 1, Notice = 2, MyNickname = 3, Muted = 4, Icon = 5 };
+	//修改群设置: 群名、公告与群头像需要管理员及以上, 群昵称与免打扰改自己那一行。
 	//返回 ErrorCodes; 成功时 value 回填生效后的值
 	int UpdateGroupField(long long thread_id, int uid, GroupField field,
 		const std::string& value, std::string& applied);
@@ -124,7 +124,7 @@ public:
 	bool GetGroupMemberIds(long long thread_id, std::vector<int>& members);
 	//批量写入群消息: 只校验群成员身份, recv_id 固定 0, mentions 是逗号分隔的 @ 名单
 	bool SaveGroupMessages(int sender_id, long long thread_id, const std::string& mentions,
-		const std::vector<std::pair<std::string, std::string>>& contents,
+		const std::vector<ChatContentItem>& contents,
 		std::vector<ChatMessageInfo>& messages);
 	//写入一条群资源消息(图片/视频/文件), 资源上传完成后由资源服务器回写状态
 	bool SaveGroupResourceMessage(int sender_id, long long thread_id, const std::string& mentions,

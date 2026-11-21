@@ -1,6 +1,6 @@
 import QtQuick
 
-// 验证码按钮：高度与输入框一致，倒计时期间由 usable 置灰并阻止重复点击。
+// 验证码按钮：与输入框同高，作为行内次要动作，倒计时期间置灰并阻止重复点击。
 Rectangle {
     id: root
     property string text: ""
@@ -8,15 +8,22 @@ Rectangle {
     signal clicked()
     height: Theme.fieldHeight
     radius: Theme.radius
-    color: area.containsMouse && usable ? Theme.primarySoft : Theme.panelAlt
-    border.width: activeFocus ? 1.5 : 1
-    border.color: activeFocus ? Theme.primary : Theme.line
+    color: area.containsMouse && usable ? Theme.selected : Theme.panelAlt
+    border.width: activeFocus ? 1 : 0
+    border.color: Theme.primary
     activeFocusOnTab: usable
-    opacity: usable ? 1 : 0.6
+    opacity: usable ? 1 : 0.5
     Accessible.role: Accessible.Button
     Accessible.name: text
     Keys.onReturnPressed: if (usable) clicked()
     Keys.onSpacePressed: if (usable) clicked()
-    Text { anchors.centerIn: parent; text: root.text; color: Theme.textPrimary; font.pixelSize: Theme.fontSmall }
+    Behavior on color { ColorAnimation { duration: 130 } }
+    Text {
+        anchors.centerIn: parent
+        text: root.text
+        color: root.usable ? Theme.textPrimary : Theme.textSecondary
+        font.pixelSize: Theme.fontSmall
+        font.weight: Font.Medium
+    }
     MouseArea { id: area; anchors.fill: parent; enabled: root.usable; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.clicked() }
 }

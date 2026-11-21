@@ -23,13 +23,15 @@ Rectangle {
         y: 51
         text: "资料与外观"
         color: Theme.textSecondary
-        font.pixelSize: 11
+        font.pixelSize: Theme.fontSmall
     }
 
     // 设置分栏：资料与通用。选中态由 pane 决定，切换后在会话/联系人之间来回也不丢
     readonly property int currentPane: root.controller ? root.controller.pane : -1
     readonly property bool profileSelected: currentPane === ChatBridge.UserInfoPage
     readonly property bool generalSelected: currentPane === ChatBridge.GeneralPage
+    readonly property string appearanceLabel: Theme.mode === "system" ? "跟随系统"
+        : Theme.mode === "dark" ? "深色" : "浅色"
 
     Rectangle {
         id: profileRow
@@ -37,7 +39,7 @@ Rectangle {
         y: 96
         width: parent.width - 24
         height: 58
-        radius: 8
+        radius: 10
         color: profileSelected ? Theme.selected
                                : (profileArea.containsMouse ? Theme.panelAlt : "transparent")
 
@@ -80,7 +82,7 @@ Rectangle {
         y: 160
         width: parent.width - 24
         height: 58
-        radius: 8
+        radius: 10
         color: generalSelected ? Theme.selected
                                : (generalArea.containsMouse ? Theme.panelAlt : "transparent")
 
@@ -125,23 +127,23 @@ Rectangle {
         color: Theme.line
     }
 
-    // 外观开关直接写本机配置，不经过服务器
+    // 外观入口：三选一（跟随系统 / 浅色 / 深色），直接写本机配置，不经过服务器
     Rectangle {
         id: appearance
         x: 12
         y: 247
         width: parent.width - 24
         height: 58
-        radius: 8
-        color: appearanceArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
+        radius: 10
+        color: appearanceArea.containsMouse || activeFocus || appearanceMenu.opened ? Theme.panelAlt : "transparent"
         border.width: activeFocus ? 1 : 0
         border.color: Theme.primary
         activeFocusOnTab: true
         Accessible.role: Accessible.Button
-        Accessible.name: Theme.dark ? "切换到日间外观" : "切换到夜间外观"
-        Accessible.onPressAction: Theme.toggle()
-        Keys.onSpacePressed: Theme.toggle()
-        Keys.onReturnPressed: Theme.toggle()
+        Accessible.name: "外观"
+        Accessible.onPressAction: appearanceMenu.open()
+        Keys.onSpacePressed: appearanceMenu.open()
+        Keys.onReturnPressed: appearanceMenu.open()
 
         AppIcon {
             x: 17
@@ -161,7 +163,7 @@ Rectangle {
             anchors.right: parent.right
             anchors.rightMargin: 17
             anchors.verticalCenter: parent.verticalCenter
-            text: Theme.dark ? "夜间" : "日间"
+            text: root.appearanceLabel
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
@@ -172,8 +174,13 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
                 appearance.forceActiveFocus()
-                Theme.toggle()
+                appearanceMenu.open()
             }
+        }
+        AppearanceMenu {
+            id: appearanceMenu
+            x: appearance.width - width - 12
+            y: appearance.height + 4
         }
     }
 
@@ -192,7 +199,7 @@ Rectangle {
         y: 330
         width: parent.width - 24
         height: 54
-        radius: 8
+        radius: 10
         color: logoutArea.containsMouse ? Theme.panelAlt : "transparent"
         activeFocusOnTab: true
         Accessible.role: Accessible.Button

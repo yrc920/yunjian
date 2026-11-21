@@ -8,6 +8,7 @@
 #include <QUrl>
 
 #include "chatservice.h"
+#include "fileservice.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
 
@@ -257,7 +258,18 @@ void GroupService::applyGroupChanged(const QJsonObject &data)
             patch["name"] = data.value("name").toString();
         if (data.contains("notice"))
             patch["notice"] = data.value("notice").toString();
+        if (data.contains("icon")) {
+            patch["icon"] = data.value("icon").toString();
+            patch["icon_owner"] = data.value("icon_owner").toInt();
+        }
         mgr->ApplyGroupProfile(patch);
+        //头像变了要立刻去下载，否则线上成员要等下次登录才看到
+        if (data.contains("icon")) {
+            auto group = mgr->GetGroup(threadId);
+            if (group && !group->_icon.isEmpty())
+                FileService::GetInstance()->CacheGroupIcon(threadId,
+                    group->_icon, group->_icon_owner);
+        }
         return;
     }
 

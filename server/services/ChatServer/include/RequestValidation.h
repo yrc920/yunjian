@@ -194,7 +194,7 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
             return Error_Json;
         const auto action = root["action"].asString();
         return (action == "name" || action == "notice" || action == "nickname"
-            || action == "mute") ? Success : Error_Json;
+            || action == "mute" || action == "icon") ? Success : Error_Json;
     }
     if (id == ID_GROUP_MEMBER_OP_REQ) {
         if (!root["thread_id"].isInt64() || root["thread_id"].asInt64() <= 0
@@ -240,6 +240,17 @@ inline ErrorCodes ValidateChatRequest(short id, const Json::Value& root, int ses
             if (!text.isObject() || !text["content"].isString() || !text["msgid"].isString()
                 || text["msgid"].asString().empty())
                 return Error_Json;
+            //可选类型：0 普通文本，7 合并转发（content 是聊天记录快照 JSON）
+            if (text.isMember("type")) {
+                if (!text["type"].isInt())
+                    return Error_Json;
+                const int type = text["type"].asInt();
+                //合并转发单条承载多条消息，限制整包 6KB，避免超过单帧上限
+                if (type != 0 && type != 7)
+                    return Error_Json;
+                if (type == 7 && text["content"].asString().size() > 6000)
+                    return Error_Json;
+            }
         }
         if (root.isMember("thread_id")
             && (!root["thread_id"].isInt64() || root["thread_id"].asInt64() < 0))

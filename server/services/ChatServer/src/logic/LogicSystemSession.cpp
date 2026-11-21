@@ -3,6 +3,7 @@
 #include "StatusGrpcClient.h"
 #include "MysqlDao.h"
 #include "JsonUtil.h"
+#include "Protocol.h"
 #include "RedisMgr.h"
 #include "UserMgr.h"
 #include "SessionRouter.h"
@@ -42,6 +43,10 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session,
 		rtvalue["error"] = ErrorCodes::TokenInvalid;
 		return;
 	}
+
+	//令牌按最近一次成功登录续期：连续一周没登录才需要重新输密码。
+	//续期失败不影响本次登录，只是令牌仍按原过期时间失效
+	RedisMgr::GetInstance()->Expire(token_key, kTokenTtlSeconds);
 
 	rtvalue["error"] = ErrorCodes::Success;
 

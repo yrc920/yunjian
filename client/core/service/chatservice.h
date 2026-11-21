@@ -19,8 +19,9 @@ public:
     friend class Singleton<ChatService>;
     ~ChatService();
     //单聊与群聊共用同一条发送链路：会话上下文决定写哪张表、通知哪些人
+    //type 默认 0；7 表示合并转发的聊天记录，content 直接放快照 JSON
     bool sendText(const ConversationRef &conv, const QString &text,
-        const QStringList &mentions = {});
+        const QStringList &mentions = {}, int type = 0);
     //图片先发 4010 落库，收到回执后由 uploadPendingImage 启动 6001 断点上传；
     //thumbnail 是气泡用的缩略图，uploadPath 是输入区压缩好的上传文件
     bool sendImage(const ConversationRef &conv, const QString &thumbnail,

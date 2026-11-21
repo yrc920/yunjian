@@ -251,6 +251,9 @@ public:
     //通知点击：按会话类型回到对应聊天；私聊优先用 peer uid，兼容还没有 thread_id 的老数据
     Q_INVOKABLE void openThread(qint64 threadId, int kind, int peerUid);
     //多选转发：keys 是 {msgId, messageId} 列表，返回实际发出的条数
+    //合并转发：把选中的消息打成一份聊天记录快照，作为一条 type=7 的消息发出
+    Q_INVOKABLE int mergeForwardMessages(const QVariantList &keys, qint64 targetThreadId,
+        int targetKind, int targetPeerUid);
     Q_INVOKABLE int forwardMessages(const QVariantList &keys, qint64 targetThreadId,
                                     int targetKind, int targetPeerUid);
     //本机删除：只删当前会话的本地记录与缓存，服务端与对方不受影响
@@ -299,6 +302,8 @@ public:
     Q_INVOKABLE void backToChat();
     //action: name / notice / nickname / mute
     Q_INVOKABLE void updateGroupField(const QString &action, const QString &value);
+    //群头像：本地裁成 512 PNG 后上传，成功后把资源名写回群资料
+    Q_INVOKABLE bool updateGroupIcon(const QUrl &fileUrl);
     Q_INVOKABLE void toggleGroupMute();
     Q_INVOKABLE void inviteGroupMembers(const QVariantList &uids);
     Q_INVOKABLE void removeGroupMember(int uid);
@@ -347,6 +352,7 @@ signals:
     void currentChanged();
     void groupChanged();
     void groupStateChanged();
+    void groupIconFailed(const QString &message);
     void createGroupChanged();
     void searchTextChanged();
     void searchStateChanged();
@@ -443,6 +449,9 @@ private:
     QVariantList _messageSearchResults;
     qint64 _scrollToMessageId = 0;
     QString _pendingQuery; // 本次在途搜索的关键词，用于丢弃改词后回来的旧结果
+    QString _pendingGroupIcon; //正在上传的群头像资源名
+    qint64 _pendingGroupThread = 0;
+    QString _pendingGroupIconPath;
     bool _addFriendOpen = false;
     QString _friendQuery;
     QVariantList _friendMatches;

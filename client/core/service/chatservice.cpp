@@ -291,7 +291,7 @@ void ChatService::ensurePrivateChat(int uid)
 // 发送文本：先落一条本地待确认消息，再按服务端帧上限拆分发送。
 // 返回 true 只代表已交给网络层，不代表对方收到
 bool ChatService::sendText(const ConversationRef &conv, const QString &text,
-                           const QStringList &mentions)
+                           const QStringList &mentions, int type)
 {
     auto *mgr = UserMgr::GetInstance().get();
     if (!ensureConversation(conv))
@@ -325,7 +325,11 @@ bool ChatService::sendText(const ConversationRef &conv, const QString &text,
             const qsizetype count = text.at(offset).isHighSurrogate()
                 && offset + 1 < text.size() && text.at(offset + 1).isLowSurrogate() ? 2 : 1;
             const QString next = content + text.mid(offset, count);
-            frame["text_array"] = QJsonArray{QJsonObject{{"msgid", msgId}, {"content", next}}};
+            QJsonObject item{{"msgid", msgId}, {"content", next}};
+            //合并转发不拆帧：整包在发送前已经校验过 6KB
+            if (type != 0)
+                item["type"] = type;
+            frame["text_array"] = QJsonArray{item};
             const QByteArray encoded = QJsonDocument(frame).toJson(QJsonDocument::Compact);
             if (encoded.size() > 7000 && !content.isEmpty())
                 break;
@@ -337,6 +341,8 @@ bool ChatService::sendText(const ConversationRef &conv, const QString &text,
         emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, payload);
         auto pending = std::make_shared<TextChatData>(msgId, content, from, conv._peer_uid, 0,
             conv._thread_id, ChatMessageStatus::Sending);
+        if (type == static_cast<int>(ChatMsgType::MergeRecord))
+            pending->_msg_type = ChatMsgType::MergeRecord;
         //先按本机时间占位，回执带回服务端时间后原地覆盖，避免发送中这一行没有时间
         pending->_time = QDateTime::currentSecsSinceEpoch();
         mgr->AppendChatMsgs(conv, {pending});

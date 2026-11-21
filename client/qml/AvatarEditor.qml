@@ -82,7 +82,7 @@ Popup {
             id: header
             width: parent.width
             height: 80
-            Rectangle { x: 28; width: 38; height: 3; color: Theme.accent }
+            Rectangle { x: 28; width: 38; height: 3; color: Theme.primary }
             Text {
                 x: 28
                 y: 23

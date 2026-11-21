@@ -868,6 +868,21 @@ void UserMgr::SetContactIcon(int uid, const QString &icon)
         emit ApplyIconChanged(uid); //只刷新申请列表对应行
 }
 
+void UserMgr::SetGroupIcon(qint64 thread_id, const QString &icon)
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    if (thread_id <= 0 || _group_icon_paths.value(thread_id) == icon)
+        return;
+    _group_icon_paths.insert(thread_id, icon);
+    emit GroupIconChanged(thread_id); //会话模型只刷新这一行
+}
+
+QString UserMgr::GroupIconPath(qint64 thread_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(_mtx);
+    return _group_icon_paths.value(thread_id);
+}
+
 void UserMgr::AppendApplyList(QJsonArray array)
 {
     std::lock_guard<std::recursive_mutex> lock(_mtx);
@@ -2238,6 +2253,8 @@ void UserMgr::UpsertGroupThread(const QJsonObject &item)
     if (group->_name.isEmpty())
         group->_name = QStringLiteral("群聊");
     group->_owner_id = item.value("owner").toInt();
+    group->_icon = item.value("icon").toString();
+    group->_icon_owner = item.value("icon_owner").toInt();
     group->_member_count = item.value("member_count").toInt();
     group->_my_role = item.value("my_role").toInt();
     //会话列表里出现且带我的角色，说明我又是成员了（被重新拉回群）：离开标记要清掉
@@ -2287,6 +2304,10 @@ void UserMgr::ApplyGroupProfile(const QJsonObject &group_json)
         group->_name = group_json.value("name").toString();
     if (group_json.contains("notice"))
         group->_notice = group_json.value("notice").toString();
+    if (group_json.contains("icon"))
+        group->_icon = group_json.value("icon").toString();
+    if (group_json.contains("icon_owner"))
+        group->_icon_owner = group_json.value("icon_owner").toInt();
     if (group_json.contains("owner"))
         group->_owner_id = group_json.value("owner").toInt();
     if (group_json.contains("member_count"))

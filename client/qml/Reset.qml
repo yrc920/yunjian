@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import XiguChat
 
 // 找回密码通过用户名、邮箱与验证码验证，状态由 ResetBridge 提供。
+// 与注册页同一套字段节奏：单列、浮动标签、行内验证码按钮。
 Item {
     id: page
 
@@ -17,13 +18,12 @@ Item {
 
         Item {
             width: parent.width
-            height: 70
+            height: 90
 
             PaperCompanion {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 100
-                height: 70
-                compact: true
+                anchors.centerIn: parent
+                width: 128
+                height: 90
                 attentive: userInput.inputFocused || emailInput.inputFocused || codeInput.inputFocused
                 hiding: passwordInput.inputFocused && !passwordInput.reveal
                 revealing: passwordInput.inputFocused && passwordInput.reveal
@@ -31,68 +31,38 @@ Item {
             }
         }
 
-        Spacer { gap: 8 }
+        Item { width: 1; height: 18 }
 
         Text {
-            text: "找回钥匙。"
+            text: "找回密码"
             color: Theme.textPrimary
-            font.pixelSize: Theme.fontTitle
-            font.bold: true
+            font.pixelSize: Theme.fontDisplay
+            font.weight: Font.DemiBold
         }
 
-        Spacer { gap: 5 }
-
-        Text {
-            text: "验证邮箱，为账号设置新密码"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 14 }
-
-        Text {
-            text: "用户名"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 20 }
 
         AppInput {
             id: userInput
             width: parent.width
-            placeholder: "注册时使用的用户名"
+            labeled: true
+            label: "用户名"
             onTextEdited: bridge.user = text
             onAccepted: emailInput.forceInputFocus()
         }
 
-        Spacer { gap: 12 }
-
-        Text {
-            text: "邮箱"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 14 }
 
         AppInput {
             id: emailInput
             width: parent.width
-            placeholder: "与账号关联的邮箱"
+            labeled: true
+            label: "邮箱"
             onTextEdited: bridge.email = text
             onAccepted: codeInput.forceInputFocus()
         }
 
-        Spacer { gap: 12 }
-
-        Text {
-            text: "邮箱验证码"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 14 }
 
         // 验证码行：输入框占满剩余宽度，按钮宽度固定，倒计时期间不可用
         RowLayout {
@@ -102,7 +72,8 @@ Item {
             AppInput {
                 id: codeInput
                 Layout.fillWidth: true
-                placeholder: "填写验证码"
+                labeled: true
+                label: "验证码"
                 onTextEdited: bridge.code = text
                 onAccepted: passwordInput.forceInputFocus()
             }
@@ -116,19 +87,13 @@ Item {
             }
         }
 
-        Spacer { gap: 12 }
-
-        Text {
-            text: "新密码"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 14 }
 
         AppInput {
             id: passwordInput
             width: parent.width
+            labeled: true
+            label: "新密码"
             placeholder: "6–15 位密码"
             password: true
             onRevealToggled: reveal = !reveal
@@ -136,21 +101,22 @@ Item {
             onAccepted: bridge.submit()
         }
 
-        Spacer { gap: 8 }
+        Item { width: 1; height: 12 }
 
-        // 提示位固定最小高度，成功与失败共用这一行
+        // 提示位固定成一行：成功与失败共用，没内容时不留空洞
         Text {
             width: parent.width
-            height: Math.max(20, implicitHeight)
             text: bridge.tipText
             color: bridge.tipOk ? Theme.success : Theme.danger
             font.pixelSize: Theme.fontSmall
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            height: text.length > 0 ? Math.max(18, implicitHeight) : 0
+            visible: height > 0
             opacity: text.length > 0 ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: 120 } }
         }
 
-        Spacer { gap: 12 }
+        Item { width: 1; height: 12 }
 
         AppButton {
             width: parent.width
@@ -159,7 +125,7 @@ Item {
             onClicked: bridge.submit()
         }
 
-        Spacer { gap: 14 }
+        Item { width: 1; height: 14 }
 
         AppLink {
             width: parent.width

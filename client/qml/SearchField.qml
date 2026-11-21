@@ -16,7 +16,7 @@ Rectangle {
     signal clearRequested()
 
     implicitHeight: 38
-    radius: 7
+    radius: Theme.radius
     color: input.activeFocus || clearButton.activeFocus ? Theme.fieldBg : Theme.panelAlt
     border.width: 1
     border.color: input.activeFocus || clearButton.activeFocus ? Theme.primary : "transparent"

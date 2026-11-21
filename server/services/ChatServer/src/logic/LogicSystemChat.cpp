@@ -65,14 +65,21 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session,
 		Json::Value response_item;
 		response_item["msgid"] = item["msgid"].asString();
 		response_item["content"] = item["content"].asString();
+		response_item["type"] = item.isMember("type") ? item["type"].asInt() : 0;
 		response_item["status"] = 2;
 		rtvalue["text_array"].append(response_item);
 	}
 	Defer defer([&rtvalue, session]() {
 		session->Send(JsonToCompact(rtvalue), ID_TEXT_CHAT_MSG_RSP);
 	});
-	std::vector<std::pair<std::string, std::string>> contents;
-	for (const auto& item : arrays) contents.emplace_back(item["msgid"].asString(), item["content"].asString());
+	std::vector<ChatContentItem> contents;
+	for (const auto& item : arrays) {
+		ChatContentItem content;
+		content.client_msg_id = item["msgid"].asString();
+		content.content = item["content"].asString();
+		content.msg_type = item.isMember("type") ? item["type"].asInt() : 0;
+		contents.push_back(std::move(content));
+	}
 	//会话类型以库里为准：同一个文本通道既能写单聊消息，也能写群消息。
 	//thread_id 为 0 时一定是单聊，客户端还没建会话
 	const int thread_type = thread_id > 0 ? ThreadTypeOf(thread_id)

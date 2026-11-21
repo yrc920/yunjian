@@ -125,7 +125,7 @@ FocusScope {
             y: 0
             width: 38
             height: 3
-            color: Theme.accent
+            color: Theme.primary
         }
 
         Item {

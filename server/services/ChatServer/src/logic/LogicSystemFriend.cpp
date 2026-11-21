@@ -233,10 +233,10 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 			+ std::to_string(touid) + "-" + stamp;
 		//先写申请方的留言，再写同意方的默认句，message_id 顺序就是聊天里的显示顺序
 		if (!MysqlDao::GetInstance()->SaveChatMessages(touid, uid, thread_id,
-			{{applicant_id, applicant_welcome}}, applicant_msgs))
+			{{applicant_id, applicant_welcome, 0}}, applicant_msgs))
 			LOG_ERROR << "save applicant welcome failed: " << applicant_id;
 		if (!MysqlDao::GetInstance()->SaveChatMessages(uid, touid, thread_id,
-			{{approver_id, kDefaultApproveWelcome}}, approver_msgs))
+			{{approver_id, kDefaultApproveWelcome, 0}}, approver_msgs))
 			LOG_ERROR << "save approver welcome failed: " << approver_id;
 	}
 

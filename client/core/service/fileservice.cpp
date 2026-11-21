@@ -1,6 +1,7 @@
 #include "fileservice.h"
 
 #include <QCryptographicHash>
+#include <QUuid>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -143,6 +144,14 @@ void FileService::TryStartResourceSync()
             continue;
         CacheContactIcon(apply_info->_uid, apply_info->_icon);
     }
+
+    //群头像：列表里已经有资源名与上传者，登录后按需下载
+    const int group_count = mgr->GroupCount();
+    for (int i = 0; i < group_count; ++i) {
+        auto group = mgr->GroupAt(i);
+        if (group && !group->_icon.isEmpty())
+            CacheGroupIcon(group->_thread_id, group->_icon, group->_icon_owner);
+    }
 }
 
 //好友换上新的头像文件名：老图还留在缓存目录里但已经不指向它，
@@ -152,6 +161,49 @@ void FileService::RefreshContactIcon(int uid, const QString &iconName)
     if (uid <= 0 || iconName.isEmpty())
         return;
     CacheContactIcon(uid, iconName);
+}
+
+//群头像走通用资源通道：它不属于某条消息，消息 id 传 0，服务端不会回写消息状态
+QString FileService::UploadGroupIcon(const QString &path)
+{
+    const QFileInfo file_info(path);
+    if (!file_info.exists() || file_info.size() <= 0 || file_info.size() > MaxAvatarBytes
+        || !isPng(path))
+        return {};
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Md5);
+    hash.addData(&file);
+    file.close();
+    const QString md5 = QString::fromLatin1(hash.result().toHex());
+    const QString name = md5 + QStringLiteral(".png");
+
+    if (!UploadChatResource(name, path, md5, 0, 0, 0, 2, QUuid::createUuid().toString()))
+        return {};
+    return name;
+}
+
+void FileService::CacheGroupIcon(qint64 threadId, const QString &iconName, int ownerUid)
+{
+    if (threadId <= 0 || iconName.isEmpty() || ownerUid <= 0)
+        return;
+
+    //群头像按上传者的目录存放，缓存路径与联系人头像同一套规则
+    const QString target = UserMgr::ResourceCachePath(ownerUid, iconName);
+    if (target.isEmpty())
+        return;
+    if (UserMgr::IsCompleteAvatarFile(target)) {
+        UserMgr::GetInstance()->SetGroupIcon(threadId, QUrl::fromLocalFile(target).toString());
+        return;
+    }
+    if (QFileInfo::exists(target))
+        QFile::remove(target);
+
+    //标记这次下载的用途：完成后既不能当成自己的头像，也不能当成某个联系人的头像
+    _group_icons.insert(iconName);
+    RequestResource(ownerUid, iconName, target);
 }
 
 void FileService::CacheContactIcon(int uid, const QString &iconName)
@@ -493,6 +545,19 @@ void FileService::HandleUploadFailed(const QString &name, int error)
 void FileService::HandleDownloadFinished(const QString &name, const QString &path)
 {
     const int owner_uid = _download_owners.take(name); //先取归属，防止后续早退丢掉映射
+
+    //群头像：回填所有引用这张图的群，不能走个人头像分支
+    if (_group_icons.remove(name)) {
+        const QString icon_path = QUrl::fromLocalFile(path).toString();
+        auto *mgr = UserMgr::GetInstance().get();
+        const int groups = mgr->GroupCount();
+        for (int i = 0; i < groups; ++i) {
+            auto group = mgr->GroupAt(i);
+            if (group && group->_icon == name)
+                mgr->SetGroupIcon(group->_thread_id, icon_path);
+        }
+        return;
+    }
     if (owner_uid == UserMgr::GetInstance()->GetUid()) { //自己的头像
         //上传已经在进行时，服务端文件正在被新头像覆盖，不能拿旧下载结果回滚本机头像
         if (_uploading)
@@ -529,6 +594,7 @@ void FileService::HandleDownloadFinished(const QString &name, const QString &pat
 void FileService::HandleDownloadFailed(const QString &name, int error)
 {
     const int owner_uid = _download_owners.take(name); //取归属，失败后不再保留
+    _group_icons.remove(name); //群头像失败不再等这张图
     if (owner_uid <= 0)
         return;
 

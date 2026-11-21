@@ -6,6 +6,7 @@
 #include <QSet>
 
 #include "sessionservice.h"
+#include "autologinstore.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
 
@@ -142,6 +143,8 @@ void ShellBridge::logout()
     _notice.clear();
     emit noticeChanged();
     setReconnecting(false);
+    // 用户主动退出：连同自动登录凭据一起清掉，下次回到登录页
+    AutoLoginStore::Clear();
     go(kLogin);
     // 明确退出要通知服务端吊销令牌；closeSession 只负责最终断开
     SessionService::GetInstance()->logout();

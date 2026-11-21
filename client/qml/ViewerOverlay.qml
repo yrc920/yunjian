@@ -124,7 +124,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#F20C120E"
+        color: "#F20C1218"
     }
 
     //点击空白处关闭；图片/视频控件在上层，不会被这个区域抢走
@@ -216,7 +216,7 @@ Item {
         visible: root.kind === "video" && root.errorText.length > 0
         anchors.centerIn: videoOutput
         text: root.errorText
-        color: "#E7EDDF"
+        color: "#EEF3F8"
         font.pixelSize: 13
     }
 
@@ -233,7 +233,7 @@ Item {
             height: 30
             radius: 7
             color: zoomOut.containsMouse ? "#33FFFFFF" : "#22FFFFFF"
-            Text { anchors.centerIn: parent; text: "−"; color: "#E7EDDF"; font.pixelSize: 18 }
+            Text { anchors.centerIn: parent; text: "−"; color: "#EEF3F8"; font.pixelSize: 18 }
             MouseArea {
                 id: zoomOut
                 anchors.fill: parent
@@ -250,7 +250,7 @@ Item {
             Text {
                 anchors.centerIn: parent
                 text: Math.round(root.zoom * 100) + "%"
-                color: "#E7EDDF"
+                color: "#EEF3F8"
                 font.pixelSize: 11
             }
             MouseArea {
@@ -270,7 +270,7 @@ Item {
             height: 30
             radius: 7
             color: zoomIn.containsMouse ? "#33FFFFFF" : "#22FFFFFF"
-            Text { anchors.centerIn: parent; text: "+"; color: "#E7EDDF"; font.pixelSize: 17 }
+            Text { anchors.centerIn: parent; text: "+"; color: "#EEF3F8"; font.pixelSize: 17 }
             MouseArea {
                 id: zoomIn
                 anchors.fill: parent
@@ -305,7 +305,7 @@ Item {
                 anchors.centerIn: parent
                 name: player.playbackState === MediaPlayer.PlayingState ? "pause" : "play"
                 size: 16
-                color: "#E7EDDF"
+                color: "#EEF3F8"
             }
             MouseArea {
                 id: playArea
@@ -323,7 +323,7 @@ Item {
             anchors.leftMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             text: formatTime(player.position)
-            color: "#A8B7AA"
+            color: "#A7B4C1"
             font.pixelSize: 10
         }
 
@@ -344,7 +344,7 @@ Item {
                     ? parent.width * Math.min(1, player.position / player.duration) : 0
                 height: parent.height
                 radius: parent.radius
-                color: "#BCD2AD"
+                color: "#9FC0DC"
             }
 
             MouseArea {
@@ -364,7 +364,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: formatTime(player.duration)
-            color: "#A8B7AA"
+            color: "#A7B4C1"
             font.pixelSize: 10
         }
     }
@@ -386,7 +386,7 @@ Item {
             anchors.centerIn: parent
             name: "back"
             size: 20
-            color: "#E7EDDF"
+            color: "#EEF3F8"
         }
         MouseArea {
             id: prevArea
@@ -413,7 +413,7 @@ Item {
             anchors.centerIn: parent
             name: "chevronRight"
             size: 20
-            color: "#E7EDDF"
+            color: "#EEF3F8"
         }
         MouseArea {
             id: nextArea
@@ -440,7 +440,7 @@ Item {
             anchors.centerIn: parent
             name: "close"
             size: 17
-            color: "#E7EDDF"
+            color: "#EEF3F8"
         }
         MouseArea {
             id: closeArea
@@ -465,7 +465,7 @@ Item {
             id: noticeLabel
             anchors.centerIn: parent
             text: root.notice
-            color: "#E7EDDF"
+            color: "#EEF3F8"
             font.pixelSize: 12
         }
     }

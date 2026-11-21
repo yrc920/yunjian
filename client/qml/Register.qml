@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import XiguChat
 
 // 注册信息和请求状态归 bridge，表单负责焦点顺序与密码显示。
+// 字段全部单列：标签浮在框上，不再单独占一行，也不把两个密码框挤成半宽。
 Item {
     id: page
 
@@ -17,13 +18,12 @@ Item {
 
         Item {
             width: parent.width
-            height: 91
+            height: 90
 
             PaperCompanion {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 130
-                height: 91
-                compact: true
+                anchors.centerIn: parent
+                width: 128
+                height: 90
                 attentive: userInput.inputFocused || emailInput.inputFocused || codeInput.inputFocused
                 hiding: (passwordInput.inputFocused && !passwordInput.reveal)
                          || (confirmInput.inputFocused && !confirmInput.reveal)
@@ -33,68 +33,38 @@ Item {
             }
         }
 
-        Spacer { gap: 10 }
+        Item { width: 1; height: 18 }
 
         Text {
-            text: "认识一下。"
+            text: "创建账号"
             color: Theme.textPrimary
-            font.pixelSize: Theme.fontTitle
-            font.bold: true
+            font.pixelSize: Theme.fontDisplay
+            font.weight: Font.DemiBold
         }
 
-        Spacer { gap: 5 }
-
-        Text {
-            text: "创建一个新账号"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 20 }
-
-        Text {
-            text: "用户名"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 20 }
 
         AppInput {
             id: userInput
             width: parent.width
-            placeholder: "怎么称呼你"
+            labeled: true
+            label: "用户名"
             onTextEdited: bridge.user = text
             onAccepted: emailInput.forceInputFocus()
         }
 
-        Spacer { gap: 13 }
-
-        Text {
-            text: "邮箱"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 14 }
 
         AppInput {
             id: emailInput
             width: parent.width
-            placeholder: "用来登录和找回密码"
+            labeled: true
+            label: "邮箱"
             onTextEdited: bridge.email = text
             onAccepted: codeInput.forceInputFocus()
         }
 
-        Spacer { gap: 13 }
-
-        Text {
-            text: "邮箱验证码"
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
-        }
-
-        Spacer { gap: 6 }
+        Item { width: 1; height: 14 }
 
         // 验证码输入与发送按钮同一行，倒计时和发送中状态都由 bridge 控制
         RowLayout {
@@ -104,7 +74,8 @@ Item {
             AppInput {
                 id: codeInput
                 Layout.fillWidth: true
-                placeholder: "填写验证码"
+                labeled: true
+                label: "验证码"
                 onTextEdited: bridge.code = text
                 onAccepted: passwordInput.forceInputFocus()
             }
@@ -118,70 +89,48 @@ Item {
             }
         }
 
-        Spacer { gap: 13 }
+        Item { width: 1; height: 14 }
 
-        // 两个密码框等宽并排，各自维护可见状态；提交前由 bridge 校验一致性
-        Row {
+        AppInput {
+            id: passwordInput
             width: parent.width
-            spacing: 12
-
-            Column {
-                width: (parent.width - parent.spacing) / 2
-                spacing: 6
-
-                Text {
-                    text: "密码"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontSmall
-                }
-
-                AppInput {
-                    id: passwordInput
-                    width: parent.width
-                    placeholder: "6–15 位"
-                    password: true
-                    onRevealToggled: reveal = !reveal
-                    onTextEdited: bridge.password = text
-                    onAccepted: confirmInput.forceInputFocus()
-                }
-            }
-
-            Column {
-                width: (parent.width - parent.spacing) / 2
-                spacing: 6
-
-                Text {
-                    text: "确认密码"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontSmall
-                }
-
-                AppInput {
-                    id: confirmInput
-                    width: parent.width
-                    placeholder: "再输一次"
-                    password: true
-                    onRevealToggled: reveal = !reveal
-                    onTextEdited: bridge.confirm = text
-                    onAccepted: bridge.submit()
-                }
-            }
+            labeled: true
+            label: "密码"
+            placeholder: "6–15 位"
+            password: true
+            onRevealToggled: reveal = !reveal
+            onTextEdited: bridge.password = text
+            onAccepted: confirmInput.forceInputFocus()
         }
 
-        Spacer { gap: 8 }
+        Item { width: 1; height: 14 }
+
+        AppInput {
+            id: confirmInput
+            width: parent.width
+            labeled: true
+            label: "确认密码"
+            password: true
+            onRevealToggled: reveal = !reveal
+            onTextEdited: bridge.confirm = text
+            onAccepted: bridge.submit()
+        }
+
+        Item { width: 1; height: 12 }
 
         Text {
             width: parent.width
-            height: Math.max(20, implicitHeight)
             text: bridge.tipText
             color: bridge.tipOk ? Theme.success : Theme.danger
             font.pixelSize: Theme.fontSmall
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            height: text.length > 0 ? Math.max(18, implicitHeight) : 0
+            visible: height > 0
             opacity: text.length > 0 ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: 120 } }
         }
 
-        Spacer { gap: 12 }
+        Item { width: 1; height: 12 }
 
         AppButton {
             width: parent.width
@@ -190,11 +139,11 @@ Item {
             onClicked: bridge.submit()
         }
 
-        Spacer { gap: 20 }
+        Item { width: 1; height: 16 }
 
         AppLink {
             width: parent.width
-            text: "已有账号，返回登录"
+            text: "已有账号？登录"
             horizontalAlignment: Text.AlignHCenter
             onClicked: bridge.go("login")
         }

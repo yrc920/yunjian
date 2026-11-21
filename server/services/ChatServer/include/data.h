@@ -62,6 +62,8 @@ struct ChatThreadInfo {
 	std::string peer_icon; //对方头像
 	int peer_sex = 0; //对方性别
 	std::string group_name; //群名称
+	std::string group_icon; //群头像资源名，空表示用名字回退
+	int group_icon_owner = 0; //群头像上传者 uid，下载时按它定位目录
 	int group_owner = 0; //群主 uid
 	int group_member_count = 0; //群成员数, 会话行与群资料页都要显示
 	int my_role = 0; //我在这个群里的角色, 单聊为 0
@@ -72,11 +74,20 @@ struct ChatThreadInfo {
 	int unread = 0; //该会话里发给自己的未读消息条数, 登录时一起下发
 };
 
+//一条待写入的文本消息：type 0 普通文本，7 合并转发的聊天记录快照
+struct ChatContentItem {
+	std::string client_msg_id;
+	std::string content;
+	int msg_type = 0;
+};
+
 //群资料与"我"在这个群的设置，用于群资料页与会话标题
 struct GroupInfo {
 	long long thread_id = 0;
 	std::string name;
 	std::string notice;
+	std::string icon; //群头像资源名，空表示用名字回退
+	int icon_owner = 0; //群头像上传者 uid
 	int owner_id = 0;
 	long long created_at = 0;
 	int member_count = 0;

@@ -1,18 +1,24 @@
 #include "loginbridge.h"
 
+#include <QDateTime>
 #include <QRegularExpression>
 
+#include "autologinstore.h"
 #include "authservice.h"
 #include "sessionservice.h"
 
 LoginBridge::LoginBridge(QObject *parent) : PageBridge(parent)
 {
+    _remember = AutoLoginStore::Remembered();
+
     auto *auth = AuthService::GetInstance().get();
     auto *session = SessionService::GetInstance().get();
 
     connect(auth, &AuthService::loginSucceeded, this,
-            [this](const ServerInfo &info, const QString &) {
-                // 账号校验通过，进入长连接阶段，按钮保持禁用直到结果回来
+            [this](const ServerInfo &info, const QString &email) {
+                // 先记下来，等长连接真正就绪再落盘：半途失败的会话不该被记住
+                _session = info;
+                _sessionEmail = email;
                 setBusyText(tr("正在连接聊天服务…"));
                 SessionService::GetInstance().get()->connectToChat(info);
             });
@@ -23,11 +29,33 @@ LoginBridge::LoginBridge(QObject *parent) : PageBridge(parent)
     });
 
     connect(session, &SessionService::connectFailed, this, [this](const QString &message) {
+        if (_autoLogin) {
+            _autoLogin = false;
+            _session = {};
+            _sessionEmail.clear();
+            // 令牌过期、被注销、或服务端不可达：清掉记录，退回手工登录
+            AutoLoginStore::Clear();
+            setBusy(false);
+            setError(tr("自动登录未成功，请重新输入密码"));
+            emit autoLoginExpired();
+            return;
+        }
         setBusy(false);
         setError(message);
     });
 
     connect(session, &SessionService::sessionReady, this, [this] {
+        // 会话真正就绪才算一次成功登录：刷新保存时间，令牌随使用滑动续期
+        if (_remember && _session.Uid > 0 && !_sessionEmail.isEmpty()) {
+            AutoLoginStore::Record record;
+            record.Email = _sessionEmail;
+            record.Info = _session;
+            record.SavedAt = QDateTime::currentSecsSinceEpoch();
+            AutoLoginStore::Save(record);
+        } else if (!_remember) {
+            AutoLoginStore::Clear();
+        }
+        _autoLogin = false;
         setBusy(false);
         setBusyText(QString());
     });
@@ -73,6 +101,41 @@ void LoginBridge::togglePasswordVisible()
 {
     _passwordVisible = !_passwordVisible;
     emit passwordVisibleChanged();
+}
+
+// 记住登录：关掉时立刻清掉已保存的令牌，避免下次仍然自动进入
+void LoginBridge::setRemember(bool value)
+{
+    if (_remember == value)
+        return;
+
+    _remember = value;
+    AutoLoginStore::SetRemembered(value);
+    if (!value)
+        AutoLoginStore::Clear();
+    emit rememberChanged();
+}
+
+// 启动时尝试用上次的令牌恢复会话：不经过 HTTP，也不需要密码
+bool LoginBridge::tryAutoLogin()
+{
+    if (_busy)
+        return false;
+
+    AutoLoginStore::Record record;
+    if (!AutoLoginStore::Load(record))
+        return false;
+
+    _email = record.Email;
+    emit emailChanged();
+
+    _session = record.Info;
+    _sessionEmail = record.Email;
+    _autoLogin = true;
+    setBusy(true);
+    setBusyText(tr("正在恢复上次登录…"));
+    SessionService::GetInstance().get()->connectToChat(record.Info);
+    return true;
 }
 
 // 清掉错误提示（用户重新输入时调用）

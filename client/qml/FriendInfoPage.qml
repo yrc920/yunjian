@@ -138,7 +138,7 @@ Item {
                 Rectangle {
                     width: 28
                     height: 2
-                    color: Theme.accent
+                    color: Theme.primary
                 }
             }
             Spacer { gap: 12 }

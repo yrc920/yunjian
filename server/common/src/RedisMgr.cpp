@@ -318,6 +318,20 @@ bool RedisMgr::SetEx(const std::string& key, const std::string& value, int secon
 	return ok;
 }
 
+// 只延长已有 key 的过期时间，不重写值；key 已过期时返回 false
+bool RedisMgr::Expire(const std::string& key, int seconds)
+{
+	BorrowedConnection con(*_con_pool);
+	if (!con)
+		return false;
+
+	auto* reply = static_cast<redisReply*>(redisCommand(con.get(), "EXPIRE %s %d",
+		key.c_str(), seconds));
+	const bool ok = reply != nullptr && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1;
+	freeReplyObject(reply);
+	return ok;
+}
+
 bool RedisMgr::Del(const std::string& key)
 {
 	BorrowedConnection con(*_con_pool);

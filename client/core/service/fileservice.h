@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include "singleton.h"
 #include "global.h"
@@ -50,6 +51,8 @@ public:
     QString Message() const { return _message; } //个人资料页提示
     // 好友换了头像：按新的文件名查缓存或重新下载，内部与登录时补拉走同一条路径
     void RefreshContactIcon(int uid, const QString &iconName);
+    void CacheGroupIcon(qint64 threadId, const QString &iconName, int ownerUid);
+    QString UploadGroupIcon(const QString &path); //返回资源名，失败返回空
 
 signals:
     //所有状态变化走同一个信号，QML 只绑四个只读属性，不直接认识上传细节
@@ -64,6 +67,7 @@ private:
 
     void TryStartResourceSync(); //连接与登录都完成后补拉头像
     void CacheContactIcon(int uid, const QString &iconName); //查缓存或发起下载
+    QSet<QString> _group_icons; //正在下载的群头像资源名，完成后按名字回填到所有群
     void RequestResource(int ownerUid, const QString &iconName, const QString &targetPath); //建下载状态
     void AbortDownloads(); //断线/换账号时清掉在途下载与半截文件
     void AbortResourceUploads(); //资源断线时把在途聊天资源标记失败

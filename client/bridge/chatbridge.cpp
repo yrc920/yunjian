@@ -7,9 +7,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QImage>
 #include <QProcess>
 #include <QSaveFile>
+#include <QStandardPaths>
+
 #include <QTimer>
 #include <QStringList>
 #include <QUrl>
@@ -71,6 +76,31 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     _messages = new MessageModel(this);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
             this, &ChatBridge::myProfileChanged);
+    connect(UserMgr::GetInstance().get(), &UserMgr::GroupIconChanged,
+            this, &ChatBridge::groupChanged);
+    //群头像上传完成后再写回群资料：先本地生效，推送负责同步其他成员
+    connect(FileService::GetInstance().get(), &FileService::chatResourceFinished, this,
+            [this](const QString &name) {
+                if (name.isEmpty() || name != _pendingGroupIcon)
+                    return;
+                const qint64 thread = _pendingGroupThread;
+                const QString path = _pendingGroupIconPath;
+                _pendingGroupIcon.clear();
+                _pendingGroupIconPath.clear();
+                _pendingGroupThread = 0;
+                UserMgr::GetInstance()->SetGroupIcon(thread,
+                    QUrl::fromLocalFile(path).toString());
+                GroupService::GetInstance()->UpdateGroup(thread, QStringLiteral("icon"), name);
+            });
+    connect(FileService::GetInstance().get(), &FileService::chatResourceFailed, this,
+            [this](const QString &name, int) {
+                if (name != _pendingGroupIcon)
+                    return;
+                _pendingGroupIcon.clear();
+                _pendingGroupIconPath.clear();
+                _pendingGroupThread = 0;
+                emit groupIconFailed(tr("群头像上传失败，请重试"));
+            });
     //昵称/性别/签名改完后个人资料页与侧栏显示名一起刷新
     connect(UserMgr::GetInstance().get(), &UserMgr::UserProfileChanged,
             this, &ChatBridge::myProfileChanged);
@@ -1236,6 +1266,101 @@ void ChatBridge::openThread(qint64 threadId, int kind, int peerUid)
 }
 
 //多选转发：按当前消息顺序逐条重发，文本用原文，媒体复用本机文件重新上传
+//合并转发：选中消息打成快照，最多 20 条、整包 6KB，作为一条 type=7 的消息发出。
+//快照只存展示需要的字段，不引用原消息 id——换会话之后原消息的可见性不成立
+int ChatBridge::mergeForwardMessages(const QVariantList &keys, qint64 targetThreadId,
+                                     int targetKind, int targetPeerUid)
+{
+    auto *mgr = UserMgr::GetInstance().get();
+    auto data = mgr->ThreadData(_currentThreadId);
+    if (!data || targetThreadId <= 0)
+        return 0;
+    const auto selected = parseSelectedMessages(keys);
+    if (selected.isEmpty())
+        return 0;
+
+    //先快照：发送过程中模型会继续追加消息
+    std::vector<std::shared_ptr<TextChatData>> chosen;
+    for (const auto &message : data->_chat_msgs) {
+        if (message && isSelectedMessage(message, selected) && !message->_recalled)
+            chosen.push_back(message);
+    }
+    if (chosen.empty())
+        return 0;
+    if (chosen.size() > 20)
+        chosen.erase(chosen.begin(), chosen.begin() + (chosen.size() - 20));
+
+    const auto sender_name = [this, mgr](int uid) -> QString {
+        if (uid == mgr->GetUid()) {
+            const QString name = myName();
+            return name.isEmpty() ? tr("我") : name;
+        }
+        if (auto friend_info = mgr->GetFriendById(uid))
+            return DisplayName(friend_info->_back, friend_info->_nick, friend_info->_name);
+        return tr("群成员");
+    };
+
+    QJsonArray items;
+    for (const auto &message : chosen) {
+        QJsonObject item;
+        item.insert("n", sender_name(message->_from_uid));
+        item.insert("t", static_cast<double>(message->_time));
+        switch (message->_msg_type) {
+        case ChatMsgType::Image:
+            item.insert("k", "image"); item.insert("c", tr("[图片]")); break;
+        case ChatMsgType::Video:
+            item.insert("k", "video"); item.insert("c", tr("[视频]")); break;
+        case ChatMsgType::File:
+            item.insert("k", "file"); item.insert("c", tr("[文件]")); break;
+        default: {
+            QString text = message->_msg_content;
+            if (text.size() > 200)
+                text = text.left(200) + QStringLiteral("…");
+            item.insert("k", "text");
+            item.insert("c", text);
+            break;
+        }
+        }
+        items.append(item);
+    }
+
+    QString title;
+    if (_currentKind == static_cast<int>(ChatThreadKind::Group)) {
+        auto group = mgr->GetGroup(_currentThreadId);
+        title = group && !group->_name.isEmpty() ? group->_name : tr("群聊");
+    }
+    else {
+        title = tr("与%1的聊天记录").arg(myName());
+    }
+
+    QJsonObject root;
+    root.insert("title", title);
+    root.insert("items", items);
+    //超出 6KB 从末尾往前删，保证能通过服务端校验
+    QByteArray encoded = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    while (encoded.size() > 5800 && items.size() > 1) {
+        items.removeLast();
+        root.insert("items", items);
+        encoded = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    }
+    if (items.isEmpty())
+        return 0;
+    root.insert("count", items.size());
+    encoded = QJsonDocument(root).toJson(QJsonDocument::Compact);
+
+    ConversationRef target;
+    target._thread_id = targetThreadId;
+    target._kind = targetKind == static_cast<int>(ChatThreadKind::Group)
+        ? ChatThreadKind::Group : ChatThreadKind::Private;
+    target._peer_uid = target._kind == ChatThreadKind::Private ? targetPeerUid : 0;
+    if (target._kind == ChatThreadKind::Private && target._peer_uid <= 0)
+        return 0;
+
+    const int sent = items.size();
+    return ChatService::GetInstance()->sendText(target, QString::fromUtf8(encoded),
+        {}, static_cast<int>(ChatMsgType::MergeRecord)) ? sent : 0;
+}
+
 int ChatBridge::forwardMessages(const QVariantList &keys, qint64 targetThreadId,
                                 int targetKind, int targetPeerUid)
 {
@@ -1381,6 +1506,8 @@ QVariantMap ChatBridge::groupInfo() const
         {QStringLiteral("threadId"), QVariant::fromValue(group->_thread_id)},
         {QStringLiteral("name"), group->_name},
         {QStringLiteral("notice"), group->_notice},
+        {QStringLiteral("icon"), group->_icon},
+        {QStringLiteral("iconSource"), UserMgr::GetInstance()->GroupIconPath(group->_thread_id)},
         {QStringLiteral("owner"), group->_owner_id},
         {QStringLiteral("memberCount"), group->_member_count},
         {QStringLiteral("myRole"), group->_my_role},
@@ -2071,6 +2198,51 @@ void ChatBridge::updateGroupField(const QString &action, const QString &value)
         return;
     setGroupState(true, QString());
     GroupService::GetInstance()->UpdateGroup(_currentThreadId, action, value);
+}
+
+//群头像：本地居中裁成 512 见方，再走通用资源通道上传，成功后把资源名写回群资料
+bool ChatBridge::updateGroupIcon(const QUrl &fileUrl)
+{
+    auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
+    if (!isGroup() || !group)
+        return false;
+    if (group->_my_role < static_cast<int>(GroupRole::Admin)) {
+        emit groupIconFailed(tr("只有群主或管理员可以修改群头像"));
+        return false;
+    }
+
+    QImage image(fileUrl.toLocalFile());
+    if (image.isNull()) {
+        emit groupIconFailed(tr("图片无法读取，请换一张试试"));
+        return false;
+    }
+    const int side = qMin(image.width(), image.height());
+    image = image.copy((image.width() - side) / 2, (image.height() - side) / 2, side, side)
+        .scaled(512, 512, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+
+    const QString cache_dir =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cache_dir.isEmpty()) {
+        emit groupIconFailed(tr("无法写入缓存目录"));
+        return false;
+    }
+    const QString temp = QDir(cache_dir).filePath(
+        QStringLiteral("group_icon_%1.png").arg(_currentThreadId));
+    if (!image.save(temp, "PNG")) {
+        emit groupIconFailed(tr("头像生成失败，请重试"));
+        return false;
+    }
+
+    const QString name = FileService::GetInstance()->UploadGroupIcon(temp);
+    if (name.isEmpty()) {
+        emit groupIconFailed(tr("资源服务器未连接，头像上传未开始"));
+        return false;
+    }
+
+    _pendingGroupIcon = name;
+    _pendingGroupThread = _currentThreadId;
+    _pendingGroupIconPath = temp;
+    return true;
 }
 
 void ChatBridge::toggleGroupMute()

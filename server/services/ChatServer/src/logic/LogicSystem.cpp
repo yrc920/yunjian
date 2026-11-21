@@ -274,6 +274,8 @@ Json::Value LogicSystem::BuildThreadItem(const ChatThreadInfo& thread) const
 	item["unread"] = thread.unread;
 	if (thread.thread_type == static_cast<int>(ThreadType::Group)) {
 		item["group_name"] = thread.group_name;
+		item["icon"] = thread.group_icon;
+		item["icon_owner"] = thread.group_icon_owner;
 		item["owner"] = thread.group_owner;
 		item["member_count"] = thread.group_member_count;
 		item["my_role"] = thread.my_role;

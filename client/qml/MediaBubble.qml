@@ -81,7 +81,7 @@ Item {
         text: root.senderName
         textFormat: Text.PlainText
         color: Theme.textSecondary
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontCaption
         elide: Text.ElideRight
     }
 
@@ -114,7 +114,7 @@ Item {
         y: root.nameOffset
         width: root.cardWidth
         height: root.video ? 190 : 82
-        radius: 10
+        radius: 14
         color: Theme.panelBg
         border.width: 1
         border.color: Theme.line
@@ -214,7 +214,7 @@ Item {
                 anchors.bottomMargin: 12
                 text: root.failed ? "下载失败，点击重试" : "点击下载视频"
                 color: "#FFFFFF"
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontCaption
                 style: Text.Outline
                 styleColor: Qt.rgba(0, 0, 0, 0.35)
             }
@@ -246,7 +246,7 @@ Item {
                 width: parent.width
                 text: root.formatSize(root.fileSize) + " · " + root.stateText
                 color: root.failed ? Theme.danger : Theme.textHint
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontCaption
                 elide: Text.ElideRight
             }
         }
@@ -302,7 +302,7 @@ Item {
                     width: parent.width
                     text: root.formatSize(root.fileSize) + " · " + root.stateText
                     color: root.failed ? Theme.danger : Theme.textHint
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     elide: Text.ElideRight
                 }
             }
@@ -326,7 +326,7 @@ Item {
                         anchors.centerIn: parent
                         text: "打开"
                         color: Theme.primaryText
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                     }
                     MouseArea {
                         id: actionArea
@@ -351,7 +351,7 @@ Item {
                         anchors.centerIn: parent
                         text: "文件夹"
                         color: Theme.textSecondary
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                     }
                     MouseArea {
                         id: revealArea
@@ -376,7 +376,7 @@ Item {
                         anchors.centerIn: parent
                         text: "另存为"
                         color: Theme.textSecondary
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                     }
                     MouseArea {
                         id: saveArea
@@ -405,7 +405,7 @@ Item {
                             return "下载"
                         }
                         color: Theme.primaryText
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                     }
                     MouseArea {
                         id: primaryArea
