@@ -27,55 +27,11 @@ Item {
         color: Theme.chatBg
     }
 
-    // 标题栏
-    Item {
+    PageHeader {
         id: header
-        width: parent.width
-        height: 74
-
-        Rectangle {
-            id: backButton
-            x: 24
-            anchors.verticalCenter: parent.verticalCenter
-            width: 30
-            height: 30
-            radius: 15
-            color: backArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
-            activeFocusOnTab: true
-            Accessible.role: Accessible.Button
-            Accessible.name: "返回"
-            Accessible.onPressAction: root.backRequested()
-            Keys.onSpacePressed: root.backRequested()
-            Keys.onReturnPressed: root.backRequested()
-            AppIcon {
-                anchors.centerIn: parent
-                name: "back"
-                size: 17
-                color: Theme.textSecondary
-            }
-            MouseArea {
-                id: backArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.backRequested()
-            }
-        }
-
-        Text {
-            x: 64
-            anchors.verticalCenter: parent.verticalCenter
-            text: "联系人资料"
-            color: Theme.textPrimary
-            font.pixelSize: 16
-            font.weight: Font.DemiBold
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: Theme.line
-        }
+        title: "联系人资料"
+        backVisible: true
+        onBackRequested: root.backRequested()
     }
 
     // 资料区限宽 480 并居中，窗口变窄时先减两侧留白
@@ -117,7 +73,7 @@ Item {
                         text: root.display
                         textFormat: Text.PlainText
                         color: Theme.textPrimary
-                        font.pixelSize: 25
+                        font.pixelSize: Theme.fontDisplay
                         font.weight: Font.DemiBold
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     }
@@ -130,17 +86,31 @@ Item {
                 }
             }
 
-            Spacer { gap: 32 }
-            Rectangle {
+            Spacer { gap: 16 }
+            // 资料页只留两个真实动作：发消息与编辑资料；语音、视频等能力就绪后再加回来
+            Row {
                 width: parent.width
-                height: 1
-                color: Theme.line
-                Rectangle {
-                    width: 28
-                    height: 2
-                    color: Theme.primary
+                spacing: 12
+
+                AppButton {
+                    width: Math.min(168, parent.width - 132)
+                    height: 46
+                    text: "发消息"
+                    iconName: "chat"
+                    onClicked: root.chatRequested()
+                }
+                CodeButton {
+                    width: 120
+                    height: 46
+                    text: "备注与标签"
+                    // 关系已经断了：备注与标签编辑没有意义，只保留发消息（进去补验证）
+                    visible: root.profile.friend !== false
+                    onClicked: root.editRelationRequested()
                 }
             }
+
+            Spacer { gap: 24 }
+            Rectangle { width: parent.width; height: 1; color: Theme.line }
             Spacer { gap: 12 }
 
             // 固定资料字段；值过长时换行，行高跟着内容增长
@@ -215,7 +185,7 @@ Item {
                     x: 82
                     y: 13
                     width: parent.width - x
-                    text: root.hasDesc ? root.profile.desc : "这一页还空着。"
+                    text: root.hasDesc ? root.profile.desc : "未填写"
                     textFormat: Text.PlainText
                     color: root.hasDesc ? Theme.textPrimary : Theme.textHint
                     font.pixelSize: Theme.fontBody
@@ -271,28 +241,6 @@ Item {
             Spacer { gap: 12 }
             Rectangle { width: parent.width; height: 1; color: Theme.line }
             Spacer { gap: 28 }
-
-            // 资料页只留两个真实动作：发消息与编辑资料；语音、视频等能力就绪后再加回来
-            Row {
-                width: parent.width
-                spacing: 12
-
-                AppButton {
-                    width: Math.min(168, parent.width - 132)
-                    height: 46
-                    text: "发消息"
-                    iconName: "chat"
-                    onClicked: root.chatRequested()
-                }
-                CodeButton {
-                    width: 120
-                    height: 46
-                    text: "编辑资料"
-                    // 关系已经断了：备注与标签编辑没有意义，只保留发消息（进去补验证）
-                    visible: root.profile.friend !== false
-                    onClicked: root.editRelationRequested()
-                }
-            }
 
             // 删除好友：做成次要按钮而不是一行小字，误点风险由确认弹层兜住。
             // 不是好友时这里换成"清除聊天记录"由会话菜单处理，页面不再提供删除入口

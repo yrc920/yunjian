@@ -31,7 +31,7 @@ public:
     Q_INVOKABLE int insertImage(QQuickTextDocument *document, int position, const QUrl &url);
     Q_INVOKABLE int paste(QQuickTextDocument *document, int position, int selectionEnd);
     //草稿按会话保存：thread_id 是单聊与群聊共用的键，切换会话不丢未发送内容
-    Q_INVOKABLE void switchConversation(QQuickTextDocument *document, qint64 threadId);
+    Q_INVOKABLE void switchConversation(QQuickTextDocument *document, qint64 threadId, int peerUid);
     //在光标处插入 @名字，并记下名字对应的 uid；发送时按纯文本里是否还含有这个名字过滤
     Q_INVOKABLE bool insertMention(QQuickTextDocument *document, int position,
                                    const QString &name, int uid);
@@ -71,7 +71,7 @@ private:
     //把输入框当前内容写进本地库：停止输入后由定时器触发，切会话时立即触发
     void saveDraft();
     QString _errorText;
-    qint64 _threadId = 0;
+    qint64 _draftKey = 0; //已有会话用 thread_id，新好友用负 uid 临时区分，只在内存暂存
     int _emojiSerial = 0; //表情格式序号：每个表情一个，仅用于拆开相邻 fragment
     QHash<qint64, QString> _drafts;
     //附件按会话暂存：切走再回来时待发送的文件还在，不因为换会话被动丢掉

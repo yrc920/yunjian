@@ -17,8 +17,8 @@ Popup {
     ]
 
     background: Rectangle {
-        color: Theme.panelBg
-        radius: 10
+        color: Theme.surfaceFloating
+        radius: Theme.panelRadius
         border.width: 1
         border.color: Theme.line
     }

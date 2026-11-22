@@ -3,7 +3,7 @@ import QtCore
 import QtQuick.Controls
 import XiguChat
 
-// 聊天工作区：左侧导航 72、会话/联系人栏 280、右侧内容自适应。
+// 聊天工作区：一级导航、索引列表和右侧内容共用一套桌面节奏。
 // 这里只负责布局与焦点，导航状态和业务动作都交给 ChatBridge。
 Item {
     id: root
@@ -12,26 +12,27 @@ Item {
     //系统通知点击时由 Main.qml 调进来，避免再复制一份导航状态
     readonly property var chatBridge: bridge
 
-    readonly property int sidebarWidth: 72
+    readonly property int sidebarWidth: Theme.sidebarWidth
 
     // 第二栏宽度可拖动：240–420，双击分隔条恢复 280；只在拖动结束时落盘
-    property int indexWidth: 280
+    property int indexWidth: Theme.indexWidth
     readonly property int minIndexWidth: 240
     readonly property int maxIndexWidth: Math.max(minIndexWidth, width - sidebarWidth - 380)
     property QtObject layoutPrefs: Settings {
         category: "Layout"
-        property int indexWidth: 280
+        property int indexWidth: Theme.indexWidth
     }
 
     // 窄窗口把第二栏收成头像条：优先保证内容区宽度，列表仍然可点。
     // 设置页有自己的分栏，不参与折叠。
-    readonly property bool compactIndex: width < 1000 && bridge.mode !== ChatBridge.SettingsMode
-    readonly property int indexPanelWidth: compactIndex ? 72 : indexWidth
+    readonly property bool compactIndex: width < 760 && bridge.mode !== ChatBridge.SettingsMode
+    readonly property int indexPanelWidth: compactIndex ? Theme.sidebarWidth : Math.min(indexWidth, maxIndexWidth)
 
     // 搜索快捷键：聊天与联系人共用一套入口，设置页不响应
     Shortcut {
         sequences: [StandardKey.Find]
-        enabled: bridge.mode !== ChatBridge.SettingsMode
+        enabled: root.enabled && !root.modalOpen && !root.compactIndex && (bridge.mode === ChatBridge.ContactMode
+            || (bridge.mode === ChatBridge.ChatMode && root.visiblePane !== ChatBridge.ChatPage))
         onActivated: {
             if (bridge.mode === ChatBridge.ChatMode)
                 chatSearch.forceInputFocus()
@@ -40,7 +41,7 @@ Item {
         }
     }
 
-    readonly property int listHeaderHeight: 78
+    readonly property int listHeaderHeight: Theme.toolbarHeight
 
     readonly property int friendCount: bridge.friends.totalCount
     readonly property int visibleFriendCount: bridge.friends.count
@@ -63,6 +64,7 @@ Item {
     readonly property bool modalOpen: dialogs.visible || createGroupDialog.visible
         || profileDialogs.visible || viewer.visible
         || bridge.clearConfirmVisible || bridge.deleteConfirmVisible || bridge.logoutConfirmVisible
+        || forwardDialog.visible
 
     // 会话列表：↑/↓ 逐条切换并直接打开，Esc 回输入框
     function stepConversation(delta) {
@@ -108,7 +110,7 @@ Item {
         if (!hostWindow)
             return
         const count = bridge.unreadTotal
-        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") XiguChat" : "XiguChat"
+        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") xiguchat" : "xiguchat"
     }
     onUnreadTotalChanged: refreshWindowTitle()
     onHostWindowChanged: if (hostWindow) bridge.setWindowActive(hostWindow.active)
@@ -117,9 +119,9 @@ Item {
         if (hostWindow)
             bridge.setWindowActive(hostWindow.active)
         // 列表栏宽度取本机值，夹在允许范围内
-        root.indexWidth = Math.max(root.minIndexWidth, Math.min(420, layoutPrefs.indexWidth))
+        root.indexWidth = Math.max(root.minIndexWidth, Math.min(420, layoutPrefs.indexWidth || Theme.indexWidth))
     }
-    Component.onDestruction: if (hostWindow) hostWindow.title = "XiguChat"
+    Component.onDestruction: if (hostWindow) hostWindow.title = "xiguchat"
     Connections {
         target: root.hostWindow
         function onActiveChanged() {
@@ -133,10 +135,10 @@ Item {
     readonly property int visiblePane: {
         const pane = bridge.pane
         if (bridge.mode === ChatBridge.ChatMode) {
-            if (pane === ChatBridge.FriendInfoPage || pane === ChatBridge.ApplyFriendPage
+            if (pane === ChatBridge.ApplyFriendPage
                 || pane === ChatBridge.UserInfoPage || pane === ChatBridge.GeneralPage)
                 return ChatBridge.EmptyPane
-            if (pane === ChatBridge.ChatPage && bridge.currentThreadId <= 0)
+            if (pane === ChatBridge.ChatPage && bridge.currentThreadId <= 0 && bridge.currentUid <= 0)
                 return ChatBridge.EmptyPane
             if (pane === ChatBridge.GroupInfoPage && bridge.currentThreadId <= 0)
                 return ChatBridge.EmptyPane
@@ -161,26 +163,25 @@ Item {
         if (bridge.mode === ChatBridge.ContactMode) {
             if (friendCount === 0)
                 return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
-                                        : "还没有联系人，先添加一位吧"
+                                        : "还没有联系人"
             return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
                                     : "选择一位联系人，查看资料"
         }
-        if (friendCount === 0)
-            return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
-                                    : "还没有好友，先添加一位吧"
-        return chatCount === 0 ? "还没有会话，去联系人看看" : "选一位朋友，聊聊吧"
+        return chatCount === 0 ? "还没有会话" : "选择一个会话"
     }
     readonly property string emptyAction: {
         if (bridge.mode === ChatBridge.SettingsMode)
             return ""
         if (bridge.mode === ChatBridge.ContactMode) {
             if (pendingCount > 0)
-                return "去处理"
-            return friendCount === 0 ? "添加朋友" : ""
+                return "查看申请"
+            return friendCount === 0 ? "添加好友" : ""
         }
+        if (chatCount > 0)
+            return ""
         if (friendCount === 0)
-            return pendingCount > 0 ? "去处理" : "添加朋友"
-        return chatCount === 0 ? "去联系人" : ""
+            return pendingCount > 0 ? "查看申请" : "添加好友"
+        return "查看联系人"
     }
 
     function handlePlus() {
@@ -228,11 +229,7 @@ Item {
             }
             return
         }
-        // 有好友但没有会话：落到联系人列表，并打开第一位好友的资料页
-        const first = bridge.friends.get(0)
         bridge.showContactMode()
-        if (first && first.uid)
-            bridge.openProfile(first.uid)
     }
 
     ChatBridge {
@@ -281,7 +278,7 @@ Item {
 
             Text {
                 anchors.centerIn: parent
-                text: "松开以发送文件"
+                text: "松开以添加附件"
                 color: Theme.primary
                 font.pixelSize: Theme.fontBody
                 font.weight: Font.Medium
@@ -300,21 +297,21 @@ Item {
         anchors.fill: parent
         enabled: !root.modalOpen
 
-        // 一级导航：从上到下依次是聊天、联系人、设置；底部固定外观切换与本人头像
+        // 一级导航：聊天与联系人在上，设置与本人头像固定在底部
         Rectangle {
             width: root.sidebarWidth
             height: parent.height
             color: Theme.sidebarBg
 
             BrandMark {
-                y: 26
+                y: 20
                 anchors.horizontalCenter: parent.horizontalCenter
-                size: 32
+                size: 28
             }
 
-            // 三个入口共用 SideButton，选中态由 bridge.mode 决定
+            // 选中态由当前区域决定
             Column {
-                y: 112
+                y: 96
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: 8
                 SideButton {
@@ -330,43 +327,17 @@ Item {
                     badge: bridge.applies.pendingCount
                     onClicked: bridge.showContactMode()
                 }
-                SideButton {
-                    kind: "settings"
-                    active: bridge.mode === ChatBridge.SettingsMode
-                    onClicked: bridge.showSettings()
-                }
+
             }
 
-            // 外观切换放在头像上方，与列表栏保持同一条底部基线
-            Rectangle {
-                id: appearanceButton
-                width: 40
-                height: 40
-                radius: 10
+            // 设置入口固定在头像上方
+            SideButton {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: ownAvatar.top
-                anchors.bottomMargin: 17
-                color: appearanceArea.containsMouse || activeFocus ? Theme.selected : "transparent"
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
-                Accessible.name: Theme.dark ? "切换到浅色" : "切换到深色"
-                Accessible.onPressAction: Theme.toggleMode()
-                Keys.onSpacePressed: Theme.toggleMode()
-                Keys.onReturnPressed: Theme.toggleMode()
-                AppIcon {
-                    anchors.centerIn: parent
-                    name: Theme.dark ? "sun" : "moon"
-                    color: Theme.textSecondary
-                    size: 20
-                }
-                MouseArea {
-                    id: appearanceArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    // 一键切换：设置页里才有「跟随系统 / 浅色 / 深色」
-                    onClicked: Theme.toggleMode()
-                }
+                anchors.bottomMargin: 12
+                kind: "settings"
+                active: bridge.mode === ChatBridge.SettingsMode
+                onClicked: bridge.showSettings()
             }
 
             // 本人头像：点击等同于进入设置里的个人资料
@@ -385,13 +356,13 @@ Item {
                 border.color: Theme.primary
                 Accessible.role: Accessible.Button
                 Accessible.name: "打开个人资料"
-                Accessible.onPressAction: bridge.showSettings()
-                Keys.onSpacePressed: bridge.showSettings()
-                Keys.onReturnPressed: bridge.showSettings()
+                Accessible.onPressAction: bridge.openMyProfile()
+                Keys.onSpacePressed: bridge.openMyProfile()
+                Keys.onReturnPressed: bridge.openMyProfile()
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: bridge.showSettings()
+                    onClicked: bridge.openMyProfile()
                 }
             }
             Rectangle {
@@ -417,8 +388,8 @@ Item {
 
                 // 标题与统计随模式切换；加号在聊天页打开功能菜单，在联系人页打开加好友浮层
                 Text {
-                    x: 22
-                    y: 21
+                    x: 20
+                    y: 10
                     visible: !root.compactIndex
                     text: bridge.mode === ChatBridge.ChatMode ? "聊天" : "联系人"
                     color: Theme.textPrimary
@@ -426,8 +397,8 @@ Item {
                     font.bold: true
                 }
                 Text {
-                    x: 23
-                    y: 51
+                    x: 20
+                    y: 39
                     visible: !root.compactIndex
                     text: bridge.mode === ChatBridge.ChatMode
                         ? root.chatCount + " 个会话"
@@ -442,11 +413,11 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 30
                     height: 30
-                    radius: 15
+                    radius: Theme.pillRadius
                     color: searchEntry.containsMouse || activeFocus ? Theme.selected : Theme.panelAlt
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
-                    Accessible.name: bridge.mode === ChatBridge.ChatMode ? "更多功能" : "添加朋友"
+                    Accessible.name: bridge.mode === ChatBridge.ChatMode ? "更多功能" : "添加好友"
                     Accessible.onPressAction: root.handlePlus()
                     Keys.onSpacePressed: root.handlePlus()
                     Keys.onReturnPressed: root.handlePlus()
@@ -466,7 +437,7 @@ Item {
                 }
             }
 
-            // 两种模式共用同一个输入位置：聊天页过滤好友，联系人页添加朋友
+            // 两种模式共用同一个输入位置：聊天页过滤好友，联系人页添加好友
             Item {
                 id: searchArea
                 x: 16
@@ -809,9 +780,10 @@ Item {
                 delegate: Item {
                     id: convRow
                     width: conversationList.width
-                    height: root.compactIndex ? 56 : 76
+                    height: root.compactIndex ? 56 : Theme.listRowHeight
                     readonly property bool chosen: (root.visiblePane === ChatBridge.ChatPage
-                        || root.visiblePane === ChatBridge.GroupInfoPage)
+                        || root.visiblePane === ChatBridge.GroupInfoPage
+                        || (bridge.mode === ChatBridge.ChatMode && root.visiblePane === ChatBridge.FriendInfoPage))
                         && bridge.currentThreadId === model.threadId
                     readonly property bool group: model.kind === 2
                     activeFocusOnTab: true
@@ -889,15 +861,6 @@ Item {
                         border.width: 1
                         border.color: convRow.activeFocus ? Theme.primary : "transparent"
                         Behavior on color { ColorAnimation { duration: 130 } }
-                    }
-                    Rectangle {
-                        x: 10
-                        width: 3
-                        height: 18
-                        radius: 1
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: convRow.chosen && !root.compactIndex
-                        color: Theme.primary
                     }
                     Avatar {
                         id: convAvatar
@@ -988,7 +951,7 @@ Item {
                             width: parent.width
                             text: {
                                 if (model.draft.length > 0)
-                                    return "未寄出 · " + model.draft
+                                    return "草稿 · " + model.draft
                                 const body = model.lastText.length > 0 ? model.lastText : "还没有消息"
                                 return model.atMe ? "[有人@我] " + body : body
                             }
@@ -1251,15 +1214,6 @@ Item {
                         border.color: friendRow.activeFocus ? Theme.primary : "transparent"
                         Behavior on color { ColorAnimation { duration: 130 } }
                     }
-                    Rectangle {
-                        x: 10
-                        width: 3
-                        height: 18
-                        radius: 1
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: friendRow.chosen && !root.compactIndex
-                        color: Theme.accent
-                    }
                     Avatar {
                         id: friendAvatar
                         x: root.compactIndex ? (parent.width - width) / 2 : 22
@@ -1323,7 +1277,7 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: searchArea.y + searchArea.height + 54
                 visible: bridge.mode === ChatBridge.ChatMode && root.chatCount === 0
-                text: root.friendCount === 0 ? "还没有好友" : "还没有会话"
+                text: "还没有会话"
                 font.pixelSize: 12
                 color: Theme.textHint
             }
@@ -1361,14 +1315,14 @@ Item {
                         }
                     }
                     Text {
-                        text: "通讯录还是空的"
+                        text: "还没有联系人"
                         color: Theme.textPrimary
                         font.pixelSize: 15
                         font.weight: Font.DemiBold
                     }
                     Text {
                         width: parent.width
-                        text: "搜个用户名或 ID，发去申请，通过了就能聊起来。"
+                        text: "搜索用户名或 ID，发送好友申请。"
                         color: Theme.textSecondary
                         font.pixelSize: 11
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
@@ -1376,7 +1330,7 @@ Item {
                     AppButton {
                         width: parent.width
                         height: 36
-                        text: "添加朋友"
+                        text: "添加好友"
                         onClicked: {
                             bridge.openAddFriend()
                             Qt.callLater(addSearch.forceInputFocus)
@@ -1443,8 +1397,8 @@ Item {
                     }
                     onReleased: root.layoutPrefs.indexWidth = root.indexWidth
                     onDoubleClicked: {
-                        root.indexWidth = 280
-                        root.layoutPrefs.indexWidth = 280
+                        root.indexWidth = Theme.indexWidth
+                        root.layoutPrefs.indexWidth = Theme.indexWidth
                     }
                 }
             }
@@ -1642,6 +1596,16 @@ Item {
         visible: bridge.createGroupOpen
     }
 
+    ForwardDialog {
+        id: forwardDialog
+        controller: bridge
+        open: chatPage.visible && chatPage.forwardOpen
+        count: chatPage.selectedCount
+        mergeMode: chatPage.mergeMode
+        onTargetChosen: (threadId, kind, uid) => chatPage.chooseForwardTarget(threadId, kind, uid)
+        onCloseRequested: chatPage.forwardOpen = false
+    }
+
     // 好友表单是覆盖层，打开时禁用底层 Row；头像编辑器独立于页面，避免切页被销毁
     FriendDialogs {
         id: dialogs
@@ -1690,8 +1654,8 @@ Item {
             anchors.centerIn: parent
             width: Math.min(420, parent.width - 64)
             implicitHeight: clearContent.implicitHeight + 48
-            radius: 12
-            color: Theme.panelBg
+            radius: Theme.dialogRadius
+            color: Theme.surfaceFloating
             border.width: 1
             border.color: Theme.line
 
@@ -1732,7 +1696,8 @@ Item {
                     AppButton {
                         width: (parent.width - 12) / 2
                         height: 42
-                        text: bridge.clearConfirmDelete ? "确认删除" : "确认清除"
+                        variant: "danger"
+                        text: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
                         onClicked: bridge.confirmClearHistory()
                     }
                 }
@@ -1757,8 +1722,8 @@ Item {
             anchors.centerIn: parent
             width: Math.min(420, parent.width - 64)
             implicitHeight: deleteContent.implicitHeight + 48
-            radius: 12
-            color: Theme.panelBg
+            radius: Theme.dialogRadius
+            color: Theme.surfaceFloating
             border.width: 1
             border.color: Theme.line
 
@@ -1796,7 +1761,8 @@ Item {
                     AppButton {
                         width: (parent.width - 12) / 2
                         height: 42
-                        text: "确认删除"
+                        variant: "danger"
+                        text: "删除好友"
                         onClicked: bridge.confirmDeleteFriend()
                     }
                 }
@@ -1820,8 +1786,8 @@ Item {
             anchors.centerIn: parent
             width: Math.min(420, parent.width - 64)
             implicitHeight: logoutContent.implicitHeight + 48
-            radius: 12
-            color: Theme.panelBg
+            radius: Theme.dialogRadius
+            color: Theme.surfaceFloating
             border.width: 1
             border.color: Theme.line
 

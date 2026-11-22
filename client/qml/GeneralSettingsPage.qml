@@ -1,11 +1,9 @@
 import QtQuick
 
-// 通用设置：目前只有本地存储相关的清理动作。
-// 这里所有操作都只影响本机：消息仍然在服务端与其他设备上，清完重新登录还能同步回来。
+// 通用设置集中管理本机数据，清理操作均在确认后执行。
 Item {
     id: root
     property var controller
-    // 待确认的动作：空串表示没有弹层，"history" 清聊天记录，"media" 清媒体缓存
     property string pending: ""
 
     Rectangle {
@@ -13,24 +11,10 @@ Item {
         color: Theme.chatBg
     }
 
-    Item {
+    PageHeader {
         id: header
-        width: parent.width
-        height: 74
-        Text {
-            x: 30
-            anchors.verticalCenter: parent.verticalCenter
-            text: "通用"
-            color: Theme.textPrimary
-            font.pixelSize: 16
-            font.weight: Font.DemiBold
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: Theme.line
-        }
+        title: "通用"
+        trailingIcon: "settings"
     }
 
     Flickable {
@@ -38,111 +22,56 @@ Item {
         anchors.bottom: parent.bottom
         width: parent.width
         contentWidth: width
-        contentHeight: details.height + 84
+        contentHeight: details.height + 48
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         enabled: root.pending.length === 0
 
         Column {
             id: details
-            x: Math.max(30, (parent.width - 560) / 2)
-            y: 34
-            width: Math.min(parent.width - 60, 560)
-            spacing: 14
+            x: Math.max(24, (parent.width - 600) / 2)
+            y: 28
+            width: Math.min(parent.width - 48, 600)
+            spacing: 4
 
             Text {
-                text: "本地存储"
+                x: 12
+                bottomPadding: 8
+                text: "本地数据"
                 color: Theme.textSecondary
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSmall
+                font.weight: Font.Medium
             }
 
-            // 清空消息但是保留好友、群与会话；游标不重置，下次登录不会又拉回来
-            Rectangle {
-                width: parent.width
-                height: 74
-                radius: 10
-                color: Theme.panelBg
-                border.width: 1
-                border.color: Theme.line
-
-                Column {
-                    x: 18
-                    width: parent.width - 140
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 5
-                    Text {
-                        text: "清除本地聊天记录"
-                        color: Theme.textPrimary
-                        font.pixelSize: 14
-                    }
-                    Text {
-                        width: parent.width
-                        text: "删除本机保存的全部消息与草稿，好友、群聊与服务器上的记录都保留"
-                        color: Theme.textSecondary
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                    }
-                }
-                CodeButton {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 18
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 84
-                    height: 36
-                    text: "清除"
-                    onClicked: root.pending = "history"
-                }
+            SettingsRow {
+                iconName: "chat"
+                title: "清除本地聊天记录"
+                subtitle: "删除这台设备保存的消息与草稿"
+                showChevron: true
+                onClicked: root.pending = "history"
             }
 
-            // 只删缓存目录，消息里的资源名还在，重新打开会话会按需重新下载
-            Rectangle {
-                width: parent.width
-                height: 74
-                radius: 10
-                color: Theme.panelBg
-                border.width: 1
-                border.color: Theme.line
-
-                Column {
-                    x: 18
-                    width: parent.width - 140
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 5
-                    Text {
-                        text: "清除已下载的图片、视频与文件"
-                        color: Theme.textPrimary
-                        font.pixelSize: 14
-                    }
-                    Text {
-                        width: parent.width
-                        text: "只删除本机缓存的媒体文件，聊天记录保留；再次查看时会重新下载"
-                        color: Theme.textSecondary
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                    }
-                }
-                CodeButton {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 18
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 84
-                    height: 36
-                    text: "清除"
-                    onClicked: root.pending = "media"
-                }
+            SettingsRow {
+                iconName: "folder"
+                title: "清除媒体缓存"
+                subtitle: "已下载的图片、视频和文件会在下次查看时重新下载"
+                showChevron: true
+                onClicked: root.pending = "media"
             }
+
+            Item { width: 1; height: 12 }
 
             Text {
-                width: parent.width
-                text: "以上操作都只影响这台设备，不会删除服务器或其他设备上的记录。"
+                width: parent.width - 24
+                x: 12
+                text: "只影响这台设备，不会删除服务器或其他设备上的记录。"
                 color: Theme.textSecondary
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontCaption
                 wrapMode: Text.WordWrap
             }
         }
     }
 
-    // 二次确认：删除类操作都走同一层，避免误点
     Rectangle {
         anchors.fill: parent
         visible: root.pending.length > 0
@@ -152,20 +81,18 @@ Item {
         Keys.onEscapePressed: root.pending = ""
         onVisibleChanged: if (visible) forceActiveFocus()
 
-        MouseArea {
-            anchors.fill: parent
-            onClicked: root.pending = ""
-        }
+        MouseArea { anchors.fill: parent; onClicked: root.pending = "" }
 
         Rectangle {
             anchors.centerIn: parent
-            width: Math.min(420, parent.width - 64)
-            implicitHeight: confirmContent.implicitHeight + 48
-            radius: 12
-            color: Theme.panelBg
+            width: Math.min(420, parent.width - 48)
+            height: confirmContent.implicitHeight + 48
+            radius: Theme.dialogRadius
+            color: Theme.surfaceFloating
             border.width: 1
             border.color: Theme.line
 
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
             Column {
                 id: confirmContent
                 x: 24
@@ -174,19 +101,18 @@ Item {
                 spacing: 14
 
                 Text {
-                    text: root.pending === "history" ? "清除本地聊天记录" : "清除本地媒体文件"
+                    text: root.pending === "history" ? "清除本地聊天记录？" : "清除媒体缓存？"
                     color: Theme.textPrimary
                     font.pixelSize: 18
-                    font.bold: true
+                    font.weight: Font.DemiBold
                 }
                 Text {
                     width: parent.width
                     text: root.pending === "history"
-                        ? "将删除本机保存的全部消息与草稿。好友、群聊和服务器上的记录不受影响，"
-                          + "重新登录也不会把已清掉的历史重新拉回来。"
-                        : "将删除本机缓存的图片、视频与文件。聊天记录保留，再次查看时会重新下载。"
+                        ? "消息和草稿会从这台设备删除。下次登录不会恢复已清除的记录；其他设备不受影响。"
+                        : "下载的图片、视频和文件会被删除；聊天记录保留，再次查看时会重新下载。"
                     color: Theme.textSecondary
-                    font.pixelSize: 12
+                    font.pixelSize: Theme.fontBody
                     wrapMode: Text.WordWrap
                 }
                 Row {
@@ -202,7 +128,8 @@ Item {
                     AppButton {
                         width: (parent.width - 12) / 2
                         height: 42
-                        text: "确认清除"
+                        variant: "danger"
+                        text: root.pending === "history" ? "清除聊天记录" : "清除媒体缓存"
                         onClicked: {
                             const action = root.pending
                             root.pending = ""

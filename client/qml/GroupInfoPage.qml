@@ -49,55 +49,12 @@ Item {
         color: Theme.chatBg
     }
 
-    // 顶部：返回会话 + 页面标题
-    Item {
+    PageHeader {
         id: header
-        width: parent.width
-        height: 78
-
-        Rectangle {
-            id: backButton
-            x: 24
-            anchors.verticalCenter: parent.verticalCenter
-            width: 30
-            height: 30
-            radius: 15
-            color: backArea.containsMouse ? Theme.panelAlt : "transparent"
-            activeFocusOnTab: true
-            Accessible.role: Accessible.Button
-            Accessible.name: "返回会话"
-            Accessible.onPressAction: root.backRequested()
-            Keys.onSpacePressed: root.backRequested()
-            Keys.onReturnPressed: root.backRequested()
-            AppIcon {
-                anchors.centerIn: parent
-                name: "back"
-                size: 17
-                color: Theme.textSecondary
-            }
-            MouseArea {
-                id: backArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.backRequested()
-            }
-        }
-        Text {
-            x: 64
-            anchors.verticalCenter: parent.verticalCenter
-            text: "群聊资料"
-            color: Theme.textPrimary
-            font.pixelSize: 20
-            font.bold: true
-        }
-        Rectangle {
-            x: 28
-            anchors.bottom: parent.bottom
-            width: parent.width - 56
-            height: 1
-            color: Theme.line
-        }
+        title: "群聊资料"
+        backVisible: true
+        backLabel: "返回会话"
+        onBackRequested: root.backRequested()
     }
 
     Flickable {
@@ -194,7 +151,7 @@ Item {
                     anchors.leftMargin: 14
                     anchors.top: parent.top
                     anchors.topMargin: 10
-                    width: parent.width - 164
+                    width: Math.max(1, parent.width - 70 - (root.canManage ? 108 : 0))
                     text: String(root.info.name || "群聊")
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
@@ -255,15 +212,14 @@ Item {
             // 群公告：成员都能看，管理能改
             Rectangle {
                 width: parent.width
+                visible: root.notice.length > 0 || root.canManage
                 height: noticeColumn.implicitHeight + 28
-                radius: 10
-                color: Theme.panelBg
-                border.width: 1
-                border.color: Theme.line
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
 
                 Column {
                     id: noticeColumn
-                    x: 16
+                    x: 0
                     y: 14
                     width: parent.width - 32
                     spacing: 8
@@ -308,12 +264,10 @@ Item {
             Rectangle {
                 width: parent.width
                 height: 52
-                radius: 10
-                color: Theme.panelBg
-                border.width: 1
-                border.color: Theme.line
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
                 Text {
-                    x: 16
+                    x: 0
                     anchors.verticalCenter: parent.verticalCenter
                     text: "我在本群的昵称"
                     color: Theme.textPrimary
@@ -342,12 +296,10 @@ Item {
             Rectangle {
                 width: parent.width
                 height: 52
-                radius: 10
-                color: Theme.panelBg
-                border.width: 1
-                border.color: Theme.line
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
                 Text {
-                    x: 16
+                    x: 0
                     anchors.verticalCenter: parent.verticalCenter
                     text: "消息免打扰"
                     color: Theme.textPrimary

@@ -148,9 +148,13 @@ flowchart LR
 | 群聊 | `GroupInfoPage.qml`、`CreateGroupDialog.qml` |
 | 转发与搜索 | `ForwardDialog.qml`、`MessageSearchPanel.qml` |
 | 设置与外观 | `SettingsPanel.qml`、`GeneralSettingsPage.qml`、`AppearanceMenu.qml`、`Theme.qml` |
-| 通用组件 | `AppButton`、`AppInput`、`AppTextArea`、`Avatar`、`SearchField`、`ContextMenu` 等 |
+| 通用组件 | `PageHeader`、`SettingsRow`、`AppButton`、`AppInput`、`AppTextArea`、`Avatar`、`SearchField`、`ContextMenu` 等 |
 
-视觉规范集中在 `Theme.qml`：语义色（`panelBg / textPrimary / primary / danger` 等）、字号、圆角、气泡宽度。日间纸白 + 墨绿，夜间深灰蓝 + 浅色文字；陶土色用于强调。切换外观时所有页面通过绑定自动更新。
+视觉规范集中在 `Theme.qml`：日间为白色面板与低对比蓝灰背景，夜间为深墨蓝表面；墨蓝/雾蓝用于操作与焦点，朱红只用于提醒和危险状态。字号、表面层级、间距、导航宽度、标题栏高度及圆角由令牌统一管理。
+
+主窗口在 64px 一级导航、280px 索引栏和自适应内容区之间保持稳定结构。聊天、联系人和设置共享导航外壳；右侧资料、申请及设置页使用同一 `PageHeader`。从聊天打开联系人资料时保留会话列表和草稿，返回仍回到当前会话；通讯录资料选择独立于聊天资料；设置区单独记住个人资料或通用页。聊天列表、联系人列表与聊天页实例在切换时保持存活，保留滚动和输入上下文。
+
+尚未分配会话编号的新好友，草稿和附件按好友分别暂存；获得编号后，文字草稿沿用该会话的本地存储。转发时先选收件人，再确认发送，选择期间不能切换底层会话。
 
 消息气泡按类型渲染：文本、图片、视频、文件、群系统消息、合并转发卡片。合并转发卡片显示标题、三行预览与"查看 N 条转发消息"，点击打开只读的记录查看器。
 

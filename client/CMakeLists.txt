@@ -267,6 +267,7 @@ set(QML_FILES
     qml/Register.qml
     qml/Reset.qml
     qml/ChatWindow.qml
+    qml/PageHeader.qml
     qml/FriendDialogs.qml
     qml/ProfileDialogs.qml
     qml/TagEditor.qml
@@ -282,6 +283,7 @@ set(QML_FILES
     qml/CreateGroupDialog.qml
     qml/ApplyFriendPage.qml
     qml/SettingsPanel.qml
+    qml/SettingsRow.qml
     qml/GeneralSettingsPage.qml
     qml/UserInfoPage.qml
     qml/AvatarEditor.qml

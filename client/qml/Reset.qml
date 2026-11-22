@@ -16,23 +16,6 @@ Item {
         anchors.fill: parent
         enabled: !(bridge.busy || bridge.codeBusy || bridge.done)
 
-        Item {
-            width: parent.width
-            height: 90
-
-            PaperCompanion {
-                anchors.centerIn: parent
-                width: 128
-                height: 90
-                attentive: userInput.inputFocused || emailInput.inputFocused || codeInput.inputFocused
-                hiding: passwordInput.inputFocused && !passwordInput.reveal
-                revealing: passwordInput.inputFocused && passwordInput.reveal
-                busy: bridge.busy || bridge.codeBusy
-            }
-        }
-
-        Item { width: 1; height: 18 }
-
         Text {
             text: "找回密码"
             color: Theme.textPrimary

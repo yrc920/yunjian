@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 // 编辑区工具入口，未实现的动作保持不可用。
 Rectangle {
@@ -19,6 +20,10 @@ Rectangle {
     Accessible.onPressAction: if (root.usable) root.clicked()
     Keys.onSpacePressed: if (usable) clicked()
     Keys.onReturnPressed: if (usable) clicked()
+
+    ToolTip.visible: area.containsMouse || activeFocus
+    ToolTip.text: Accessible.name
+    ToolTip.delay: 450
 
     AppIcon {
         anchors.centerIn: parent

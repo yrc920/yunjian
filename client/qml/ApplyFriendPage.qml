@@ -14,43 +14,12 @@ Item {
         color: Theme.chatBg
     }
 
-    // 标题栏：待处理数量由申请模型统计
-    Item {
+    PageHeader {
         id: header
-        width: parent.width
-        height: 74
-
-        Column {
-            x: 30
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 5
-            Text {
-                text: "新的朋友"
-                color: Theme.textPrimary
-                font.pixelSize: 16
-                font.weight: Font.DemiBold
-            }
-            Text {
-                text: root.applies && root.applies.pendingCount > 0
-                      ? root.applies.pendingCount + " 条申请待处理" : "好友申请"
-                color: Theme.textSecondary
-                font.pixelSize: 11
-            }
-        }
-        AppIcon {
-            anchors.right: parent.right
-            anchors.rightMargin: 30
-            anchors.verticalCenter: parent.verticalCenter
-            name: "contacts"
-            color: Theme.textSecondary
-            size: 22
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: Theme.line
-        }
+        title: "新的朋友"
+        subtitle: root.applies && root.applies.pendingCount > 0
+            ? root.applies.pendingCount + " 条申请待处理" : "好友申请"
+        trailingIcon: "contacts"
     }
 
     // 一条申请占一行：头像、申请人、留言，右侧按钮在已处理时换成对勾

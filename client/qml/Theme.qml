@@ -38,18 +38,21 @@ QtObject {
         manualDark = value === "dark"
     }
 
-    // 基础界面色
-    readonly property color bgTop: dark ? "#0F151B" : "#F4F6F8"
+    // 基础界面色：页面、面板、悬停和选中只拉开一小级明度差。
+    readonly property color bgTop: dark ? "#0F151B" : "#F5F7F9"
     readonly property color panelBg: dark ? "#161E26" : "#FFFFFF"
-    readonly property color panelAlt: dark ? "#1E2832" : "#EBEFF4"
-    readonly property color chatBg: dark ? "#0F151B" : "#F6F8FA"
-    readonly property color sidebarBg: dark ? "#131A21" : "#EDF1F6"
-    readonly property color selected: dark ? "#22384C" : "#E7EFF7"
-    readonly property color line: dark ? "#2B3742" : "#E0E6ED"
+    readonly property color panelAlt: dark ? "#1D2731" : "#EEF2F6"
+    readonly property color chatBg: dark ? "#10171E" : "#F7F9FB"
+    readonly property color sidebarBg: dark ? "#131A21" : "#EEF2F6"
+    readonly property color selected: dark ? "#22384C" : "#E5EEF7"
+    readonly property color line: dark ? "#2A3540" : "#DFE5EB"
+    readonly property color lineSoft: dark ? "#202B35" : "#EEF1F4"
+    readonly property color surfaceRaised: dark ? "#1B252E" : "#FFFFFF"
+    readonly property color surfaceFloating: dark ? "#202C37" : "#FFFFFF"
 
     readonly property color textPrimary: dark ? "#E9EFF5" : "#111A24"
     readonly property color textSecondary: dark ? "#A7B4C1" : "#55636F"
-    readonly property color textHint: dark ? "#7F8D9A" : "#6E7C89"
+    readonly property color textHint: dark ? "#82909D" : "#71808C"
     readonly property color ink: dark ? "#BBD0E2" : "#24476B"
     readonly property color danger: dark ? "#E0806A" : "#B4453A"
     readonly property color success: dark ? "#8FD0AE" : "#2E7D5B"
@@ -67,7 +70,7 @@ QtObject {
     readonly property color bubbleSelfText: textPrimary
     readonly property color bubbleOther: dark ? "#1E2832" : "#FFFFFF"
     readonly property color fieldBg: dark ? "#171F27" : "#FFFFFF"
-    readonly property color fieldBorder: dark ? "#33404C" : "#D8DFE8"
+    readonly property color fieldBorder: dark ? "#34414D" : "#D7DFE7"
     readonly property color overlay: dark ? "#A60A0E12" : "#5E0E1620"
     // 信纸与蜡印：吉祥物、信封表情与应用图标共用同一组颜色
     readonly property color paper: dark ? "#E6E1D2" : "#FBF8EF"
@@ -81,7 +84,18 @@ QtObject {
     readonly property int fontSmall: 12
     readonly property int fontCaption: 11
     readonly property int radius: 10
+    readonly property int controlRadius: 8
+    readonly property int panelRadius: 12
+    readonly property int dialogRadius: 14
+    readonly property int pillRadius: 999
     readonly property real bubbleMaxWidth: 460
     readonly property int fieldHeight: 48
     readonly property int buttonHeight: 44
+    readonly property int toolbarHeight: 64
+    readonly property int listRowHeight: 64
+    readonly property int sidebarWidth: 64
+    readonly property int indexWidth: 280
+    readonly property int contentInset: 24
+    readonly property int sectionGap: 24
+    readonly property color focusRing: dark ? "#89B9E8" : "#2E6EA1"
 }

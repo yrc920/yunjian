@@ -68,8 +68,8 @@ FocusScope {
         anchors.centerIn: parent
         width: Math.min(700, parent.width - 48)
         height: Math.min(560, parent.height - 32)
-        radius: 12
-        color: Theme.panelBg
+        radius: Theme.dialogRadius
+        color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
 

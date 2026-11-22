@@ -21,7 +21,7 @@ Rectangle {
     implicitHeight: content.implicitHeight + 24
     height: implicitHeight
     radius: 10
-    color: Theme.panelBg
+    color: Theme.surfaceFloating
     border.width: 1
     border.color: Theme.line
     clip: true

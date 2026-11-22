@@ -72,7 +72,7 @@ Popup {
 
     background: Rectangle {
         color: Theme.panelBg
-        radius: 12
+        radius: Theme.dialogRadius
         border.color: Theme.line
     }
 

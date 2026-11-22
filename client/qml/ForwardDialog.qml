@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import XiguChat
 
-// 多选转发目标：列出已有会话（含群聊），选中即转发到该会话。
+//转发先选择收件人，确认后再发送，避免列表误点直接投递。
 // 过滤只在前端做，不触发服务端搜索。
 FocusScope {
     id: root
@@ -16,12 +16,14 @@ FocusScope {
     //true 时标题改成"合并转发"，目标选择后的动作由调用方决定
     property bool mergeMode: false
     property int count: 0
+    property var recipient: null
+    Keys.onEscapePressed: root.closeRequested()
     property string filter: ""
     signal targetChosen(double threadId, int kind, int uid)
     signal closeRequested()
 
     readonly property var allRows: {
-        if (!controller)
+        if (!open || !controller)
             return []
         const model = controller.conversations
         const total = model ? model.count : 0
@@ -43,10 +45,21 @@ FocusScope {
         })
     }
 
+    function focusRow(index) {
+        if (list.count === 0)
+            return
+        list.currentIndex = Math.max(0, Math.min(list.count - 1, index))
+        list.positionViewAtIndex(list.currentIndex, ListView.Contain)
+        if (list.currentItem)
+            list.currentItem.forceActiveFocus()
+    }
+
     onOpenChanged: {
         if (open) {
+            recipient = null
             filter = ""
             input.setText("")
+            list.currentIndex = -1
             Qt.callLater(input.forceInputFocus)
         }
     }
@@ -65,8 +78,8 @@ FocusScope {
         anchors.centerIn: parent
         width: Math.min(420, parent.width - 48)
         height: Math.min(520, parent.height - 40)
-        radius: 12
-        color: Theme.panelBg
+        radius: Theme.dialogRadius
+        color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
 
@@ -124,7 +137,13 @@ FocusScope {
             anchors.topMargin: 12
             placeholder: "搜索会话"
             inputObjectName: "forwardSearchInput"
-            onTextEdited: (value) => root.filter = value
+            Keys.onDownPressed: root.focusRow(0)
+            onAccepted: root.focusRow(0)
+            onTextEdited: (value) => {
+                root.filter = value
+                root.recipient = null
+                list.currentIndex = -1
+            }
             onEscapePressed: root.closeRequested()
             onClearRequested: {
                 input.setText("")
@@ -158,7 +177,7 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: divider.bottom
-            anchors.bottom: parent.bottom
+            anchors.bottom: footer.top
             anchors.leftMargin: 10
             anchors.rightMargin: 10
             anchors.topMargin: 6
@@ -172,7 +191,21 @@ FocusScope {
                 width: ListView.view.width
                 height: 54
                 radius: 8
-                color: rowArea.containsMouse ? Theme.selected : "transparent"
+                color: root.recipient && root.recipient.threadId === modelData.threadId
+                    ? Theme.selected : rowArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Button
+                Accessible.name: modelData.displayName || ""
+                function selectRecipient() {
+                    root.recipient = modelData
+                    sendButton.forceActiveFocus()
+                }
+                Accessible.onPressAction: selectRecipient()
+                Keys.onDownPressed: root.focusRow(index + 1)
+                Keys.onUpPressed: index > 0 ? root.focusRow(index - 1) : input.forceInputFocus()
+                Keys.onReturnPressed: selectRecipient()
+                Keys.onEnterPressed: selectRecipient()
+                Keys.onSpacePressed: selectRecipient()
 
                 Avatar {
                     id: rowAvatar
@@ -219,12 +252,42 @@ FocusScope {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    onClicked: parent.selectRecipient()
+                }
+            }
+        }
+        Item {
+            id: footer
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 104
+            Rectangle { width: parent.width; height: 1; color: Theme.lineSoft }
+            Text {
+                x: 20; y: 12; width: parent.width - 40
+                text: root.recipient ? "发送给：" + root.recipient.displayName : "选择一个收件人"
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.pixelSize: Theme.fontSmall
+                color: Theme.textSecondary
+            }
+            Row {
+                x: 20; y: 40; width: parent.width - 40; spacing: 12
+                AppButton {
+                    width: (parent.width - 12) / 2; height: 40
+                    text: "取消"; variant: "secondary"
+                    onClicked: root.closeRequested()
+                }
+                AppButton {
+                    width: (parent.width - 12) / 2; height: 40
+                    id: sendButton
+                    text: "发送"; enabled: root.recipient !== null
                     onClicked: {
-                        root.targetChosen(modelData.threadId, modelData.kind, modelData.uid)
-                        root.closeRequested()
+                        root.targetChosen(root.recipient.threadId, root.recipient.kind, root.recipient.uid)
                     }
                 }
             }
         }
+
     }
 }

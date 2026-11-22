@@ -29,7 +29,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: 10
-        color: Theme.panelBg
+        color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
     }

@@ -39,8 +39,8 @@ Popup {
     padding: 0
     closePolicy: busy ? Popup.NoAutoClose : Popup.CloseOnEscape
     background: Rectangle {
-        radius: 12
-        color: Theme.panelBg
+        radius: Theme.dialogRadius
+        color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
     }

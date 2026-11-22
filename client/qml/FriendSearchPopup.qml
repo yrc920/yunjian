@@ -12,7 +12,7 @@ Rectangle {
 
     height: matches.length === 0 ? 84 : Math.min(matches.length, 5) * 52 + 12
     radius: 9
-    color: Theme.panelBg
+    color: Theme.surfaceFloating
     border.width: 1
     border.color: Theme.line
     clip: true

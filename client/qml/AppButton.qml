@@ -11,7 +11,7 @@ Rectangle {
     signal clicked()
     implicitHeight: Theme.buttonHeight
     height: implicitHeight
-    radius: Theme.radius
+    radius: Theme.controlRadius
     activeFocusOnTab: enabled && !busy
     // 危险动作不抢主色：浅红底 + 红字，悬停加深，避免和"保存/确定"同一个视觉重量
     readonly property bool _danger: variant === "danger"
@@ -33,7 +33,7 @@ Rectangle {
                     : area.pressed ? _bgPressed
                     : area.containsMouse ? _bgHover : _bg
     border.width: activeFocus ? 2 : 0
-    border.color: Theme.primary
+    border.color: Theme.focusRing
     opacity: 1
     scale: area.pressed && !busy ? 0.99 : 1
     Accessible.role: Accessible.Button
@@ -48,7 +48,7 @@ Rectangle {
     Row {
         anchors.centerIn: parent
         spacing: 8
-        Text { text: root.text; color: root._fg; font.pixelSize: Theme.fontBody; font.weight: Font.Medium }
+        Text { visible: root.text.length > 0; text: root.text; color: root._fg; font.pixelSize: Theme.fontBody; font.weight: Font.Medium }
         AppIcon { visible: root.iconName.length > 0; name: root.iconName; color: root._fg; size: 17; anchors.verticalCenter: parent.verticalCenter }
     }
     MouseArea {

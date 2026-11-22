@@ -47,6 +47,7 @@ class ChatBridge : public QObject
     Q_PROPERTY(qint64 currentThreadId READ currentThreadId NOTIFY currentChanged)
     Q_PROPERTY(int currentKind READ currentKind NOTIFY currentChanged)
     Q_PROPERTY(int currentUid READ currentUid NOTIFY currentChanged)
+    Q_PROPERTY(QString currentIcon READ currentIcon NOTIFY currentChanged)
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
     Q_PROPERTY(QString currentSubtitle READ currentSubtitle NOTIFY currentChanged)
     Q_PROPERTY(bool isGroup READ isGroup NOTIFY currentChanged)
@@ -136,6 +137,7 @@ public:
     qint64 currentThreadId() const { return _currentThreadId; }
     int currentKind() const { return _currentKind; }
     int currentUid() const { return _currentUid; }
+    QString currentIcon() const;
     QString currentName() const { return _currentName; }
     QString currentSubtitle() const { return _currentSubtitle; }
     bool isGroup() const;
@@ -242,6 +244,7 @@ public:
     Q_INVOKABLE void showChatMode();
     Q_INVOKABLE void showContactMode();
     Q_INVOKABLE void showSettings();
+    Q_INVOKABLE void openMyProfile();
     Q_INVOKABLE void openGeneralSettings();
 
     //好友页面入口
@@ -390,7 +393,7 @@ private:
     void refreshActiveThread();
     //进入会话时记下未读起点：第一条未读的服务端消息号，供消息列表画分割线
     void captureEntryUnread(qint64 thread_id);
-    void setMode(int mode);
+    void navigate(int mode, int pane);
     void setPane(int pane);
     //按当前会话重建标题、副标题与群资料快照
     void refreshConversationSnapshot();
@@ -438,8 +441,8 @@ private:
     bool _windowActive = true;
     bool _chatAtBottom = true;
     int _lastSettingsPane = UserInfoPage; //设置区上次停留的页，切回来时恢复
-    //资料页来源：从聊天标题进来时，返回要回到会话；从联系人进来时回联系人
-    bool _profileFromChat = false;
+    //通讯录的选中项独立于聊天内查看的资料
+    int _contactProfileUid = 0;
     int _deleteTargetUid = 0;
     QString _deleteTargetName;
     QString _searchText;

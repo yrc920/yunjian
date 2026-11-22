@@ -70,7 +70,7 @@ Item {
         width: 150
         height: column.implicitHeight + 12
         radius: 9
-        color: Theme.panelBg
+        color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
 

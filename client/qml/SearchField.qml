@@ -16,10 +16,10 @@ Rectangle {
     signal clearRequested()
 
     implicitHeight: 38
-    radius: Theme.radius
+    radius: Theme.controlRadius
     color: input.activeFocus || clearButton.activeFocus ? Theme.fieldBg : Theme.panelAlt
     border.width: 1
-    border.color: input.activeFocus || clearButton.activeFocus ? Theme.primary : "transparent"
+    border.color: input.activeFocus || clearButton.activeFocus ? Theme.focusRing : "transparent"
 
     function forceInputFocus() {
         input.forceActiveFocus()

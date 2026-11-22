@@ -9,6 +9,7 @@ Item {
 
     property string avatar: ""
     property string name: ""
+    property bool showAvatar: true
     property string senderName: "" //群聊里别人发的消息：气泡上方显示成员名，单聊为空""
     property string text: ""
     property bool isSelf: false
@@ -107,6 +108,7 @@ Item {
 
     Avatar {
         id: userAvatar
+        visible: root.showAvatar
         x: root.isSelf ? root.width - width : 0
         y: root.nameOffset
         width: 32

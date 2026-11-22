@@ -100,7 +100,7 @@ ComposerBridge::ComposerBridge(QObject *parent) : QObject(parent)
                 }
                 _drafts.remove(threadId);
                 _attachment_drafts.remove(threadId);
-                if (threadId == _threadId) {
+                if (threadId == _draftKey) {
                     if (!_attachments.isEmpty()) {
                         _attachments.clear();
                         emit attachmentsChanged();
@@ -115,24 +115,23 @@ ComposerBridge::ComposerBridge(QObject *parent) : QObject(parent)
 
 void ComposerBridge::saveDraft()
 {
-    if (_threadId <= 0 || !_document)
+    if (_draftKey <= 0 || !_document)
         return;
     //空文档的 toHtml() 也是完整 HTML，必须先判断有没有实际内容；
     //否则会话列表会把"没有草稿"显示成"未寄出 · 草稿"
     const QString raw = _document->toPlainText();
     const bool empty = raw.trimmed().isEmpty()
         && !raw.contains(QChar::ObjectReplacementCharacter);
-    UserMgr::GetInstance()->SetThreadDraft(_threadId, empty ? QString() : _document->toHtml());
+    UserMgr::GetInstance()->SetThreadDraft(_draftKey, empty ? QString() : _document->toHtml());
 }
 
 //发送成功：停掉防抖定时器并立即把草稿置空，列表预览马上回到最后一条消息
 void ComposerBridge::clearDraft()
 {
     _draftTimer.stop();
-    if (_threadId <= 0)
-        return;
-    _drafts.remove(_threadId);
-    UserMgr::GetInstance()->SetThreadDraft(_threadId, QString());
+    _drafts.remove(_draftKey);
+    if (_draftKey > 0)
+        UserMgr::GetInstance()->SetThreadDraft(_draftKey, QString());
 }
 
 void ComposerBridge::setError(const QString &message)
@@ -406,11 +405,11 @@ void ComposerBridge::removeAttachment(int index)
     if (index < 0 || index >= _attachments.size())
         return;
     _attachments.removeAt(index);
-    if (_threadId > 0) {
+    if (_draftKey != 0) {
         if (_attachments.isEmpty())
-            _attachment_drafts.remove(_threadId);
+            _attachment_drafts.remove(_draftKey);
         else
-            _attachment_drafts.insert(_threadId, _attachments);
+            _attachment_drafts.insert(_draftKey, _attachments);
     }
     emit attachmentsChanged();
 }
@@ -418,39 +417,57 @@ void ComposerBridge::removeAttachment(int index)
 void ComposerBridge::clearAttachments()
 {
     //发送成功或用户主动清空时，当前会话的暂存也一起删掉
-    if (_threadId > 0)
-        _attachment_drafts.remove(_threadId);
+    if (_draftKey != 0)
+        _attachment_drafts.remove(_draftKey);
     if (_attachments.isEmpty())
         return;
     _attachments.clear();
     emit attachmentsChanged();
 }
 
-void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 threadId)
+void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 threadId, int peerUid)
 {
-    if (!document || !document->textDocument() || threadId == _threadId)
+    const qint64 pendingKey = -qint64(peerUid);
+    const qint64 key = threadId > 0 ? threadId : pendingKey;
+    if (!document || !document->textDocument() || key == _draftKey)
         return;
+    //正在输入时收到建会话回包：保留原文档、光标和附件，只换落库的键。
+    if (threadId > 0 && peerUid > 0 && _draftKey == pendingKey) {
+        _draftKey = threadId;
+        _drafts.remove(pendingKey);
+        _attachment_drafts.remove(pendingKey);
+        saveDraft();
+        return;
+    }
     auto *doc = document->textDocument();
-    if (_threadId != 0) {
+    if (_draftKey != 0) {
         const QString raw = doc->toPlainText();
         const bool empty = raw.trimmed().isEmpty()
             && !raw.contains(QChar::ObjectReplacementCharacter);
-        _drafts.insert(_threadId, empty ? QString() : doc->toHtml());
+        _drafts.insert(_draftKey, empty ? QString() : doc->toHtml());
         saveDraft(); //防抖定时器可能还在等，切走前先立即落库
         _draftTimer.stop(); //旧会话的定时器不能带到新会话上
         //附件跟着会话走：用户选好文件临时去看另一条消息，回来时不能空
         if (_attachments.isEmpty())
-            _attachment_drafts.remove(_threadId);
+            _attachment_drafts.remove(_draftKey);
         else
-            _attachment_drafts.insert(_threadId, _attachments);
+            _attachment_drafts.insert(_draftKey, _attachments);
     }
-    _threadId = threadId;
+    //回包也可能在看其他会话时到达；重新打开好友时带回此前暂存的草稿。
+    if (threadId > 0 && peerUid > 0 && _drafts.contains(pendingKey)) {
+        const QString draft = _drafts.take(pendingKey);
+        _drafts.insert(key, draft);
+        UserMgr::GetInstance()->SetThreadDraft(threadId, draft);
+        _attachment_drafts.insert(key, _attachment_drafts.take(pendingKey));
+    }
+    _draftKey = key;
     _mentions.clear(); //草稿换人，上一条消息的 @ 名单不能带过来
     {
         //setHtml 也会触发 contentsChanged，别把刚读出来的内容又写回去
         const QSignalBlocker blocker(doc);
-        doc->setHtml(_drafts.contains(threadId) ? _drafts.value(threadId)
-                                                : UserMgr::GetInstance()->ThreadDraft(threadId));
+        const QString fallback = key > 0 && !_drafts.contains(key)
+            ? UserMgr::GetInstance()->ThreadDraft(key) : QString();
+        doc->setHtml(_drafts.value(key, fallback));
     }
     if (_document != doc) {
         if (_document)
@@ -460,7 +477,7 @@ void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 thr
     }
     normalizeEmoji(document); //草稿里的连续同款表情要重新拆开
     //把这个会话上次留下的附件换回来；没有就是空列表
-    _attachments = _attachment_drafts.value(threadId);
+    _attachments = _attachment_drafts.value(key);
     emit attachmentsChanged();
     setError({});
 }

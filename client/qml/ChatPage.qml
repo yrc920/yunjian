@@ -10,13 +10,14 @@ Item {
     id: root
 
     property string title: ""
-    property string subtitle: "" //好友个性签名，空表示没写，标题只显示名字
+    property string subtitle: "" //群聊显示成员数，好友签名在资料页展示
     property var messages: null
     property var bridge: null
     property int currentUid: 0
     property double currentThreadId: 0 //thread_id 是 64 位，QML 用 double 承接
-    //会话键：两个刚加的好友都还没有 thread_id 时，也要能区分切换
-    readonly property string conversationKey: currentKind + ":" + currentThreadId + ":" + currentUid
+    //单聊以好友 ID 标识，避免新建会话拿到 thread_id 后草稿换键；群聊以 thread_id 标识。
+    readonly property string conversationKey: !bridge ? "" : bridge.isGroup
+        ? "group:" + bridge.currentThreadId : "peer:" + bridge.currentUid
     property int currentKind: 1 //1 单聊 / 2 群聊
     property var groupInfo: null
     property var mentionCandidates: []
@@ -35,7 +36,7 @@ Item {
     property string blockedText: ""
     //表情面板：本地内置资源，展开后停在输入框上方
     property bool emojiOpen: false
-    //发送朋友验证的小弹层：留在当前聊天里完成，不切到联系人区域
+    //发送好友申请的小弹层：留在当前聊天里完成，不切到联系人区域
     property bool reAddOpen: false
     property string reAddDraft: ""
     property bool stickBottom: true //用户停在底部时才自动跟随新消息
@@ -54,7 +55,7 @@ Item {
     property int jumpRow: -1
 
     readonly property bool hasAttachment: composerBridge.hasAttachment
-    readonly property int headerHeight: 78
+    readonly property int headerHeight: Theme.toolbarHeight
     //附件先横向排，放不下换行；区域最多两行高，编辑区高度保持不变
     readonly property real attachmentCardWidth: Math.min(250,
         Math.max(170, Math.floor((width - 84) / 3)))
@@ -99,14 +100,14 @@ Item {
 
     ComposerBridge { id: composerBridge }
 
-    // 切换会话时把输入文档也切过去，每个会话保留自己的草稿；新会话先滚到底部。
-    // 草稿按 thread_id 存，群聊与单聊用同一套键，不会互相串
+    //新会话从最新消息开始，收起上个会话的选择、搜索和浮层。
     onConversationKeyChanged: {
-        composerBridge.switchConversation(input.textDocument, currentThreadId)
         messageSearchOpen = false
         selecting = false
         selectedItems = []
         forwardOpen = false
+        recordView = null
+        reAddOpen = false
         deleteConfirmOpen = false
         pendingDeleteItems = []
         closeMentionPicker()
@@ -125,10 +126,18 @@ Item {
             root.bridge.setChatAtBottom(true)
         Qt.callLater(messageList.positionViewAtEnd)
     }
+    function syncDraft() {
+        if (bridge)
+            composerBridge.switchConversation(input.textDocument, bridge.currentThreadId, bridge.currentUid)
+    }
+    Connections {
+        target: root.bridge
+        function onCurrentChanged() { root.syncDraft() }
+    }
     Component.onCompleted: {
         // 输入区高度取本机值，夹在允许范围内
         root.composerExtra = Math.max(0, Math.min(180, layoutPrefs.composerExtra))
-        composerBridge.switchConversation(input.textDocument, currentThreadId)
+        syncDraft()
     }
     onVisibleChanged: if (visible && !inputLocked) input.forceActiveFocus()
     onInputLockedChanged: {
@@ -172,6 +181,8 @@ Item {
 
     //Ctrl/Cmd+F 打开消息搜索
     Shortcut {
+        enabled: root.visible && root.enabled && !root.selecting && !root.messageSearchOpen
+            && !root.forwardOpen && !root.recordView && !root.deleteConfirmOpen && !root.reAddOpen
         sequence: StandardKey.Find
         onActivated: root.messageSearchOpen = true
     }
@@ -250,58 +261,76 @@ Item {
         height: root.headerHeight
         color: Theme.chatBg
 
-        // 标题行：显示名 + 个性签名/成员数。群聊里点标题直接进群资料
+        // 会话身份固定为头像、名称与群人数，好友签名留在资料页查看。
         Item {
             id: titleRow
             anchors.left: parent.left
-            anchors.leftMargin: 28
+            anchors.leftMargin: 20
             anchors.right: messageSearchButton.left
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
-            height: 26
+            height: 40
 
-            Text {
-                id: titleText
+            Avatar {
+                id: conversationAvatar
                 anchors.left: parent.left
-                anchors.bottom: parent.bottom
-                //有签名时给名字留 62% 的宽度，剩下的交给签名；没有签名就用满整行
-                width: Math.min(implicitWidth,
-                                root.subtitle.length > 0 ? parent.width * 0.62 : parent.width)
-                text: root.title
-                textFormat: Text.PlainText
-                font.pixelSize: 20
-                font.bold: true
-                color: titleHover.containsMouse ? Theme.primary : Theme.textPrimary
-                elide: Text.ElideRight
-                Behavior on color { ColorAnimation { duration: 120 } }
-
-                // 标题就是资料入口：单聊看好友，群聊看群资料
-                MouseArea {
-                    id: titleHover
-                    anchors.fill: parent
-                    anchors.margins: -4
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
-                }
+                anchors.verticalCenter: parent.verticalCenter
+                width: 36
+                height: 36
+                radius: 11
+                group: root.isGroup
+                source: root.bridge ? root.bridge.currentIcon : ""
+                name: root.title
+                textSize: 14
             }
-            Text {
-                visible: root.subtitle.length > 0
-                anchors.left: titleText.right
+
+            Item {
+                id: titleStack
+                anchors.left: conversationAvatar.right
                 anchors.leftMargin: 12
                 anchors.right: parent.right
-                anchors.baseline: titleText.baseline
-                text: root.subtitle
-                textFormat: Text.PlainText
-                font.pixelSize: Theme.fontSmall
-                color: Theme.textSecondary
-                elide: Text.ElideRight
+                anchors.verticalCenter: parent.verticalCenter
+                height: root.isGroup && root.subtitle.length > 0 ? 36 : titleText.implicitHeight
+
+                Text {
+                    id: titleText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: root.isGroup && root.subtitle.length > 0
+                        ? undefined : parent.verticalCenter
+                    anchors.top: root.isGroup && root.subtitle.length > 0 ? parent.top : undefined
+                    text: root.title
+                    textFormat: Text.PlainText
+                    font.pixelSize: 17
+                    font.weight: Font.DemiBold
+                    color: titleHover.containsMouse ? Theme.primary : Theme.textPrimary
+                    elide: Text.ElideRight
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                }
+                Text {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    visible: root.isGroup && root.subtitle.length > 0
+                    text: root.subtitle
+                    textFormat: Text.PlainText
+                    font.pixelSize: Theme.fontCaption
+                    color: Theme.textSecondary
+                    elide: Text.ElideRight
+                }
             }
             MouseArea {
-                anchors.fill: parent
-                enabled: root.isGroup && root.groupLeftState === 0
-                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: root.groupInfoRequested()
+                id: titleHover
+                enabled: !root.inputLocked
+                anchors.left: titleStack.left
+                anchors.right: titleStack.right
+                anchors.top: titleStack.top
+                anchors.bottom: titleStack.bottom
+                anchors.margins: -4
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             }
         }
 
@@ -313,7 +342,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 34
             height: 34
-            radius: 7
+            radius: Theme.controlRadius
             color: searchButtonArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
@@ -342,7 +371,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 72
             height: 34
-            radius: 7
+            radius: Theme.controlRadius
             visible: !(root.isGroup && root.groupLeftState > 0)
             color: profileArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
             activeFocusOnTab: true
@@ -350,8 +379,8 @@ Item {
             Accessible.name: root.isGroup ? "查看群资料" : "查看好友资料"
             Accessible.onPressAction: root.isGroup ? root.groupInfoRequested()
                                                    : root.profileRequested()
-            Keys.onSpacePressed: root.profileRequested()
-            Keys.onReturnPressed: root.profileRequested()
+            Keys.onSpacePressed: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
+            Keys.onReturnPressed: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             AppIcon {
                 x: 10
                 anchors.verticalCenter: parent.verticalCenter
@@ -437,7 +466,7 @@ Item {
         }
         Rectangle {
             id: blockedAction
-            //只有单聊关系断了才需要"发送朋友验证"；群被移出/解散时这个按钮没有意义
+            //只有单聊关系断了才需要"发送好友申请"；群被移出/解散时这个按钮没有意义
             visible: !root.isGroup
             anchors.right: parent.right
             anchors.rightMargin: 24
@@ -452,7 +481,7 @@ Item {
             Text {
                 id: blockedActionText
                 anchors.centerIn: parent
-                text: "发送朋友验证"
+                text: "发送好友申请"
                 color: Theme.danger
                 font.pixelSize: 11
             }
@@ -470,7 +499,7 @@ Item {
         }
     }
 
-    // 发送朋友验证：轻量遮罩，不切区域、不打断聊天上下文
+    // 发送好友申请：轻量遮罩，不切区域、不打断聊天上下文
     Rectangle {
         id: reAddOverlay
         anchors.fill: parent
@@ -503,7 +532,7 @@ Item {
                 spacing: 10
 
                 Text {
-                    text: "发送朋友验证"
+                    text: "发送好友申请"
                     color: Theme.textPrimary
                     font.pixelSize: 15
                     font.bold: true
@@ -534,6 +563,7 @@ Item {
                         width: 80
                         height: 32
                         text: "取消"
+                        variant: "secondary"
                         onClicked: root.reAddOpen = false
                     }
                     AppButton {
@@ -575,6 +605,8 @@ Item {
         // 之前两种组件同时存在，隐藏的图片也会解码缩略图，长会话快速滚动时非常卡。
         delegate: Item {
             id: messageRow
+            readonly property bool firstInGroup: model.startsGroup || (root.bridge && model.messageId > 0
+                && root.bridge.entryDividerId === model.messageId)
             width: ListView.view.width
             height: messageContent.height
 
@@ -703,7 +735,8 @@ Item {
                     isImage: model.isImage
                     avatar: model.avatar
                     name: model.name
-                    senderName: model.showSender ? model.senderName : ""
+                    showAvatar: messageRow.firstInGroup
+                    senderName: messageRow.firstInGroup && model.showSender ? model.senderName : ""
                     imageSource: model.imageSource
                     imageWidth: model.imageWidth
                     imageHeight: model.imageHeight
@@ -717,7 +750,7 @@ Item {
                         const code = root.bridge.retryMessage(model.msgId)
                         if (code === 1)
                             root.showActionMessage(root.blockedText.length > 0
-                                ? root.blockedText : "对方还不是你的好友，发送朋友验证后才能重发")
+                                ? root.blockedText : "对方还不是你的好友，发送好友申请后才能重发")
                         else if (code === 2)
                             root.showActionMessage(model.msgType === 2 || model.msgType === 3
                                 ? "无法重发：原文件已不在本机" : "这条消息无法重发")
@@ -741,7 +774,8 @@ Item {
                     width: messageRow.width
                     avatar: model.avatar
                     name: model.name
-                    senderName: model.showSender ? model.senderName : ""
+                    showAvatar: messageRow.firstInGroup
+                    senderName: messageRow.firstInGroup && model.showSender ? model.senderName : ""
                     isSelf: model.isSelf
                     msgType: model.msgType
                     status: model.status
@@ -1019,7 +1053,7 @@ Item {
         anchors.rightMargin: 24
         anchors.bottomMargin: 22
         height: root.inputLocked ? 0 : root.composerHeight
-        radius: 10
+        radius: Theme.panelRadius
         color: Theme.fieldBg
         border.width: composerDrop.containsDrag ? 2 : 1
         border.color: composerDrop.containsDrag || input.activeFocus ? Theme.primary : Theme.line
@@ -1111,12 +1145,16 @@ Item {
 
             AppButton {
                 id: sendButton
+                Accessible.name: "发送消息"
+                ToolTip.visible: sendHover.hovered || activeFocus
+                ToolTip.text: "发送消息（Enter），Shift+Enter 换行"
+                ToolTip.delay: 400
+                HoverHandler { id: sendHover }
                 anchors.right: parent.right
                 anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
-                width: 76
+                width: 40
                 height: 32
-                text: "发送"
                 iconName: "send"
                 enabled: (input.length > 0 || root.hasAttachment) && !input.inputMethodComposing
                 onClicked: {
@@ -1894,6 +1932,8 @@ Item {
         selecting = false
         selectedItems = []
         forwardOpen = false
+        recordView = null
+        reAddOpen = false
         deleteConfirmOpen = false
         pendingDeleteItems = []
     }
@@ -2065,7 +2105,10 @@ Item {
                     anchors.fill: parent
                     enabled: root.selectedCount > 0
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: root.forwardOpen = true
+                    onClicked: {
+                        root.mergeMode = false
+                        root.forwardOpen = true
+                    }
                 }
             }
             Text {
@@ -2094,15 +2137,6 @@ Item {
                 }
             }
         }
-    }
-
-    ForwardDialog {
-        controller: root.bridge
-        open: root.forwardOpen
-        count: root.selectedCount
-        mergeMode: root.mergeMode
-        onTargetChosen: (threadId, kind, uid) => root.chooseForwardTarget(threadId, kind, uid)
-        onCloseRequested: root.forwardOpen = false
     }
 
     //本机删除确认：只删本机记录，避免用户误以为对方也会消失

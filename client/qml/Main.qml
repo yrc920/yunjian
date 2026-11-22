@@ -8,7 +8,7 @@ import XiguChat
 Window {
     id: window
     visible: true
-    title: "XiguChat"
+    title: "xiguchat"
     color: Theme.bgTop
 
     //通知点击后要回到哪条会话；关闭到托盘时用 quitting 区分"隐藏"和"真退出"
@@ -141,8 +141,8 @@ Window {
                     y = areaY + Math.max(8, (areaH - height) / 2)
             }
         } else {
-            // 认证页高度按内容区分：登录 580、注册 664、找回 620；超出屏幕时由 AuthPage 内部滚动
-            const h = name === "register" ? 664 : name === "reset" ? 620 : 580
+            // 认证页高度按内容区分：登录 550、注册 584、找回 536；超出屏幕时由 AuthPage 内部滚动
+            const h = name === "register" ? 584 : name === "reset" ? 536 : 550
             const pageH = Math.min(h, limitH)
             minimumWidth = 420
             minimumHeight = pageH

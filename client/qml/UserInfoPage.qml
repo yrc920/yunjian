@@ -16,26 +16,10 @@ Item {
         color: Theme.chatBg
     }
 
-    // 标题栏
-    Item {
+    PageHeader {
         id: header
-        width: parent.width
-        height: 74
-        Text {
-            x: 30
-            anchors.verticalCenter: parent.verticalCenter
-            text: "个人资料"
-            color: Theme.textPrimary
-            font.pixelSize: 16
-            font.weight: Font.DemiBold
-        }
-        // 标题下用一条细线把页头和内容分开
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: Theme.line
-        }
+        title: "个人资料"
+        trailingIcon: "user"
     }
 
     Flickable {

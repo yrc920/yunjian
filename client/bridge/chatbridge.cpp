@@ -78,6 +78,10 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
             this, &ChatBridge::myProfileChanged);
     connect(UserMgr::GetInstance().get(), &UserMgr::GroupIconChanged,
             this, &ChatBridge::groupChanged);
+    connect(UserMgr::GetInstance().get(), &UserMgr::FriendIconChanged, this,
+            [this](int uid) { if (!isGroup() && uid == _currentUid) emit currentChanged(); });
+    connect(UserMgr::GetInstance().get(), &UserMgr::GroupIconChanged, this,
+            [this](qint64 id) { if (isGroup() && id == _currentThreadId) emit currentChanged(); });
     //群头像上传完成后再写回群资料：先本地生效，推送负责同步其他成员
     connect(FileService::GetInstance().get(), &FileService::chatResourceFinished, this,
             [this](const QString &name) {
@@ -142,10 +146,6 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 emit chatNoticeChanged();
                 return;
             }
-            if (uid <= 0)
-                return;
-            //删除后不能停在对方资料页；正在聊的这个会话保留（历史可查）
-            setPane(uid == _currentUid ? ChatPage : EmptyPane);
         });
         //发送失败且原因是关系已不存在：给一句明确提示，别让用户猜"为什么发不出去"
         connect(tcp, &TcpMgr::sig_chat_msg_failed, this, [this](const QJsonObject &data) {
@@ -264,7 +264,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
 
         //新好友第一次建会话：4001 之后 4002 才带回 thread_id。这里接住它，
         //否则会一直停在 thread_id=0 上，新消息只能留下最新一条预览
-        if (_mode == ChatMode && _pane == ChatPage && !isGroup()
+        if (!isGroup()
             && _currentUid > 0 && _currentThreadId <= 0) {
             auto info = UserMgr::GetInstance()->GetFriendById(_currentUid);
             if (info && info->_chat_thread && info->_chat_thread->_thread_id > 0) {
@@ -360,7 +360,8 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                     if (threadId == _currentThreadId) {
                         _currentSubtitle = action == "dismiss" ? tr("群聊已解散")
                                                                : tr("已被移出群聊");
-                        setPane(ChatPage);
+                        if (_mode == ChatMode && _pane == GroupInfoPage)
+                            setPane(ChatPage);
                         emit currentChanged();
                         emit chatBlockedChanged();
                         emit groupChanged();
@@ -567,8 +568,7 @@ void ChatBridge::clearScrollToMessage()
 void ChatBridge::openAddFriend()
 {
     if (_mode != ContactMode) {
-        setMode(ContactMode);
-        setPane(ApplyFriendPage);
+        navigate(ContactMode, ApplyFriendPage);
     }
     if (_addFriendOpen)
         return;
@@ -824,6 +824,15 @@ void ChatBridge::clearProfileMessages()
     emit remarkStateChanged();
 }
 
+QString ChatBridge::currentIcon() const
+{
+    auto mgr = UserMgr::GetInstance();
+    if (isGroup())
+        return mgr->GroupIconPath(_currentThreadId);
+    auto info = mgr->GetFriendById(_currentUid);
+    return info ? info->_icon : QString();
+}
+
 QString ChatBridge::myIcon() const
 {
     return UserMgr::GetInstance()->GetIcon();
@@ -887,39 +896,42 @@ void ChatBridge::showChatMode()
 {
     closeAddFriend();
     clearFriendSearch();
-    setMode(ChatMode);
-
-    // 有当前会话就回到会话页，没有就停在空态；群聊没有 peer uid，用 thread 判断
-    setPane(_currentThreadId > 0 ? ChatPage : EmptyPane);
+    navigate(ChatMode, _currentThreadId > 0 || _currentUid > 0 ? ChatPage : EmptyPane);
 }
 
 void ChatBridge::showContactMode()
 {
     closeAddFriend();
     clearFriendSearch();
-    setMode(ContactMode);
-
-    //第一次进入停在联系人占位页；之后回到联系人区域沿用上次停留的资料/申请页
-    if (_pane != ApplyFriendPage && _pane != FriendInfoPage)
-        setPane(_lastContactPane);
+    if (_lastContactPane == FriendInfoPage) {
+        auto info = UserMgr::GetInstance()->GetFriendById(_contactProfileUid);
+        if (info && info->_is_friend)
+            rebuildProfile(info);
+        else
+            _lastContactPane = EmptyPane;
+    }
+    navigate(ContactMode, _lastContactPane);
 }
 
 void ChatBridge::showSettings()
 {
     closeAddFriend();
     clearFriendSearch();
-    setMode(SettingsMode);
-    //设置区也保留上次停留的分栏：从通用切走再点设置，不应该强制跳回个人资料
-    if (_pane != UserInfoPage && _pane != GeneralPage)
-        setPane(_lastSettingsPane);
+    navigate(SettingsMode, _lastSettingsPane);
+}
+
+void ChatBridge::openMyProfile()
+{
+    closeAddFriend();
+    clearFriendSearch();
+    navigate(SettingsMode, UserInfoPage);
 }
 
 void ChatBridge::openGeneralSettings()
 {
     closeAddFriend();
     clearFriendSearch();
-    setMode(SettingsMode);
-    setPane(GeneralPage);
+    navigate(SettingsMode, GeneralPage);
 }
 
 //清除会话历史：只清本机。服务端与其他设备的数据不受影响，
@@ -976,7 +988,8 @@ void ChatBridge::confirmClearHistory()
         _currentName.clear();
         _currentSubtitle.clear();
         _messages->setConversation(0, _currentKind, 0);
-        setPane(EmptyPane);
+        if (_mode == ChatMode)
+            setPane(EmptyPane);
         emit currentChanged();
         emit groupChanged();
         emit chatBlockedChanged();
@@ -1078,21 +1091,16 @@ void ChatBridge::cancelLogout()
     emit logoutConfirmChanged();
 }
 
-//资料页返回：有当前会话就回会话，否则回联系人空态。
-//从聊天点开资料不再是一条"只能靠发消息回来"的死路
+//资料页返回打开它的区域：聊天回到原会话，联系人回到列表。
 void ChatBridge::backFromProfile()
 {
-    const bool fromChat = _profileFromChat;
-    _profileFromChat = false;
-    if (fromChat && _currentThreadId > 0) {
-        setMode(ChatMode);
-        setPane(ChatPage);
+    if (_mode == ChatMode) {
+        showChatMode();
         return;
     }
-    //从联系人资料页返回：右栏回到联系人占位，之后切走再切回也不会重新弹开旧资料
     _lastContactPane = EmptyPane;
-    setMode(ContactMode);
-    setPane(EmptyPane);
+    _contactProfileUid = 0;
+    navigate(ContactMode, EmptyPane);
 }
 
 void ChatBridge::deleteFriend(int uid)
@@ -1107,8 +1115,7 @@ void ChatBridge::deleteFriend(int uid)
     FriendService::GetInstance()->deleteFriend(uid);
     //右栏正停在被删好友的资料上时退回联系人占位，避免左边已没有这个人、右边还留着旧页面
     if (_pane == FriendInfoPage && _profile.value(QStringLiteral("uid")).toInt() == uid) {
-        _lastContactPane = EmptyPane;
-        setPane(EmptyPane);
+        backFromProfile();
     }
 }
 
@@ -1153,8 +1160,8 @@ void ChatBridge::openChat(int uid)
 
     //已经停在这个会话上：只补拉资料与已读，不重置消息模型——
     //重置会把滚动位置打回第一条，长会话里非常难受
-    if (uid == _currentUid && _currentKind == static_cast<int>(ChatThreadKind::Private)
-        && _mode == ChatMode && _pane == ChatPage) {
+    if (uid == _currentUid && _currentKind == static_cast<int>(ChatThreadKind::Private)) {
+        showChatMode();
         ProfileService::GetInstance()->requestProfile(uid);
         ChatService::GetInstance()->MarkSessionRead(currentConversation());
         return;
@@ -1185,10 +1192,7 @@ void ChatBridge::openChat(int uid)
     emit groupChanged();
     emit chatBlockedChanged();
 
-    setMode(ChatMode);
-    setPane(ChatPage);
-    // 进入会话即视为已读；之后的推送在 UserMgr 里会跳过这个会话
-    refreshActiveThread();
+    navigate(ChatMode, ChatPage);
     // 历史可能已经在本地：先把当前已有的最后一条报上去，新消息到达时还会再报一次
     ChatService::GetInstance()->MarkSessionRead(currentConversation());
 }
@@ -1207,8 +1211,8 @@ void ChatBridge::openGroup(qint64 threadId)
     }
 
     if (threadId == _currentThreadId
-        && _currentKind == static_cast<int>(ChatThreadKind::Group)
-        && _mode == ChatMode && _pane == ChatPage) {
+        && _currentKind == static_cast<int>(ChatThreadKind::Group)) {
+        showChatMode();
         ChatService::GetInstance()->MarkSessionRead(currentConversation());
         return;
     }
@@ -1238,9 +1242,7 @@ void ChatBridge::openGroup(qint64 threadId)
     emit groupChanged();
     emit chatBlockedChanged();
 
-    setMode(ChatMode);
-    setPane(ChatPage);
-    refreshActiveThread();
+    navigate(ChatMode, ChatPage);
     ChatService::GetInstance()->MarkSessionRead(currentConversation());
 
     //成员列表用于气泡名字与 @ 候选；没拉过就补一次
@@ -1620,27 +1622,27 @@ void ChatBridge::openProfile(int uid)
         return;
 
     //联系人列表、空态等入口：返回时回联系人区域
-    _profileFromChat = false;
+    _contactProfileUid = uid;
     closeAddFriend();
     rebuildProfile(info);
     //资料页同样拉一次最新昵称与签名
     ProfileService::GetInstance()->requestProfile(uid);
 
     _lastContactPane = FriendInfoPage;
-    setMode(ContactMode);
-    setPane(FriendInfoPage);
+    navigate(ContactMode, FriendInfoPage);
 }
 
-//从聊天标题点"资料"：资料页仍然是联系人区域的一个页面，但返回目标改成会话
+//聊天内查看资料保留会话列表，也不覆盖通讯录上次选中的人。
 void ChatBridge::openProfileFromChat(int uid)
 {
+    if (_mode != ChatMode || uid != _currentUid || isGroup())
+        return;
     auto info = UserMgr::GetInstance()->GetFriendById(uid);
     if (!info)
         return;
-    openProfile(uid);
-    if (_pane == FriendInfoPage
-        && _profile.value(QStringLiteral("uid")).toInt() == uid)
-        _profileFromChat = true;
+    rebuildProfile(info);
+    navigate(ChatMode, FriendInfoPage);
+    ProfileService::GetInstance()->requestProfile(uid);
 }
 
 //按当前数据重建资料页快照；字段缺失时 QML 侧有兜底
@@ -1686,32 +1688,24 @@ void ChatBridge::openApplyList()
 {
     closeAddFriend();
     _lastContactPane = ApplyFriendPage;
-    setMode(ContactMode);
-    setPane(ApplyFriendPage);
+    navigate(ContactMode, ApplyFriendPage);
 }
 
 //区域决定左栏与中栏，页决定右栏；两者必须属于同一区域，
 //否则会出现"左边联系人、右边还在聊天"的割裂状态
-void ChatBridge::setMode(int mode)
+void ChatBridge::navigate(int mode, int pane)
 {
-    if (_mode == mode)
-        return;
+    const bool mode_changed = _mode != mode;
+    const bool pane_changed = _pane != pane;
     _mode = mode;
-
-    const bool chatPane = _pane == ChatPage || _pane == GroupInfoPage || _pane == EmptyPane;
-    const bool contactPane = _pane == ApplyFriendPage || _pane == FriendInfoPage;
-    const bool settingsPane = _pane == UserInfoPage || _pane == GeneralPage;
-    if (mode == ContactMode && !contactPane) {
-        setPane(_lastContactPane); //回到联系人区域：恢复上次看的资料/申请页
-    } else if (mode == ChatMode && !chatPane) {
-        setPane(_currentThreadId > 0 ? ChatPage : EmptyPane);
-    } else if (mode == SettingsMode && !settingsPane) {
-        setPane(_lastSettingsPane);
-    }
-
-    //回到会话模式且仍停在会话页时，恢复"正在看"，否则新消息会被算成未读
+    _pane = pane;
+    if (mode == SettingsMode)
+        _lastSettingsPane = pane;
     refreshActiveThread();
-    emit modeChanged();
+    if (mode_changed)
+        emit modeChanged();
+    if (pane_changed)
+        emit paneChanged();
 }
 
 //当前是否真的在看某个会话：窗口在前台、停在会话页、列表在底部，三者同时成立才算。
@@ -1764,15 +1758,7 @@ void ChatBridge::captureEntryUnread(qint64 thread_id)
 
 void ChatBridge::setPane(int pane)
 {
-    if (_pane == pane)
-        return;
-    //记住设置区停留的页，从会话/联系人切回来时不用重新点
-    if (pane == UserInfoPage || pane == GeneralPage)
-        _lastSettingsPane = pane;
-    _pane = pane;
-    //只有真正停在会话页才算"正在看"；切到资料页/申请页后新消息重新计入未读
-    refreshActiveThread();
-    emit paneChanged();
+    navigate(_mode, pane);
 }
 
 // 把编辑器片段送出去：图片先挂本地消息再落库上传，文字直接进协议。
@@ -2190,8 +2176,7 @@ void ChatBridge::openGroupInfo()
     auto group = UserMgr::GetInstance()->GetGroup(_currentThreadId);
     if (group && group->_left_state != 0)
         return;
-    setMode(ChatMode);
-    setPane(GroupInfoPage);
+    navigate(ChatMode, GroupInfoPage);
     _groupMessage.clear();
     setGroupState(false, QString());
     GroupService::GetInstance()->RequestGroupInfo(_currentThreadId);
@@ -2201,9 +2186,7 @@ void ChatBridge::backToChat()
 {
     if (_currentThreadId <= 0)
         return;
-    setMode(ChatMode);
-    setPane(ChatPage);
-    refreshActiveThread();
+    navigate(ChatMode, ChatPage);
 }
 
 void ChatBridge::updateGroupField(const QString &action, const QString &value)

@@ -7,7 +7,7 @@ Rectangle {
     property bool usable: true
     signal clicked()
     height: Theme.fieldHeight
-    radius: Theme.radius
+    radius: Theme.controlRadius
     color: area.containsMouse && usable ? Theme.selected : Theme.panelAlt
     border.width: activeFocus ? 1 : 0
     border.color: Theme.primary

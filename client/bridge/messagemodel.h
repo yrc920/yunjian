@@ -54,6 +54,7 @@ public:
         ShowSenderRole, //是否绘制发送者名字与头像（群里别人发的普通消息）
         SystemRole, //群系统消息：居中灰字，不画气泡
         MentionedRole, //这条消息 @ 了我，气泡高亮
+        StartsGroupRole,
         KindRole, //会话类型：1 单聊 / 2 群聊
     };
 

@@ -19,12 +19,12 @@ Item {
         // 折纸角色只在输入区给反馈：聚焦、遮眼与忙碌都不影响表单可用性
         Item {
             width: parent.width
-            height: 118
+            height: 98
 
             PaperCompanion {
                 anchors.centerIn: parent
-                width: 168
-                height: 118
+                width: 140
+                height: 98
                 attentive: emailInput.inputFocused
                 hiding: passwordInput.inputFocused && !passwordInput.reveal
                 revealing: passwordInput.inputFocused && passwordInput.reveal
@@ -114,7 +114,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     color: bridge.remember ? Theme.primary : Theme.panelBg
                     border.width: 1
-                    border.color: bridge.remember ? Theme.primary : Theme.fieldBorder
+                    border.color: rememberToggle.activeFocus ? Theme.focusRing : bridge.remember ? Theme.primary : Theme.fieldBorder
 
                     AppIcon {
                         anchors.centerIn: parent

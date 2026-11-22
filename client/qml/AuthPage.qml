@@ -12,22 +12,10 @@ Item {
             anchors.fill: parent
             color: Theme.panelBg
         },
-        Row {
+        BrandMark {
             x: (root.width - root.formWidth) / 2
             y: 24
-            spacing: 10
-
-            BrandMark {
-                size: 22
-                anchors.verticalCenter: parent.verticalCenter
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "XiguChat"
-                color: Theme.textPrimary
-                font.pixelSize: 13
-                font.weight: Font.Medium
-            }
+            size: 24
         },
         Flickable {
             id: scroll

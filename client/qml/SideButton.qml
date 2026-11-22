@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 // 侧栏入口，选中状态用浅底色与主色图标区分；不再贴边画竖线，避免被窗口圆角裁成碎线。
 Rectangle {
@@ -10,13 +11,13 @@ Rectangle {
     readonly property string label: kind === "settings" ? "设置" : kind === "chat" ? "聊天" : "联系人"
     signal clicked()
 
-    width: 52
-    height: 62
-    radius: 10
+    width: 40
+    height: 40
+    radius: Theme.controlRadius
     activeFocusOnTab: true
     color: active ? Theme.selected : (area.containsMouse ? Theme.panelAlt : "transparent")
     border.width: activeFocus ? 1 : 0
-    border.color: Theme.primary
+    border.color: Theme.focusRing
     Accessible.role: Accessible.Button
     Accessible.name: label
     Accessible.onPressAction: root.clicked()
@@ -26,21 +27,15 @@ Rectangle {
     Behavior on color { ColorAnimation { duration: 150 } }
 
     AppIcon {
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 9
+        anchors.centerIn: parent
         size: 22
         name: root.kind === "contact" ? "contacts" : root.kind
         color: root.active ? Theme.primary : Theme.textSecondary
     }
 
-    Text {
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 37
-        text: root.label
-        color: root.active ? Theme.textPrimary : Theme.textSecondary
-        font.pixelSize: Theme.fontCaption
-        font.weight: root.active ? Font.Medium : Font.Normal
-    }
+    ToolTip.visible: area.containsMouse || activeFocus
+    ToolTip.text: label
+    ToolTip.delay: 450
 
     Rectangle {
         visible: root.badge > 0

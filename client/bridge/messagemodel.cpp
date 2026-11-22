@@ -244,6 +244,14 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
         return QVariant::fromValue(msg->_file_size);
     case TransferStateRole:
         return static_cast<int>(msg->_transfer_state);
+    case StartsGroupRole: {
+        if (index.row() == 0 || msg->_time <= 0)
+            return true;
+        const auto &prev = thread->_chat_msgs[index.row() - 1];
+        return !prev || prev->_recalled || prev->_msg_type == ChatMsgType::System
+            || prev->_from_uid != msg->_from_uid || prev->_time <= 0 || prev->_time > msg->_time
+            || msg->_time - prev->_time >= TimeFormat::kSeparatorSeconds;
+    }
     case ShowSenderRole:
         return _kind == static_cast<int>(ChatThreadKind::Group)
             && msg->_from_uid != self_uid && msg->_msg_type != ChatMsgType::System;
@@ -285,6 +293,7 @@ QHash<int, QByteArray> MessageModel::roleNames() const
         {CanRetryRole, "canRetry"},
         {RecallTextRole, "recallText"},
         {SenderNameRole, "senderName"},
+        {StartsGroupRole, "startsGroup"},
         {ShowSenderRole, "showSender"},
         {SystemRole, "isSystem"},
         {MentionedRole, "mentioned"},
@@ -392,5 +401,7 @@ void MessageModel::onMessagesPrepended(qint64 thread_id, int count)
     beginInsertRows(QModelIndex(), 0, count - 1);
     syncCache(thread->_chat_msgs);
     endInsertRows();
+    if (count < _cachedCount)
+        emit dataChanged(index(count, 0), index(count, 0), {StartsGroupRole, TimeTextRole});
     emit countChanged();
 }
