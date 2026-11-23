@@ -112,24 +112,16 @@ FocusScope {
             acceptedButtons: Qt.AllButtons
         }
 
-        Rectangle {
-            x: 28
-            y: 0
-            width: 38
-            height: 3
-            color: Theme.primary
-        }
-
         Item {
             id: header
             width: parent.width
-            height: 76
+            height: 68
             Text {
-                x: 28
+                x: 24
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - 92
                 text: root.heading
-                font.pixelSize: 20
+                font.pixelSize: Theme.fontTitle
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
                 elide: Text.ElideRight
@@ -137,7 +129,7 @@ FocusScope {
             FocusScope {
                 id: closeButton
                 anchors.right: parent.right
-                anchors.rightMargin: 20
+                anchors.rightMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: 32
                 height: 32
@@ -149,7 +141,7 @@ FocusScope {
                 Keys.onSpacePressed: root.closeDialog()
                 Rectangle {
                     anchors.fill: parent
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: closeArea.containsMouse || closeButton.activeFocus ? Theme.panelAlt : "transparent"
                 }
                 AppIcon {
@@ -171,10 +163,10 @@ FocusScope {
         // 内容区按需滚动，底部按钮固定；右侧细条是自绘滚动指示
         Flickable {
             id: content
-            x: 28
+            x: 24
             anchors.top: header.bottom
             anchors.bottom: footer.top
-            width: parent.width - 56
+            width: parent.width - 48
             contentWidth: width
             contentHeight: body.height
             clip: true
@@ -338,10 +330,11 @@ FocusScope {
             height: 94
             Row {
                 anchors.centerIn: parent
-                width: parent.width - 56
+                width: parent.width - 48
                 spacing: 12
                 CodeButton {
                     width: (parent.width - 12) / 2
+                    height: 40
                     text: "取消"
                     onClicked: root.closeDialog()
                 }

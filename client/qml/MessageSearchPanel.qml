@@ -110,7 +110,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 34
                 height: 34
-                radius: 7
+                radius: 8
                 color: closeArea.containsMouse ? Theme.panelAlt : "transparent"
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
@@ -153,7 +153,7 @@ FocusScope {
                 Text {
                     anchors.centerIn: parent
                     text: "全部会话"
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontCaption
                     color: !root.currentOnly ? Theme.primary : Theme.textSecondary
                 }
                 MouseArea {
@@ -172,7 +172,7 @@ FocusScope {
                 Text {
                     anchors.centerIn: parent
                     text: "当前会话"
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontCaption
                     color: root.currentOnly ? Theme.primary : Theme.textSecondary
                 }
                 MouseArea {
@@ -184,7 +184,7 @@ FocusScope {
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.query.length > 0 ? root.resultCount + " 条结果" : "仅搜索本机已同步文本"
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontCaption
                 color: Theme.textHint
             }
         }
@@ -205,14 +205,14 @@ FocusScope {
             anchors.centerIn: resultList
             visible: root.query.length === 0
             text: "输入关键词搜索消息"
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSmall
             color: Theme.textHint
         }
         Text {
             anchors.centerIn: resultList
             visible: root.query.length > 0 && root.resultCount === 0
             text: "没有找到相关消息"
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSmall
             color: Theme.textHint
         }
 
@@ -249,7 +249,7 @@ FocusScope {
                         width: parent.width
                         text: modelData.threadTitle
                         textFormat: Text.PlainText
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSmall
                         font.bold: true
                         color: Theme.textPrimary
                         elide: Text.ElideRight
@@ -259,7 +259,7 @@ FocusScope {
                         text: (modelData.isGroup ? modelData.senderName + "：" : "")
                               + modelData.snippet
                         textFormat: Text.PlainText
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontCaption
                         color: Theme.textSecondary
                         elide: Text.ElideRight
                     }
@@ -271,7 +271,7 @@ FocusScope {
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.timeText
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     color: Theme.textHint
                 }
 

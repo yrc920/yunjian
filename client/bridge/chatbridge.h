@@ -13,6 +13,7 @@
 #include "applylistmodel.h"
 #include "conversationmodel.h"
 #include "friendlistmodel.h"
+#include "grouplistmodel.h"
 #include "messagemodel.h"
 
 /**
@@ -38,6 +39,7 @@ class ChatBridge : public QObject
     QML_ELEMENT
     Q_PROPERTY(ConversationModel *conversations READ conversations CONSTANT)
     Q_PROPERTY(FriendListModel *friends READ friends CONSTANT)
+    Q_PROPERTY(GroupListModel *groups READ groups CONSTANT)
     Q_PROPERTY(ApplyListModel *applies READ applies CONSTANT)
     Q_PROPERTY(MessageModel *messages READ messages CONSTANT)
     Q_PROPERTY(int mode READ mode NOTIFY modeChanged)
@@ -126,6 +128,7 @@ public:
 
     ConversationModel *conversations() const { return _conversations; }
     FriendListModel *friends() const { return _friends; }
+    GroupListModel *groups() const { return _groups; }
     ApplyListModel *applies() const { return _applies; }
     MessageModel *messages() const { return _messages; }
 
@@ -301,6 +304,10 @@ public:
     Q_INVOKABLE void createGroup(const QString &name, const QVariantList &uids);
     //打开/刷新群资料页
     Q_INVOKABLE void openGroupInfo();
+    //联系人页点群行：先切到该群，再进群资料，不经过聊天页
+    Q_INVOKABLE void openGroupInfoFor(qint64 threadId);
+    //从联系人里的群资料退回联系人列表（不切到聊天）
+    Q_INVOKABLE void backToContactList();
     //从群资料页回到会话，不重置消息模型与滚动位置
     Q_INVOKABLE void backToChat();
     //action: name / notice / nickname / mute
@@ -355,6 +362,8 @@ signals:
     void currentChanged();
     void groupChanged();
     void groupStateChanged();
+    //单字段保存回执：action 为 name/notice/nickname/mute，失败时 message 带原因
+    void groupFieldSaved(bool ok, const QString &action, const QString &message);
     void groupIconFailed(const QString &message);
     void createGroupChanged();
     void searchTextChanged();
@@ -411,6 +420,7 @@ private:
 
     ConversationModel *_conversations = nullptr;
     FriendListModel *_friends = nullptr;
+    GroupListModel *_groups = nullptr;
     ApplyListModel *_applies = nullptr;
     MessageModel *_messages = nullptr;
 

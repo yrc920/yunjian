@@ -72,6 +72,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
 {
     _conversations = new ConversationModel(this);
     _friends = new FriendListModel(this);
+    _groups = new GroupListModel(this);
     _applies = new ApplyListModel(this);
     _messages = new MessageModel(this);
     connect(UserMgr::GetInstance().get(), &UserMgr::UserIconChanged,
@@ -343,7 +344,7 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
                 if (threadId != _currentThreadId)
                     return;
                 setGroupState(false, ok ? QString() : message);
-                Q_UNUSED(action);
+                emit groupFieldSaved(ok, action, message);
             });
     connect(groupService, &GroupService::memberOpFinished, this,
             [this](bool ok, qint64 threadId, const QString &action, const QString &message) {
@@ -2168,6 +2169,27 @@ void ChatBridge::createGroup(const QString &name, const QVariantList &uids)
 }
 
 //群资料页：从聊天标题进入，进页先保证成员列表是最新的
+void ChatBridge::openGroupInfoFor(qint64 threadId)
+{
+    if (threadId <= 0)
+        return;
+    if (_currentThreadId != threadId || !isGroup())
+        openGroup(threadId);
+    if (_currentThreadId != threadId || !isGroup())
+        return;
+    // 留在联系人模式：左侧仍是好友/群聊列表，右侧显示群资料
+    navigate(ContactMode, GroupInfoPage);
+    _groupMessage.clear();
+    setGroupState(false, QString());
+    GroupService::GetInstance()->RequestGroupInfo(threadId);
+}
+
+void ChatBridge::backToContactList()
+{
+    _lastContactPane = EmptyPane;
+    navigate(ContactMode, EmptyPane);
+}
+
 void ChatBridge::openGroupInfo()
 {
     if (!isGroup() || _currentThreadId <= 0)

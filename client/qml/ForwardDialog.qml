@@ -98,7 +98,7 @@ FocusScope {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: (root.mergeMode ? "合并转发 " : "转发 ") + root.count + " 条消息到"
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontTitle
                 font.bold: true
                 color: Theme.textPrimary
             }
@@ -168,7 +168,7 @@ FocusScope {
             anchors.centerIn: list
             visible: root.filteredRows.length === 0
             text: root.filter.length > 0 ? "没有匹配的会话" : "还没有可转发的会话"
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
             color: Theme.textHint
         }
 
@@ -232,7 +232,7 @@ FocusScope {
                         width: parent.width
                         text: modelData.displayName || ""
                         textFormat: Text.PlainText
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSmall
                         color: Theme.textPrimary
                         elide: Text.ElideRight
                     }
@@ -242,7 +242,7 @@ FocusScope {
                             ? (modelData.memberCount > 0
                                 ? "群聊 · " + modelData.memberCount + " 人" : "群聊")
                             : "单聊"
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                         color: Theme.textHint
                     }
                 }

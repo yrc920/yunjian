@@ -11,7 +11,7 @@ Rectangle {
     readonly property var matches: controller.friendMatches
 
     height: matches.length === 0 ? 84 : Math.min(matches.length, 5) * 52 + 12
-    radius: 9
+    radius: 12
     color: Theme.surfaceFloating
     border.width: 1
     border.color: Theme.line
@@ -47,7 +47,7 @@ Rectangle {
                 x: 8
                 width: 30
                 height: 30
-                radius: 9
+                radius: 12
                 anchors.verticalCenter: parent.verticalCenter
                 source: modelData.icon || ""
                 name: modelData.displayName || modelData.name || ""
@@ -66,7 +66,7 @@ Rectangle {
                     text: modelData.displayName || modelData.name || ""
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
-                    font.pixelSize: 12
+                    font.pixelSize: Theme.fontSmall
                     elide: Text.ElideRight
                 }
                 Text {
@@ -74,7 +74,7 @@ Rectangle {
                     text: modelData.lastText || "还没有消息"
                     textFormat: Text.PlainText
                     color: Theme.textSecondary
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     elide: Text.ElideRight
                     maximumLineCount: 1
                 }
@@ -100,7 +100,7 @@ Rectangle {
             text: "没有找到这位好友"
             horizontalAlignment: Text.AlignHCenter
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
         }
         AppLink {
             anchors.horizontalCenter: parent.horizontalCenter

@@ -28,7 +28,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        radius: 10
+        radius: Theme.panelRadius
         color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
@@ -55,7 +55,7 @@ Item {
         anchors.baseline: title.baseline
         text: root.rows.length - 1 + " 个标签"
         color: Theme.textHint
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontCaption
     }
 
     Flickable {

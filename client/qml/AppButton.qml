@@ -1,6 +1,6 @@
 import QtQuick
 
-// 按钮三档：primary 承担主操作，secondary 是次要动作，danger 用于删除/解散这类不可逆操作。
+// 按钮四档：primary 主操作，secondary 填充次要，outline 描边次要，danger 不可逆操作。
 // 颜色跟随悬停/按下/忙碌，焦点态用主色描边而不是换色。
 Rectangle {
     id: root
@@ -15,25 +15,30 @@ Rectangle {
     activeFocusOnTab: enabled && !busy
     // 危险动作不抢主色：浅红底 + 红字，悬停加深，避免和"保存/确定"同一个视觉重量
     readonly property bool _danger: variant === "danger"
+    readonly property bool _outline: variant === "outline"
     readonly property color _dangerBg: Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.10)
     readonly property color _dangerHover: Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.18)
     readonly property color _bg: !enabled ? Theme.panelAlt
                                       : _danger ? _dangerBg
+                                      : _outline ? "transparent"
                                       : variant === "secondary" ? Theme.panelAlt : Theme.primary
     readonly property color _bgHover: _danger ? _dangerHover
-                                     : variant === "secondary" ? Theme.selected : Theme.primaryHover
+                                     : variant === "secondary" ? Theme.selected
+                                     : _outline ? Theme.panelAlt : Theme.primaryHover
     readonly property color _bgPressed: _danger ? _dangerHover
-                                       : variant === "secondary" ? Theme.selected : Theme.primaryPressed
+                                       : variant === "secondary" ? Theme.selected
+                                       : _outline ? Theme.selected : Theme.primaryPressed
     readonly property color _fg: !enabled ? Theme.textHint
                                  : _danger ? Theme.danger
+                                 : _outline ? Theme.textPrimary
                                  : variant === "secondary" ? Theme.textPrimary : Theme.primaryText
     // 忙碌时按钮仍保持主色，但不再响应点击，避免重复提交
     color: !enabled ? Theme.panelAlt
                     : busy && variant === "primary" ? Theme.primaryHover
                     : area.pressed ? _bgPressed
                     : area.containsMouse ? _bgHover : _bg
-    border.width: activeFocus ? 2 : 0
-    border.color: Theme.focusRing
+    border.width: activeFocus ? 2 : (_outline ? 1 : 0)
+    border.color: activeFocus ? Theme.focusRing : (_outline ? Theme.line : "transparent")
     opacity: 1
     scale: area.pressed && !busy ? 0.99 : 1
     Accessible.role: Accessible.Button

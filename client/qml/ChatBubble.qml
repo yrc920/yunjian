@@ -137,7 +137,7 @@ Item {
         y: root.nameOffset
         width: root.bubbleWidth
         height: root.bubbleHeight
-        radius: 14
+        radius: 12
         color: root.bubbleColor
         border.width: root.highlighted ? 2 : (root.isSelf ? 0 : 1)
         border.color: root.highlighted ? Theme.accent : Theme.line
@@ -213,7 +213,7 @@ Item {
         y: root.nameOffset
         width: 250
         height: root.recordHeight
-        radius: 14
+        radius: 12
         //深色下用比页面稍亮的气泡底色，纯 panelBg 会像在背景上挖了个洞
         color: Theme.dark ? Theme.bubbleOther : Theme.panelBg
         border.width: 1
@@ -241,7 +241,7 @@ Item {
                 text: root.recordTitle.length > 0 ? root.recordTitle : "聊天记录"
                 textFormat: Text.PlainText
                 color: Theme.textPrimary
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontBody
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
             }
@@ -318,7 +318,7 @@ Item {
         y: root.nameOffset
         width: root.pictureWidth
         height: root.pictureHeight
-        radius: 14
+        radius: 12
         color: Theme.fieldBg
         border.width: root.highlighted ? 2 : (root.localImage ? 0 : 1)
         border.color: root.highlighted ? Theme.accent : Theme.line

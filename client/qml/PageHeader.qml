@@ -6,9 +6,10 @@ Item {
 
     property string title: ""
     property string subtitle: ""
-    property string trailingIcon: ""
     property bool backVisible: false
     property string backLabel: "返回"
+    // 页面内容列的左边距；标题与内容对齐，不各自为政
+    property real inset: 20
     signal backRequested()
 
     width: parent ? parent.width : 0
@@ -16,12 +17,12 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
         Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
             height: 1
-            color: Theme.line
+            color: Theme.lineSoft
         }
     }
 
@@ -29,11 +30,11 @@ Item {
         id: backButton
         visible: root.backVisible
         anchors.left: parent.left
-        anchors.leftMargin: 16
+        anchors.leftMargin: root.inset
         anchors.verticalCenter: parent.verticalCenter
         width: 32
         height: 32
-        radius: Theme.pillRadius
+        radius: Theme.controlRadius
         color: backArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
         border.width: activeFocus ? 1 : 0
         border.color: Theme.focusRing
@@ -60,9 +61,9 @@ Item {
 
     Column {
         anchors.left: parent.left
-        anchors.leftMargin: root.backVisible ? 60 : 24
-        anchors.right: root.trailingIcon.length > 0 ? trailingMark.left : parent.right
-        anchors.rightMargin: root.trailingIcon.length > 0 ? 12 : 24
+        anchors.leftMargin: root.backVisible ? root.inset + 40 : root.inset
+        anchors.right: parent.right
+        anchors.rightMargin: 24
         anchors.verticalCenter: parent.verticalCenter
         spacing: root.subtitle.length > 0 ? 2 : 0
 
@@ -70,7 +71,7 @@ Item {
             width: parent.width
             text: root.title
             color: Theme.textPrimary
-            font.pixelSize: 18
+            font.pixelSize: Theme.fontTitle
             font.weight: Font.DemiBold
             elide: Text.ElideRight
         }
@@ -84,14 +85,4 @@ Item {
         }
     }
 
-    AppIcon {
-        id: trailingMark
-        visible: root.trailingIcon.length > 0
-        anchors.right: parent.right
-        anchors.rightMargin: 24
-        anchors.verticalCenter: parent.verticalCenter
-        name: root.trailingIcon
-        size: 20
-        color: Theme.textSecondary
-    }
 }

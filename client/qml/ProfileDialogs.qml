@@ -11,6 +11,7 @@ FocusScope {
 
     required property ChatBridge controller
     property string overlay: ""
+    signal avatarEditRequested()
     // self 表单
     property string nickText: ""
     property int sexValue: 0
@@ -27,7 +28,7 @@ FocusScope {
     z: 10
     Keys.onEscapePressed: closeDialog()
 
-    readonly property string heading: overlay === "self" ? "编辑资料" : "编辑好友资料"
+    readonly property string heading: overlay === "self" ? "编辑资料" : "备注与标签"
     readonly property bool saving: overlay === "self"
                                    ? controller.profileSaving : controller.remarkSaving
     readonly property string errorText: overlay === "self"
@@ -120,24 +121,16 @@ FocusScope {
             acceptedButtons: Qt.AllButtons
         }
 
-        Rectangle {
-            x: 28
-            y: 0
-            width: 38
-            height: 3
-            color: Theme.primary
-        }
-
         Item {
             id: header
             width: parent.width
-            height: 76
+            height: 68
             Text {
-                x: 28
+                x: 24
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - 92
                 text: root.heading
-                font.pixelSize: 20
+                font.pixelSize: Theme.fontTitle
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
                 elide: Text.ElideRight
@@ -145,7 +138,7 @@ FocusScope {
             FocusScope {
                 id: closeButton
                 anchors.right: parent.right
-                anchors.rightMargin: 20
+                anchors.rightMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: 32
                 height: 32
@@ -157,7 +150,7 @@ FocusScope {
                 Keys.onSpacePressed: root.closeDialog()
                 Rectangle {
                     anchors.fill: parent
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: closeArea.containsMouse || closeButton.activeFocus ? Theme.panelAlt : "transparent"
                 }
                 AppIcon {
@@ -179,10 +172,10 @@ FocusScope {
         // 内容区按需滚动，底部按钮固定；右侧细条是自绘滚动指示
         Flickable {
             id: content
-            x: 28
+            x: 24
             anchors.top: header.bottom
             anchors.bottom: footer.top
-            width: parent.width - 56
+            width: parent.width - 48
             contentWidth: width
             contentHeight: body.height
             clip: true
@@ -196,15 +189,29 @@ FocusScope {
                 Row {
                     width: parent.width
                     spacing: 14
+
+                    AvatarAction {
+                        visible: root.overlay === "self"
+                        width: 56
+                        height: 56
+                        source: root.controller.myIcon
+                        name: root.controller.myName
+                        uploading: root.controller.avatarUploading
+                        progress: root.controller.avatarProgress
+                        onEditRequested: root.avatarEditRequested()
+                    }
+
                     Avatar {
+                        visible: root.overlay !== "self"
                         width: 52
                         height: 52
-                        source: root.overlay === "self" ? root.controller.myIcon : root.remarkIcon
-                        name: root.overlay === "self" ? root.controller.myName : root.remarkDisplay
+                        source: root.remarkIcon
+                        name: root.remarkDisplay
                         textSize: 19
                     }
+
                     Column {
-                        width: parent.width - 66
+                        width: parent.width - 70
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
                         Text {
@@ -212,7 +219,7 @@ FocusScope {
                             text: root.overlay === "self" ? root.controller.myName : root.remarkDisplay
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
-                            font.pixelSize: 17
+                            font.pixelSize: Theme.fontTitle
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
@@ -229,6 +236,16 @@ FocusScope {
                             elide: Text.ElideRight
                         }
                     }
+                }
+
+                Text {
+                    width: parent.width
+                    visible: root.overlay === "self"
+                    topPadding: 8
+                    text: "点头像可以立即更换；昵称、性别和签名在点保存后生效。"
+                    color: Theme.textHint
+                    font.pixelSize: Theme.fontCaption
+                    wrapMode: Text.WordWrap
                 }
 
                 // 本人资料表单
@@ -264,6 +281,7 @@ FocusScope {
                         Repeater {
                             model: [{ label: "不公开", value: 0 }, { label: "男", value: 1 }, { label: "女", value: 2 }]
                             delegate: Rectangle {
+                                id: sexChip
                                 readonly property bool chosen: root.sexValue === modelData.value
                                 width: sexLabel.implicitWidth + 34
                                 height: 32
@@ -275,7 +293,7 @@ FocusScope {
                                     id: sexLabel
                                     anchors.centerIn: parent
                                     text: modelData.label
-                                    color: chosen ? Theme.textPrimary : Theme.textSecondary
+                                    color: sexChip.chosen ? Theme.textPrimary : Theme.textSecondary
                                     font.pixelSize: Theme.fontBody
                                 }
                                 MouseArea {
@@ -387,16 +405,18 @@ FocusScope {
             height: 94
             Row {
                 anchors.centerIn: parent
-                width: parent.width - 56
+                width: parent.width - 48
                 spacing: 12
                 CodeButton {
                     width: (parent.width - 12) / 2
+                    height: 40
                     text: "取消"
                     onClicked: root.closeDialog()
                 }
                 AppButton {
                     width: (parent.width - 12) / 2
-                    text: root.saving ? "保存中…" : "保存"
+                    height: 40
+                    text: root.saving ? "保存中" : "保存"
                     busy: root.saving
                     onClicked: root.submit()
                 }

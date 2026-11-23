@@ -17,16 +17,108 @@ Item {
     // 第二栏宽度可拖动：240–420，双击分隔条恢复 280；只在拖动结束时落盘
     property int indexWidth: Theme.indexWidth
     readonly property int minIndexWidth: 240
-    readonly property int maxIndexWidth: Math.max(minIndexWidth, width - sidebarWidth - 380)
+    // 列表最宽 420；窗口再宽也把空间留给正文，避免主次倒置
+    readonly property int maxIndexWidth: Math.min(420,
+        Math.max(minIndexWidth, width - sidebarWidth - 380))
     property QtObject layoutPrefs: Settings {
         category: "Layout"
         property int indexWidth: Theme.indexWidth
     }
 
-    // 窄窗口把第二栏收成头像条：优先保证内容区宽度，列表仍然可点。
-    // 设置页有自己的分栏，不参与折叠。
-    readonly property bool compactIndex: width < 760 && bridge.mode !== ChatBridge.SettingsMode
-    readonly property int indexPanelWidth: compactIndex ? Theme.sidebarWidth : Math.min(indexWidth, maxIndexWidth)
+    // 窄窗口把第二栏收成头像条：聊天、联系人、设置三处一致。
+    // compactMode：-1 跟随窗口宽度，0 强制展开，1 强制收起。
+    property int compactMode: -1
+    // 拖分隔条时宽度直接跟着指针走：240 以下继续收到头像条，不再卡住等松手
+    property bool indexDragging: false
+    property int dragPanelWidth: 0
+    property real indexDragStartX: 0
+    property int indexDragStartWidth: 0
+    property bool indexDragMoved: false
+    property bool indexDragFromCompact: false
+    readonly property bool compactIndex: indexDragging
+        ? dragPanelWidth <= 200
+        : (compactMode === 1 || (compactMode === -1 && width < 780))
+    readonly property int indexPanelWidth: indexDragging
+        ? dragPanelWidth
+        : (compactIndex ? Theme.compactIndexWidth : Math.min(indexWidth, maxIndexWidth))
+
+    // 只有点击把手/跨阈值才做宽度动画；拖动时 duration 为 0，保证跟手
+    property bool indexAnimating: false
+    property real indexPanelAnimatedWidth: indexPanelWidth
+    Behavior on indexPanelAnimatedWidth {
+        NumberAnimation {
+            duration: root.indexAnimating ? 200 : 0
+            easing.type: Easing.OutCubic
+        }
+    }
+    Timer {
+        id: indexAnimTimer
+        interval: 240
+        onTriggered: root.indexAnimating = false
+    }
+    Timer {
+        id: compactAddTimer
+        interval: 280
+        onTriggered: bridge.openAddFriend()
+    }
+    function toggleIndex() {
+        indexDragging = false
+        root.indexAnimating = true
+        // 宽窗展开后回到“跟随窗口”，之后再拉窄仍会自动收起；窄窗里展开则固定为展开
+        compactMode = compactIndex ? (width < 780 ? 0 : -1) : 1
+        indexAnimTimer.restart()
+    }
+    // 分隔条与把手共用一套拖动：从 60 的头像条也能直接拖出来
+    function beginIndexDrag(sceneX) {
+        indexDragStartX = sceneX
+        indexDragStartWidth = indexPanelWidth
+        indexDragFromCompact = compactIndex
+        dragPanelWidth = indexDragStartWidth
+        indexDragMoved = false
+        indexAnimating = false
+        indexDragging = true
+    }
+    function updateIndexDrag(sceneX) {
+        if (!indexDragging)
+            return
+        const dx = sceneX - indexDragStartX
+        if (Math.abs(dx) > 1)
+            indexDragMoved = true
+        dragPanelWidth = Math.round(Math.max(Theme.compactIndexWidth,
+            Math.min(maxIndexWidth, indexDragStartWidth + dx)))
+    }
+    function endIndexDrag() {
+        if (!indexDragging)
+            return
+        const finalWidth = dragPanelWidth
+        // 从头像条拖出 24px 以上就当作“要展开”，松手补到最小列表宽度
+        const grewOut = indexDragFromCompact && finalWidth >= indexDragStartWidth + 24
+        const expanding = finalWidth > 200 || grewOut
+        indexAnimating = true
+        indexAnimTimer.restart()
+        if (expanding) {
+            compactMode = width < 780 ? 0 : -1
+            indexWidth = Math.max(minIndexWidth, finalWidth)
+            layoutPrefs.indexWidth = indexWidth
+        } else {
+            compactMode = 1
+        }
+        indexDragging = false
+    }
+    // 拖窗口跨过阈值时也给一次短动画；拖动分隔条时由指针直接决定宽度
+    onCompactIndexChanged: {
+        if (compactIndex) {
+            // 收起后没有搜索框，浮层要一起收掉，避免挂在头像条上
+            bridge.closeAddFriend()
+            functionMenuOpen = false
+            tagFilterOpen = false
+        }
+        if (root.indexDragging)
+            return
+        root.indexAnimating = true
+        indexAnimTimer.restart()
+    }
+
 
     // 搜索快捷键：聊天与联系人共用一套入口，设置页不响应
     Shortcut {
@@ -36,6 +128,8 @@ Item {
         onActivated: {
             if (bridge.mode === ChatBridge.ChatMode)
                 chatSearch.forceInputFocus()
+            else if (root.groupTab)
+                groupSearch.forceInputFocus()
             else
                 addSearch.forceInputFocus()
         }
@@ -47,18 +141,19 @@ Item {
     readonly property int visibleFriendCount: bridge.friends.count
     readonly property int pendingCount: bridge.applies.pendingCount
     readonly property int chatCount: bridge.conversations.activeCount
-    // 联系人空态：没有好友也没有待处理申请时才显示引导卡
-    readonly property bool contactGuideVisible: bridge.mode === ChatBridge.ContactMode
-        && friendCount === 0 && pendingCount === 0 && !compactIndex
     // 有好友或有申请时，列表顶部保留「新的朋友」入口
     readonly property bool newFriendEntryVisible: bridge.mode === ChatBridge.ContactMode
-        && (friendCount > 0 || pendingCount > 0) && !compactIndex
+        && contactTab === 0 && (friendCount > 0 || pendingCount > 0) && !compactIndex
     // 标签条只在联系人模式且有标签时出现；筛选只影响列表，不影响入口与空态判断
     readonly property bool tagBarVisible: bridge.mode === ChatBridge.ContactMode
-        && bridge.tagOptions.length > 0 && !compactIndex
+        && contactTab === 0 && bridge.tagOptions.length > 0 && !compactIndex
     readonly property bool tagEmptyVisible: tagBarVisible && bridge.tagFilter.length > 0
         && visibleFriendCount === 0
     property bool tagFilterOpen: false //标签「更多」浮层是否展开
+    // 联系人页两个页签：0 好友 / 1 群聊。群聊只做本地筛选，不触发服务端搜索
+    property int contactTab: 0
+    readonly property bool groupTab: contactTab === 1
+    readonly property int groupTotal: bridge.groups.totalCount
 
     // 任一模态浮层打开时，主内容不接收拖拽与快捷键
     readonly property bool modalOpen: dialogs.visible || createGroupDialog.visible
@@ -100,6 +195,22 @@ Item {
                 friendsList.currentItem.forceActiveFocus()
         })
     }
+    // 群聊列表与好友列表同一套键盘规则：↑/↓ 移动焦点，Enter 打开资料
+    function stepGroup(delta) {
+        const count = bridge.groups.count
+        if (count <= 0)
+            return
+        const base = groupsList.currentIndex < 0 ? (delta > 0 ? -1 : 0)
+                                                  : groupsList.currentIndex
+        const next = Math.max(0, Math.min(count - 1, base + delta))
+        groupsList.currentIndex = next
+        groupsList.positionViewAtIndex(next, ListView.Contain)
+        Qt.callLater(function() {
+            if (groupsList.currentItem)
+                groupsList.currentItem.forceActiveFocus()
+        })
+    }
+
     onTagBarVisibleChanged: if (!tagBarVisible) tagFilterOpen = false
     property bool functionMenuOpen: false
 
@@ -110,7 +221,7 @@ Item {
         if (!hostWindow)
             return
         const count = bridge.unreadTotal
-        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") xiguchat" : "xiguchat"
+        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") 信笺" : "信笺"
     }
     onUnreadTotalChanged: refreshWindowTitle()
     onHostWindowChanged: if (hostWindow) bridge.setWindowActive(hostWindow.active)
@@ -121,7 +232,7 @@ Item {
         // 列表栏宽度取本机值，夹在允许范围内
         root.indexWidth = Math.max(root.minIndexWidth, Math.min(420, layoutPrefs.indexWidth || Theme.indexWidth))
     }
-    Component.onDestruction: if (hostWindow) hostWindow.title = "xiguchat"
+    Component.onDestruction: if (hostWindow) hostWindow.title = "信笺"
     Connections {
         target: root.hostWindow
         function onActiveChanged() {
@@ -143,8 +254,10 @@ Item {
             if (pane === ChatBridge.GroupInfoPage && bridge.currentThreadId <= 0)
                 return ChatBridge.EmptyPane
         } else if (bridge.mode === ChatBridge.ContactMode) {
-            if (pane === ChatBridge.ChatPage || pane === ChatBridge.GroupInfoPage
+            if (pane === ChatBridge.ChatPage
                 || pane === ChatBridge.UserInfoPage || pane === ChatBridge.GeneralPage)
+                return ChatBridge.EmptyPane
+            if (pane === ChatBridge.GroupInfoPage && bridge.currentThreadId <= 0)
                 return ChatBridge.EmptyPane
             if (pane === ChatBridge.FriendInfoPage
                 && (!bridge.profile || !(bridge.profile.uid > 0)))
@@ -161,6 +274,8 @@ Item {
         if (bridge.mode === ChatBridge.SettingsMode)
             return "设置"
         if (bridge.mode === ChatBridge.ContactMode) {
+            if (root.groupTab)
+                return root.groupTotal === 0 ? "还没有群聊" : "选择一个群聊，查看资料"
             if (friendCount === 0)
                 return pendingCount > 0 ? "有 " + pendingCount + " 条好友申请待处理"
                                         : "还没有联系人"
@@ -169,10 +284,31 @@ Item {
         }
         return chatCount === 0 ? "还没有会话" : "选择一个会话"
     }
+    readonly property string emptyBody: {
+        if (bridge.mode === ChatBridge.SettingsMode)
+            return "账号、外观与本地数据都在这里。"
+        if (bridge.mode === ChatBridge.ContactMode) {
+            if (root.groupTab)
+                return root.groupTotal === 0
+                    ? "从联系人里选几个人，发起一个群聊。"
+                    : "在左侧选择一个群，查看成员与设置。"
+            if (friendCount === 0)
+                return pendingCount > 0 ? "同意申请后，就能开始聊天。"
+                                        : "搜索用户名或 ID，寄出第一封好友申请。"
+            return pendingCount > 0 ? "先处理好友申请，再开始聊天。"
+                                    : "备注、标签与个性签名都在资料页。"
+        }
+        if (chatCount === 0)
+            return friendCount === 0 ? "先加一位联系人，再开始第一段对话。"
+                                     : "在联系人里找个人，开始第一次对话。"
+        return "点开左侧的会话，接着上次的话说。"
+    }
     readonly property string emptyAction: {
         if (bridge.mode === ChatBridge.SettingsMode)
             return ""
         if (bridge.mode === ChatBridge.ContactMode) {
+            if (root.groupTab)
+                return root.groupTotal === 0 ? "发起群聊" : ""
             if (pendingCount > 0)
                 return "查看申请"
             return friendCount === 0 ? "添加好友" : ""
@@ -189,12 +325,37 @@ Item {
             functionMenuOpen = !functionMenuOpen
             return
         }
+        if (root.groupTab) {
+            bridge.openCreateGroup()
+            return
+        }
+        // 头像条里没有搜索框：先展开列表，再打开加好友浮层
+        if (root.compactIndex) {
+            root.toggleIndex()
+            compactAddTimer.restart()
+            return
+        }
         if (bridge.addFriendOpen) {
             bridge.closeAddFriend()
             return
         }
         bridge.openAddFriend()
         Qt.callLater(addSearch.forceInputFocus)
+    }
+
+    function switchContactTab(index) {
+        if (root.contactTab === index)
+            return
+        root.contactTab = index
+        root.tagFilterOpen = false
+        root.functionMenuOpen = false
+        bridge.closeAddFriend()
+        bridge.clearSearch()
+        bridge.groups.setFilter("")
+        if (typeof addSearch !== "undefined")
+            addSearch.setText("")
+        if (typeof groupSearch !== "undefined")
+            groupSearch.setText("")
     }
 
     function openAddFriendFromChat() {
@@ -214,6 +375,10 @@ Item {
 
     function runEmptyAction() {
         if (bridge.mode === ChatBridge.ContactMode) {
+            if (root.groupTab) {
+                bridge.openCreateGroup()
+                return
+            }
             if (pendingCount > 0)
                 bridge.openApplyList()
             else if (friendCount === 0)
@@ -248,6 +413,8 @@ Item {
         }
         function onModeChanged() {
             root.functionMenuOpen = false
+            if (bridge.mode !== ChatBridge.ContactMode)
+                bridge.groups.setFilter("")
         }
         function onAddFriendOpenChanged() {
             if (bridge.addFriendOpen)
@@ -259,7 +426,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
     }
 
     // 整窗接收文件：拖到任意位置都交给输入区的同一套处理，覆盖层只负责提示
@@ -297,79 +464,80 @@ Item {
         anchors.fill: parent
         enabled: !root.modalOpen
 
-        // 一级导航：聊天与联系人在上，设置与本人头像固定在底部
+        // 一级导航：整块墨色书脊；顶部只放带标签的两个入口，品牌不在这里重复。
         Rectangle {
             width: root.sidebarWidth
             height: parent.height
-            color: Theme.sidebarBg
+            color: Theme.spine
 
-            BrandMark {
-                y: 20
+            // 书脊顶端垂下一小段书签：占住左上角，和信笺的气质一致，又不写任何文字
+            SpineRibbon {
                 anchors.horizontalCenter: parent.horizontalCenter
-                size: 28
+                y: 0
+                width: 16
+                height: 38
             }
 
-            // 选中态由当前区域决定
+            // 两个一级入口带文字标签；顶部不放品牌图标，避免被读成应用 logo
             Column {
-                y: 96
+                y: 60
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: 8
                 SideButton {
                     kind: "chat"
+                    showLabel: true
                     active: bridge.mode === ChatBridge.ChatMode
-                    //会话徽标显示所有未读之和，与联系人徽标共用同一套样式
                     badge: bridge.unreadTotal
                     onClicked: bridge.showChatMode()
                 }
                 SideButton {
                     kind: "contact"
+                    showLabel: true
                     active: bridge.mode === ChatBridge.ContactMode
                     badge: bridge.applies.pendingCount
                     onClicked: bridge.showContactMode()
                 }
-
             }
 
-            // 设置入口固定在头像上方
             SideButton {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: ownAvatar.top
-                anchors.bottomMargin: 12
+                anchors.bottomMargin: 14
                 kind: "settings"
                 active: bridge.mode === ChatBridge.SettingsMode
                 onClicked: bridge.showSettings()
             }
 
-            // 本人头像：点击等同于进入设置里的个人资料
+            // 本人头像：点击直达个人资料，不再先落到设置索引
             Avatar {
                 id: ownAvatar
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: 24
+                anchors.bottomMargin: 20
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: 36
-                height: 36
-                radius: 11
+                width: 38
+                height: 38
+                radius: 10
                 source: bridge.myIcon
                 name: bridge.myName
+                border.width: activeFocus ? 2 : 1
+                border.color: activeFocus ? Theme.spineText : Theme.spineMuted
                 activeFocusOnTab: true
-                border.width: activeFocus ? 2 : 0
-                border.color: Theme.primary
                 Accessible.role: Accessible.Button
                 Accessible.name: "打开个人资料"
                 Accessible.onPressAction: bridge.openMyProfile()
                 Keys.onSpacePressed: bridge.openMyProfile()
                 Keys.onReturnPressed: bridge.openMyProfile()
                 MouseArea {
+                    id: ownArea
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: bridge.openMyProfile()
                 }
-            }
-            Rectangle {
-                anchors.right: parent.right
-                width: 1
-                height: parent.height
-                color: Theme.line
+                AppToolTip {
+                    text: "个人资料"
+                    hovered: ownArea.containsMouse
+                }
             }
         }
 
@@ -377,9 +545,10 @@ Item {
         Rectangle {
             id: indexPanel
             visible: bridge.mode !== ChatBridge.SettingsMode
-            width: root.indexPanelWidth
+            width: root.indexPanelAnimatedWidth
+            clip: true
             height: parent.height
-            color: Theme.panelBg
+            color: Theme.indexBg
 
             Item {
                 id: listHeader
@@ -390,41 +559,45 @@ Item {
                 Text {
                     x: 20
                     y: 10
-                    visible: !root.compactIndex
+                    opacity: root.compactIndex ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 120 } }
                     text: bridge.mode === ChatBridge.ChatMode ? "聊天" : "联系人"
                     color: Theme.textPrimary
-                    font.pixelSize: 22
-                    font.bold: true
+                    font.pixelSize: Theme.fontDisplay
+                    font.weight: Font.DemiBold
                 }
                 Text {
                     x: 20
                     y: 39
-                    visible: !root.compactIndex
+                    opacity: root.compactIndex ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 120 } }
                     text: bridge.mode === ChatBridge.ChatMode
                         ? root.chatCount + " 个会话"
-                        : bridge.friends.count + " 位好友"
+                        : root.groupTab ? root.groupTotal + " 个群聊"
+                                        : bridge.friends.count + " 位好友"
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSmall
                 }
 
                 Rectangle {
                     anchors.right: parent.right
-                    anchors.rightMargin: root.compactIndex ? 21 : 18
+                    anchors.rightMargin: root.compactIndex ? 14 : 18
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 30
-                    height: 30
-                    radius: Theme.pillRadius
-                    color: searchEntry.containsMouse || activeFocus ? Theme.selected : Theme.panelAlt
+                    width: 32
+                    height: 32
+                    radius: Theme.controlRadius
+                    color: searchEntry.containsMouse || activeFocus ? Theme.selected : Theme.panelBg
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
-                    Accessible.name: bridge.mode === ChatBridge.ChatMode ? "更多功能" : "添加好友"
+                    Accessible.name: bridge.mode === ChatBridge.ChatMode ? "更多功能"
+                        : root.groupTab ? "发起群聊" : "添加好友"
                     Accessible.onPressAction: root.handlePlus()
                     Keys.onSpacePressed: root.handlePlus()
                     Keys.onReturnPressed: root.handlePlus()
                     AppIcon {
                         anchors.centerIn: parent
                         name: "plus"
-                        size: 16
+                        size: 17
                         color: Theme.primary
                     }
                     MouseArea {
@@ -434,17 +607,171 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.handlePlus()
                     }
+
+                    AppToolTip {
+                        text: bridge.mode === ChatBridge.ChatMode ? "更多功能"
+                            : root.groupTab ? "发起群聊" : "添加好友"
+                        hovered: searchEntry.containsMouse
+                    }
                 }
             }
 
-            // 两种模式共用同一个输入位置：聊天页过滤好友，联系人页添加好友
+            // 联系人页签：好友 / 群聊。下划线式，和标签筛选保持同一种语言
             Item {
-                id: searchArea
+                id: contactTabs
+                visible: bridge.mode === ChatBridge.ContactMode
+                enabled: !root.compactIndex
+                opacity: root.compactIndex ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 120 } }
                 x: 16
                 y: listHeader.height + 2
                 width: parent.width - 32
-                height: 38
-                visible: !root.compactIndex
+                height: 32
+
+                Row {
+                    width: parent.width
+                    height: parent.height
+                    spacing: 22
+
+                    Item {
+                        id: friendTabItem
+                        readonly property bool chosen: root.contactTab === 0
+                        width: friendTabLabel.implicitWidth
+                        height: parent.height
+                        Text {
+                            id: friendTabLabel
+                            anchors.centerIn: parent
+                            text: "好友"
+                            color: friendTabItem.chosen ? Theme.textPrimary : Theme.textSecondary
+                            font.pixelSize: Theme.fontSmall
+                            font.weight: friendTabItem.chosen ? Font.Medium : Font.Normal
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 2
+                            color: friendTabItem.chosen ? Theme.primary : "transparent"
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.topMargin: -4
+                            anchors.bottomMargin: -4
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.switchContactTab(0)
+                        }
+                    }
+
+                    Item {
+                        id: groupTabItem
+                        readonly property bool chosen: root.contactTab === 1
+                        width: groupTabLabel.implicitWidth
+                        height: parent.height
+                        Text {
+                            id: groupTabLabel
+                            anchors.centerIn: parent
+                            text: "群聊"
+                            color: groupTabItem.chosen ? Theme.textPrimary : Theme.textSecondary
+                            font.pixelSize: Theme.fontSmall
+                            font.weight: groupTabItem.chosen ? Font.Medium : Font.Normal
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 2
+                            color: groupTabItem.chosen ? Theme.primary : "transparent"
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.topMargin: -4
+                            anchors.bottomMargin: -4
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.switchContactTab(1)
+                        }
+                    }
+                }
+            }
+
+            // 折叠态用两枚图标保留好友 / 群聊切换
+            Item {
+                id: compactContactTabs
+                visible: root.compactIndex && bridge.mode === ChatBridge.ContactMode
+                x: 0
+                y: listHeader.height + 2
+                width: root.indexPanelWidth
+                height: 28
+
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    Rectangle {
+                        width: 30
+                        height: 30
+                        radius: 7
+                        color: root.contactTab === 0 ? Theme.panelBg
+                             : (friendTabCompactArea.containsMouse ? Theme.panelAlt : "transparent")
+                        border.width: root.contactTab === 0 ? 1 : 0
+                        border.color: Theme.line
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "user"
+                            size: 15
+                            color: root.contactTab === 0 ? Theme.primary : Theme.textSecondary
+                        }
+                        MouseArea {
+                            id: friendTabCompactArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.switchContactTab(0)
+                        }
+                        AppToolTip {
+                            text: "好友"
+                            hovered: friendTabCompactArea.containsMouse
+                        }
+                    }
+
+                    Rectangle {
+                        width: 30
+                        height: 30
+                        radius: 7
+                        color: root.contactTab === 1 ? Theme.panelBg
+                             : (groupTabCompactArea.containsMouse ? Theme.panelAlt : "transparent")
+                        border.width: root.contactTab === 1 ? 1 : 0
+                        border.color: Theme.line
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "group"
+                            size: 15
+                            color: root.contactTab === 1 ? Theme.primary : Theme.textSecondary
+                        }
+                        MouseArea {
+                            id: groupTabCompactArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.switchContactTab(1)
+                        }
+                        AppToolTip {
+                            text: "群聊"
+                            hovered: groupTabCompactArea.containsMouse
+                        }
+                    }
+                }
+            }
+
+            // 两种模式共用同一个输入位置：聊天页过滤好友，联系人页按页签搜索
+            Item {
+                id: searchArea
+                x: 16
+                y: listHeader.height + (bridge.mode === ChatBridge.ContactMode ? 44 : 6)
+                width: parent.width - 32
+                height: 36
+                enabled: !root.compactIndex
+                opacity: root.compactIndex ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 120 } }
 
                 SearchField {
                     id: chatSearch
@@ -464,7 +791,7 @@ Item {
                 SearchField {
                     id: addSearch
                     anchors.fill: parent
-                    visible: bridge.mode === ChatBridge.ContactMode
+                    visible: bridge.mode === ChatBridge.ContactMode && !root.groupTab
                     placeholder: "搜索用户名或 ID"
                     inputObjectName: "searchInput"
                     onTextEdited: (value) => bridge.searchText = value
@@ -472,6 +799,22 @@ Item {
                     onEscapePressed: bridge.closeAddFriend()
                     onClearRequested: bridge.clearSearch()
                     onFocusGained: bridge.openAddFriend()
+                }
+                SearchField {
+                    id: groupSearch
+                    anchors.fill: parent
+                    visible: bridge.mode === ChatBridge.ContactMode && root.groupTab
+                    placeholder: "搜索群聊"
+                    inputObjectName: "groupSearchInput"
+                    onTextEdited: (value) => bridge.groups.setFilter(value)
+                    onEscapePressed: {
+                        groupSearch.setText("")
+                        bridge.groups.setFilter("")
+                    }
+                    onClearRequested: {
+                        groupSearch.setText("")
+                        bridge.groups.setFilter("")
+                    }
                 }
             }
 
@@ -490,7 +833,7 @@ Item {
             // 联系人页加好友浮层，搜索框仍是上面的输入框
             AddFriendPopover {
                 id: addFriendPopover
-                visible: bridge.addFriendOpen
+                visible: bridge.addFriendOpen && !root.groupTab
                 x: searchArea.x
                 y: searchArea.y + searchArea.height
                 width: searchArea.width
@@ -505,7 +848,7 @@ Item {
 
             // 浮层打开时，点列表空白处只负责收起，不触发下面的条目
             MouseArea {
-                visible: bridge.addFriendOpen
+                visible: bridge.addFriendOpen && !root.groupTab
                 anchors.top: searchArea.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -523,36 +866,33 @@ Item {
                 onClicked: bridge.clearFriendSearch()
             }
 
-            // 联系人页的标签筛选：只占一行，放不下的标签收进「更多」浮层。
-            // 放在搜索框与列表之间，不随列表滚动，切走再回来仍能看见当前分组。
+            // 联系人页的标签筛选：下划线式标签，像信纸边缘的索引签，不再用实心胶囊。
             Item {
                 id: contactTagBar
                 visible: root.tagBarVisible
-                x: 12
-                y: searchArea.y + searchArea.height + 8
-                width: parent.width - 24
+                x: 16
+                y: searchArea.y + searchArea.height + 10
+                width: parent.width - 32
                 height: visible ? 30 : 0
 
                 // 用文字度量估每个标签的宽度，决定这一行能放几个，避免依赖滚动。
-                // 这里必须用 FontMetrics 的纯函数：TextMetrics 要写 text 再读 boundingRect，
-                // 在绑定求值里属于副作用，会触发 shownTags 的绑定循环
                 FontMetrics {
                     id: tagFont
                     font.pixelSize: Theme.fontSmall
                 }
 
-                readonly property int moreWidth: 52
+                readonly property int gap: 18
+                readonly property int moreWidth: 40
                 function chipWidth(text) {
-                    return Math.max(34, Math.ceil(tagFont.advanceWidth(text)) + 24)
+                    return Math.max(28, Math.ceil(tagFont.advanceWidth(text)))
                 }
-                // 完整放得下的标签数；预留「更多」的位置，避免它压住最后一个
                 function countVisibleTags() {
                     const options = bridge.tagOptions
-                    let used = chipWidth("全部") + 7
+                    let used = chipWidth("全部") + gap
                     let count = 0
                     for (let i = 0; i < options.length; ++i) {
-                        const width = chipWidth(options[i]) + 7
-                        const reserve = (i < options.length - 1) ? moreWidth + 7 : 0
+                        const width = chipWidth(options[i]) + gap
+                        const reserve = (i < options.length - 1) ? moreWidth + gap : 0
                         if (used + width + reserve > contactTagBar.width)
                             break
                         used += width
@@ -563,7 +903,6 @@ Item {
 
                 readonly property var shownTags: {
                     const list = bridge.tagOptions.slice(0, countVisibleTags())
-                    // 当前筛选的标签被挤出可视区时用它替换最后一个，保证筛选状态看得见
                     const current = bridge.tagFilter
                     if (current.length > 0 && list.indexOf(current) < 0) {
                         if (list.length > 0)
@@ -579,28 +918,33 @@ Item {
                     id: tagRow
                     width: parent.width
                     height: parent.height
-                    spacing: 7
+                    spacing: contactTagBar.gap
 
-                    // 「全部」固定在最前，空串表示不筛选
-                    Rectangle {
+                    Item {
                         id: allChip
                         readonly property bool chosen: bridge.tagFilter.length === 0
-                        width: allLabel.implicitWidth + 24
-                        height: 28
+                        width: allLabel.implicitWidth
+                        height: 30
                         anchors.verticalCenter: parent.verticalCenter
-                        radius: 5
-                        color: chosen ? Theme.selected : Theme.panelAlt
-                        border.width: 1
-                        border.color: chosen ? Theme.primary : "transparent"
                         Text {
                             id: allLabel
                             anchors.centerIn: parent
                             text: "全部"
                             color: allChip.chosen ? Theme.textPrimary : Theme.textSecondary
                             font.pixelSize: Theme.fontSmall
+                            font.weight: allChip.chosen ? Font.Medium : Font.Normal
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 2
+                            color: allChip.chosen ? Theme.primary : "transparent"
                         }
                         MouseArea {
                             anchors.fill: parent
+                            anchors.topMargin: -6
+                            anchors.bottomMargin: -6
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.tagFilterOpen = false
@@ -608,27 +952,35 @@ Item {
                             }
                         }
                     }
+
                     Repeater {
                         model: contactTagBar.shownTags
-                        delegate: Rectangle {
+                        delegate: Item {
+                            id: tagChip
                             readonly property bool chosen: bridge.tagFilter === modelData
-                            width: tagLabel.implicitWidth + 24
-                            height: 28
+                            width: tagLabel.implicitWidth
+                            height: 30
                             anchors.verticalCenter: parent.verticalCenter
-                            radius: 5
-                            color: chosen ? Theme.selected : Theme.panelAlt
-                            border.width: 1
-                            border.color: chosen ? Theme.primary : "transparent"
                             Text {
                                 id: tagLabel
                                 anchors.centerIn: parent
                                 text: modelData
                                 textFormat: Text.PlainText
-                                color: chosen ? Theme.textPrimary : Theme.textSecondary
+                                color: tagChip.chosen ? Theme.textPrimary : Theme.textSecondary
                                 font.pixelSize: Theme.fontSmall
+                                font.weight: tagChip.chosen ? Font.Medium : Font.Normal
+                            }
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: 2
+                                color: tagChip.chosen ? Theme.primary : "transparent"
                             }
                             MouseArea {
                                 anchors.fill: parent
+                                anchors.topMargin: -6
+                                anchors.bottomMargin: -6
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     root.tagFilterOpen = false
@@ -639,25 +991,29 @@ Item {
                     }
                 }
 
-                // 「更多」固定在最右，浮层里能看到完整标签列表
-                Rectangle {
+                Item {
                     visible: contactTagBar.overflow
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     width: contactTagBar.moreWidth
-                    height: 28
-                    radius: 5
-                    color: root.tagFilterOpen ? Theme.selected : Theme.panelAlt
-                    border.width: 1
-                    border.color: root.tagFilterOpen ? Theme.primary : "transparent"
+                    height: 30
                     Text {
                         anchors.centerIn: parent
                         text: "更多"
                         color: root.tagFilterOpen ? Theme.textPrimary : Theme.textSecondary
                         font.pixelSize: Theme.fontSmall
                     }
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 2
+                        color: root.tagFilterOpen ? Theme.primary : "transparent"
+                    }
                     MouseArea {
                         anchors.fill: parent
+                        anchors.topMargin: -6
+                        anchors.bottomMargin: -6
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.tagFilterOpen = !root.tagFilterOpen
                     }
@@ -709,7 +1065,7 @@ Item {
                 visible: root.compactIndex && bridge.mode === ChatBridge.ContactMode
                     && root.pendingCount > 0
                 x: 0
-                y: listHeader.height + 6
+                y: listHeader.height + 6 + (compactContactTabs.visible ? 34 : 0)
                 width: root.indexPanelWidth
                 height: 56
 
@@ -732,15 +1088,15 @@ Item {
                         anchors.top: parent.top
                         anchors.rightMargin: -4
                         anchors.topMargin: -4
-                        width: 16
-                        height: 16
-                        radius: 8
-                        color: Theme.accent
+                        width: 18
+                        height: 18
+                        radius: 9
+                        color: Theme.seal
                         Text {
                             anchors.centerIn: parent
                             text: root.pendingCount > 9 ? "9+" : root.pendingCount
-                            color: "#FFFFFF"
-                            font.pixelSize: 10
+                            color: Theme.onSeal
+                            font.pixelSize: Theme.fontCaption
                         }
                     }
 
@@ -753,9 +1109,10 @@ Item {
                     }
                 }
 
-                ToolTip.visible: compactFriendArea.containsMouse
-                ToolTip.text: "新的朋友"
-                ToolTip.delay: 350
+                AppToolTip {
+                    text: "新的朋友"
+                    hovered: compactFriendArea.containsMouse
+                }
             }
 
             // 会话列表：单聊与群聊合成一张表，按最后消息时间倒序；
@@ -786,6 +1143,8 @@ Item {
                         || (bridge.mode === ChatBridge.ChatMode && root.visiblePane === ChatBridge.FriendInfoPage))
                         && bridge.currentThreadId === model.threadId
                     readonly property bool group: model.kind === 2
+                    // 时间与「…」共用行尾同一个槽位：悬停时时间淡出，按钮淡入，互不挤压
+                    readonly property bool rowHovered: convArea.containsMouse
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
                     Accessible.name: model.displayName
@@ -854,24 +1213,39 @@ Item {
                         x: root.compactIndex ? 8 : 10
                         y: root.compactIndex ? 4 : 0
                         width: root.compactIndex ? convRow.width - 16 : parent.width - 20
-                        height: root.compactIndex ? 48 : parent.height - 2
+                        height: root.compactIndex ? 48 : parent.height - 4
                         radius: 10
-                        color: convRow.chosen ? Theme.selected
-                               : (convArea.containsMouse || convRow.activeFocus ? Theme.panelAlt : "transparent")
-                        border.width: 1
-                        border.color: convRow.activeFocus ? Theme.primary : "transparent"
-                        Behavior on color { ColorAnimation { duration: 130 } }
+                        color: convRow.chosen ? Theme.panelBg
+                               : (convArea.containsMouse || convRow.activeFocus ? Theme.selected : "transparent")
+                        border.width: convRow.chosen ? 1 : 0
+                        border.color: Theme.line
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Rectangle {
+                            visible: convRow.chosen && !root.compactIndex
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            width: 2
+                            radius: 1
+                            color: Theme.primary
+                        }
                     }
                     Avatar {
                         id: convAvatar
                         x: root.compactIndex ? (parent.width - width) / 2 : 22
                         width: 40
                         height: 40
-                        radius: 11
+                        radius: 10
                         anchors.verticalCenter: parent.verticalCenter
                         source: model.icon
                         name: model.displayName
                         group: convRow.group
+                        Behavior on x {
+                            NumberAnimation { duration: root.indexDragging ? 0 : 180; easing.type: Easing.OutCubic }
+                        }
                     }
                     // 置顶像别在信封上的一枚小图钉：只占头像左上角，不抢未读与名字的位置
                     Rectangle {
@@ -894,11 +1268,15 @@ Item {
                     Column {
                         anchors.left: convAvatar.right
                         anchors.leftMargin: 12
-                        anchors.right: parent.right
-                        anchors.rightMargin: 38
+                        // 选中卡片左右各内缩 10，文字再留 14，避免贴住卡片描边
+                        width: Math.max(0, parent.width - (convAvatar.x + convAvatar.width + 12) - 24)
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
-                        visible: !root.compactIndex
+                        // 宽度切换时淡入淡出：展开/收起不再是一帧换一套布局
+                        opacity: root.compactIndex ? 0 : 1
+                        // 收起时留到动画结束再隐藏，文字才有时间淡出
+                        visible: !root.compactIndex || root.indexAnimating
+                        Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 160 } }
 
                         Item {
                             width: parent.width
@@ -908,8 +1286,8 @@ Item {
                                 id: convName
                                 anchors.left: parent.left
                                 //群标记占在名字与时间之间，名字先让位给这两个标记
-                                anchors.right: convRow.group ? groupTag.left : convTime.left
-                                anchors.rightMargin: 6
+                                anchors.right: convTime.left
+                                anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: model.displayName
                                 textFormat: Text.PlainText
@@ -917,24 +1295,6 @@ Item {
                                 font.pixelSize: 14
                                 font.bold: convRow.chosen
                                 elide: Text.ElideRight
-                            }
-                            //群标记：让单聊与群聊在会话列表里一眼分开
-                            Rectangle {
-                                id: groupTag
-                                visible: convRow.group
-                                anchors.right: convTime.left
-                                anchors.rightMargin: 6
-                                anchors.verticalCenter: convName.verticalCenter
-                                width: 16
-                                height: 14
-                                radius: 3
-                                color: Theme.primarySoft
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "群"
-                                    font.pixelSize: 10
-                                    color: Theme.primary
-                                }
                             }
                             Text {
                                 id: convTime
@@ -945,6 +1305,28 @@ Item {
                                 color: Theme.textHint
                                 font.pixelSize: Theme.fontCaption
                                 visible: text.length > 0
+                                opacity: convRow.rowHovered ? 0 : 1
+                                Behavior on opacity { NumberAnimation { duration: 100 } }
+                            }
+
+                            // 悬停时接替时间的位置：三点与名字同一条中线，不再整体居中
+                            Rectangle {
+                                id: convMore
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 26
+                                height: 26
+                                radius: 6
+                                visible: !root.compactIndex
+                                opacity: convRow.rowHovered ? 1 : 0
+                                color: "transparent"
+                                Behavior on opacity { NumberAnimation { duration: 100 } }
+                                AppIcon {
+                                    anchors.centerIn: parent
+                                    name: "more"
+                                    size: 15
+                                    color: Theme.textSecondary
+                                }
                             }
                         }
                         Text {
@@ -952,8 +1334,11 @@ Item {
                             text: {
                                 if (model.draft.length > 0)
                                     return "草稿 · " + model.draft
-                                const body = model.lastText.length > 0 ? model.lastText : "还没有消息"
-                                return model.atMe ? "[有人@我] " + body : body
+                                const body = model.lastText.length > 0
+                                    ? model.lastText : "还没有消息"
+                                const line = convRow.group && model.subtitle.length > 0
+                                    ? model.subtitle + " · " + body : body
+                                return model.atMe ? "[有人@我] " + line : line
                             }
                             color: model.draft.length > 0 || model.atMe
                                 ? Theme.accent : Theme.textSecondary
@@ -968,17 +1353,17 @@ Item {
                     Rectangle {
                         visible: model.unread > 0 && !model.muted
                         x: convAvatar.x + convAvatar.width - 9
-                        y: convAvatar.y - 2
-                        width: Math.max(16, convUnread.implicitWidth + 8)
-                        height: 16
-                        radius: 8
-                        color: Theme.accent
+                        y: convAvatar.y - 3
+                        width: Math.max(18, convUnread.implicitWidth + 10)
+                        height: 18
+                        radius: 9
+                        color: Theme.seal
                         Text {
                             id: convUnread
                             anchors.centerIn: parent
                             text: model.unread > 99 ? "99+" : model.unread
-                            color: Theme.primaryText
-                            font.pixelSize: 10
+                            color: Theme.onSeal
+                            font.pixelSize: Theme.fontCaption
                         }
                     }
                     Rectangle {
@@ -988,52 +1373,29 @@ Item {
                         width: 8
                         height: 8
                         radius: 4
-                        color: Theme.accent
+                        color: Theme.seal
                     }
                     MouseArea {
                         id: convArea
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
+                        onClicked: (mouse) => {
                             convRow.forceActiveFocus(Qt.MouseFocusReason)
+                            // 行尾 40px 是「…」槽位：点这里开菜单，点其他位置开会话
+                            if (!root.compactIndex && mouse.x >= convRow.width - 40) {
+                                const point = convRow.mapToItem(root, mouse.x, mouse.y)
+                                convRow.openMenu(point.x - 126, point.y + 8)
+                                return
+                            }
                             convRow.activate()
                         }
                     }
 
                     // 折叠态只有头像，名字用悬停提示补回来
-                    ToolTip.visible: root.compactIndex && convArea.containsMouse
-                    ToolTip.text: model.displayName
-                    ToolTip.delay: 350
-
-                    // 悬停才出现的「…」：会话管理不必依赖右键，触控板与不熟悉右键的用户也能找到
-                    Rectangle {
-                        id: convMore
-                        anchors.right: parent.right
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 24
-                        height: 24
-                        radius: 6
-                        visible: (convArea.containsMouse || convMoreArea.containsMouse
-                            || convRow.activeFocus) && !root.compactIndex
-                        color: convMoreArea.containsMouse ? Theme.selected : "transparent"
-                        AppIcon {
-                            anchors.centerIn: parent
-                            name: "more"
-                            size: 15
-                            color: Theme.textSecondary
-                        }
-                        MouseArea {
-                            id: convMoreArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                const point = convMore.mapToItem(root, 0, convMore.height + 2)
-                                convRow.openMenu(point.x - 126, point.y)
-                            }
-                        }
+                    AppToolTip {
+                        text: model.displayName
+                        hovered: root.compactIndex && convArea.containsMouse
                     }
 
                     // 键盘也能打开同一张菜单：Shift+F10 或菜单键
@@ -1056,8 +1418,8 @@ Item {
                 anchors.top: root.compactIndex ? listHeader.bottom
                            : (root.tagBarVisible ? contactTagBar.bottom : searchArea.bottom)
                 anchors.topMargin: root.compactIndex
-                    ? (compactNewFriend.visible ? 62 : 6)
-                    : (root.tagBarVisible ? 10 : 17)
+                    ? (compactNewFriend.visible ? 62 : 6) + (compactContactTabs.visible ? 34 : 0)
+                    : (root.tagBarVisible ? 8 : 8)
                 anchors.bottom: parent.bottom
                 clip: true
                 model: bridge.friends
@@ -1066,7 +1428,7 @@ Item {
                 activeFocusOnTab: true
                 Keys.onDownPressed: (event) => { root.stepFriend(1); event.accepted = true }
                 Keys.onUpPressed: (event) => { root.stepFriend(-1); event.accepted = true }
-                visible: bridge.mode === ChatBridge.ContactMode && !root.contactGuideVisible
+                visible: bridge.mode === ChatBridge.ContactMode && !root.groupTab
 
                 // 联系人列表顶部固定「新的朋友」；没有好友但有申请时只显示这一行
                 header: Item {
@@ -1143,8 +1505,8 @@ Item {
                                 id: pendingLabel
                                 anchors.centerIn: parent
                                 text: root.pendingCount
-                                font.pixelSize: 10
-                                color: Theme.primaryText
+                                font.pixelSize: Theme.fontCaption
+                                color: Theme.onSeal
                             }
                         }
                         MouseArea {
@@ -1176,7 +1538,7 @@ Item {
                 delegate: Item {
                     id: friendRow
                     width: friendsList.width
-                    height: root.compactIndex ? 56 : 60
+                    height: root.compactIndex ? 56 : Theme.listRowHeight
                     readonly property bool chosen: root.visiblePane === ChatBridge.FriendInfoPage
                         && bridge.profile.uid === model.uid
                     activeFocusOnTab: true
@@ -1206,32 +1568,49 @@ Item {
                         x: root.compactIndex ? 8 : 10
                         y: root.compactIndex ? 4 : 0
                         width: root.compactIndex ? friendRow.width - 16 : parent.width - 20
-                        height: root.compactIndex ? 48 : parent.height - 2
+                        height: root.compactIndex ? 48 : parent.height - 4
                         radius: 10
-                        color: friendRow.chosen ? Theme.selected
-                               : (friendArea.containsMouse || friendRow.activeFocus ? Theme.panelAlt : "transparent")
-                        border.width: 1
-                        border.color: friendRow.activeFocus ? Theme.primary : "transparent"
-                        Behavior on color { ColorAnimation { duration: 130 } }
+                        color: friendRow.chosen ? Theme.panelBg
+                               : (friendArea.containsMouse || friendRow.activeFocus ? Theme.selected : "transparent")
+                        border.width: friendRow.chosen ? 1 : 0
+                        border.color: Theme.line
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Rectangle {
+                            visible: friendRow.chosen && !root.compactIndex
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            width: 2
+                            radius: 1
+                            color: Theme.primary
+                        }
                     }
                     Avatar {
                         id: friendAvatar
                         x: root.compactIndex ? (parent.width - width) / 2 : 22
-                        width: 36
-                        height: 36
+                        width: 40
+                        height: 40
                         radius: 10
                         anchors.verticalCenter: parent.verticalCenter
                         source: model.icon
                         name: model.displayName
+                        Behavior on x {
+                            NumberAnimation { duration: root.indexDragging ? 0 : 180; easing.type: Easing.OutCubic }
+                        }
                     }
                     Column {
                         anchors.left: friendAvatar.right
                         anchors.leftMargin: 12
-                        anchors.right: parent.right
-                        anchors.rightMargin: 16
+                        width: Math.max(0, parent.width - (friendAvatar.x + friendAvatar.width + 12) - 24)
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 4
-                        visible: !root.compactIndex
+                        opacity: root.compactIndex ? 0 : 1
+                        // 收起时留到动画结束再隐藏，文字才有时间淡出
+                        visible: !root.compactIndex || root.indexAnimating
+                        Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 160 } }
 
                         Text {
                             width: parent.width
@@ -1249,7 +1628,7 @@ Item {
                             text: model.tags.length > 0 ? model.tags.join(" · ") : model.desc
                             textFormat: Text.PlainText
                             color: Theme.textSecondary
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontSmall
                             elide: Text.ElideRight
                             maximumLineCount: 1
                         }
@@ -1266,77 +1645,151 @@ Item {
                     }
 
                     // 折叠态只有头像，名字用悬停提示补回来
-                    ToolTip.visible: root.compactIndex && friendArea.containsMouse
-                    ToolTip.text: model.displayName
-                    ToolTip.delay: 350
+                    AppToolTip {
+                        text: model.displayName
+                        hovered: root.compactIndex && friendArea.containsMouse
+                    }
                 }
             }
 
-            // 聊天列表没有会话时的轻提示；联系人空态由下面的引导卡承担
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: searchArea.y + searchArea.height + 54
-                visible: bridge.mode === ChatBridge.ChatMode && root.chatCount === 0
-                text: "还没有会话"
-                font.pixelSize: 12
-                color: Theme.textHint
-            }
+            // 群聊列表：与好友行同一套行高、头像、选中态；点行直接进群资料
+            ListView {
+                id: groupsList
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: root.compactIndex ? listHeader.bottom : searchArea.bottom
+                anchors.topMargin: root.compactIndex
+                    ? 6 + (compactContactTabs.visible ? 34 : 0) : 17
+                anchors.bottom: parent.bottom
+                clip: true
+                model: bridge.groups
+                spacing: 2
+                boundsBehavior: Flickable.StopAtBounds
+                visible: bridge.mode === ChatBridge.ContactMode && root.groupTab
+                    && root.groupTotal > 0
+                activeFocusOnTab: true
+                Keys.onDownPressed: (event) => { root.stepGroup(1); event.accepted = true }
+                Keys.onUpPressed: (event) => { root.stepGroup(-1); event.accepted = true }
 
-            // 没有好友也没有待处理申请时，才显示这张引导卡
-            Rectangle {
-                id: contactGuide
-                visible: root.contactGuideVisible && !bridge.addFriendOpen
-                x: 16
-                y: searchArea.y + searchArea.height + 18
-                width: parent.width - 32
-                height: guideContent.implicitHeight + 36
-                radius: 10
-                color: Theme.panelAlt
-                border.width: 1
-                border.color: Theme.line
+                delegate: Item {
+                    id: groupRow
+                    width: groupsList.width
+                    height: root.compactIndex ? 56 : Theme.listRowHeight
+                    readonly property bool chosen: root.visiblePane === ChatBridge.GroupInfoPage
+                        && bridge.currentThreadId === model.threadId
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: model.name
+                    Accessible.onPressAction: activate()
+                    Keys.onSpacePressed: activate()
+                    Keys.onReturnPressed: activate()
+                    Keys.onEnterPressed: activate()
+                    Keys.onDownPressed: (event) => { root.stepGroup(1); event.accepted = true }
+                    Keys.onUpPressed: (event) => { root.stepGroup(-1); event.accepted = true }
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            groupsList.positionViewAtIndex(index, ListView.Contain)
+                    }
 
-                Column {
-                    id: guideContent
-                    x: 18
-                    y: 18
-                    width: parent.width - 36
-                    spacing: 10
+                    function activate() {
+                        groupsList.currentIndex = index
+                        bridge.openGroupInfoFor(model.threadId)
+                    }
 
                     Rectangle {
-                        width: 36
-                        height: 36
-                        radius: 9
-                        color: Theme.primarySoft
-                        AppIcon {
-                            anchors.centerIn: parent
-                            name: "contacts"
-                            size: 20
+                        x: root.compactIndex ? 8 : 10
+                        y: root.compactIndex ? 4 : 0
+                        width: root.compactIndex ? groupRow.width - 16 : parent.width - 20
+                        height: root.compactIndex ? 48 : parent.height - 4
+                        radius: 10
+                        color: groupRow.chosen ? Theme.panelBg
+                               : (groupArea.containsMouse || groupRow.activeFocus ? Theme.selected : "transparent")
+                        border.width: groupRow.chosen ? 1 : 0
+                        border.color: Theme.line
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Rectangle {
+                            visible: groupRow.chosen && !root.compactIndex
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            width: 2
+                            radius: 1
                             color: Theme.primary
                         }
                     }
-                    Text {
-                        text: "还没有联系人"
-                        color: Theme.textPrimary
-                        font.pixelSize: 15
-                        font.weight: Font.DemiBold
+
+                    Avatar {
+                        x: root.compactIndex ? (parent.width - width) / 2 : 22
+                        width: 40
+                        height: 40
+                        radius: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        source: model.icon
+                        name: model.name
+                        group: true
                     }
-                    Text {
-                        width: parent.width
-                        text: "搜索用户名或 ID，发送好友申请。"
-                        color: Theme.textSecondary
-                        font.pixelSize: 11
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    }
-                    AppButton {
-                        width: parent.width
-                        height: 36
-                        text: "添加好友"
-                        onClicked: {
-                            bridge.openAddFriend()
-                            Qt.callLater(addSearch.forceInputFocus)
+
+                    Column {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 74
+                        width: Math.max(0, parent.width - 74 - 24)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 5
+                        opacity: root.compactIndex ? 0 : 1
+                        // 收起时留到动画结束再隐藏，文字才有时间淡出
+                        visible: !root.compactIndex || root.indexAnimating
+                        Behavior on opacity { NumberAnimation { duration: root.indexDragging ? 0 : 160 } }
+
+                        Text {
+                            width: parent.width
+                            text: model.name
+                            textFormat: Text.PlainText
+                            color: Theme.textPrimary
+                            font.pixelSize: Theme.fontBody
+                            font.bold: groupRow.chosen
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            width: parent.width
+                            text: model.memberCount + " 位成员"
+                                + (model.role === 2 ? " · 群主" : model.role === 1 ? " · 管理员" : "")
+                                + (model.muted ? " · 免打扰" : "")
+                            textFormat: Text.PlainText
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontSmall
+                            elide: Text.ElideRight
                         }
                     }
+
+                    MouseArea {
+                        id: groupArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            groupRow.forceActiveFocus(Qt.MouseFocusReason)
+                            groupRow.activate()
+                        }
+                    }
+
+                    AppToolTip {
+                        text: model.name
+                        hovered: root.compactIndex && groupArea.containsMouse
+                    }
                 }
+            }
+
+            Text {
+                visible: bridge.mode === ChatBridge.ContactMode && root.groupTab
+                    && root.groupTotal > 0 && bridge.groups.count === 0
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: searchArea.y + searchArea.height + 44
+                text: "没有找到这个群"
+                color: Theme.textHint
+                font.pixelSize: Theme.fontSmall
             }
 
             Rectangle {
@@ -1349,7 +1802,8 @@ Item {
 
         //设置栏与列表栏同宽，切换模式时左侧不跳动
         SettingsPanel {
-            width: root.indexPanelWidth
+            width: root.indexPanelAnimatedWidth
+            compact: root.compactIndex
             height: parent.height
             visible: bridge.mode === ChatBridge.SettingsMode
             controller: bridge
@@ -1358,17 +1812,18 @@ Item {
         // 右侧内容区：按 pane 切换页面，实例常驻以保留输入草稿和滚动位置
         Item {
             id: contentPane
-            width: parent.width - root.sidebarWidth - root.indexPanelWidth
+            width: parent.width - root.sidebarWidth - root.indexPanelAnimatedWidth
             height: parent.height
 
             // 分隔条跨在第二栏右边缘上：拖动改宽度，双击恢复 280
             Item {
                 id: splitter
-                x: -3
-                width: 6
+                x: -5
+                width: 10
                 height: parent.height
                 z: 100
-                visible: !root.compactIndex
+                // 头像条状态下也保留这条把手：可以像展开态一样直接拖出宽度
+                visible: true
 
                 Rectangle {
                     anchors.fill: parent
@@ -1381,25 +1836,93 @@ Item {
                 MouseArea {
                     id: splitterArea
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.SizeHorCursor
-                    property real pressSceneX: 0
-                    property int startWidth: 0
-                    onPressed: (mouse) => {
-                        pressSceneX = mapToItem(null, mouse.x, mouse.y).x
-                        startWidth = root.indexWidth
-                    }
+                    onPressed: (mouse) => root.beginIndexDrag(mapToItem(null, mouse.x, mouse.y).x)
                     onPositionChanged: (mouse) => {
-                        if (!pressed)
-                            return
-                        const dx = mapToItem(null, mouse.x, mouse.y).x - pressSceneX
-                        root.indexWidth = Math.round(Math.max(root.minIndexWidth,
-                            Math.min(root.maxIndexWidth, startWidth + dx)))
+                        if (pressed)
+                            root.updateIndexDrag(mapToItem(null, mouse.x, mouse.y).x)
                     }
-                    onReleased: root.layoutPrefs.indexWidth = root.indexWidth
+                    onReleased: root.endIndexDrag()
                     onDoubleClicked: {
+                        root.indexDragging = false
+                        if (root.compactIndex) {
+                            root.indexAnimating = true
+                            indexAnimTimer.restart()
+                            root.compactMode = 0
+                            return
+                        }
+                        root.indexAnimating = true
+                        indexAnimTimer.restart()
                         root.indexWidth = Theme.indexWidth
                         root.layoutPrefs.indexWidth = Theme.indexWidth
                     }
+                }
+            }
+
+            // 整条分隔条附近 28px 都能唤起把手：鼠标一靠近列表边界就浮出，不用瞄准中线
+            Item {
+                x: -14
+                width: 28
+                height: parent.height
+                z: 115
+                HoverHandler {
+                    id: boundaryHover
+                    cursorShape: Qt.SplitHCursor
+                }
+            }
+
+            // 收起把手：鼠标靠近分隔条时，在中点浮出一枚小按钮，点击切窄窗。
+            // 展开后同一位置反向，窄窗状态下也一直可达。
+            Item {
+                id: indexHandle
+                visible: !root.indexDragging || handleArea.pressed
+                x: -12
+                width: 24
+                height: 56
+                anchors.verticalCenter: parent.verticalCenter
+                z: 120
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 20
+                    height: 48
+                    radius: 9
+                    color: handleArea.containsMouse ? Theme.panelBg : Theme.sheet
+                    border.width: 1
+                    border.color: handleArea.containsMouse ? Theme.line : Theme.lineSoft
+                    opacity: !root.indexDragging
+                        && (boundaryHover.hovered || handleArea.containsMouse) ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: root.compactIndex ? "chevronRight" : "chevronLeft"
+                        size: 13
+                        color: Theme.textSecondary
+                    }
+                }
+
+                MouseArea {
+                    id: handleArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onPressed: (mouse) => root.beginIndexDrag(mapToItem(null, mouse.x, mouse.y).x)
+                    onPositionChanged: (mouse) => {
+                        if (pressed)
+                            root.updateIndexDrag(mapToItem(null, mouse.x, mouse.y).x)
+                    }
+                    onReleased: root.endIndexDrag()
+                    // 拖过之后不再触发“点击切换”，避免松手又弹回原状态
+                    onClicked: if (!root.indexDragMoved) root.toggleIndex()
+                }
+
+                AppToolTip {
+                    text: bridge.mode === ChatBridge.SettingsMode
+                        ? (root.compactIndex ? "展开设置" : "收起设置")
+                        : (root.compactIndex ? "展开列表" : "收起为头像条")
+                    hovered: handleArea.containsMouse
                 }
             }
 
@@ -1419,8 +1942,18 @@ Item {
                     text: root.emptyTitle
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    color: Theme.textPrimary
+                    font.pixelSize: Theme.fontTitle
+                    font.weight: Font.Medium
+                }
+                Text {
+                    width: parent.width
+                    text: root.emptyBody
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     color: Theme.textSecondary
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontSmall
+                    lineHeight: 1.45
                 }
                 AppButton {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -1461,6 +1994,7 @@ Item {
                 anchors.fill: parent
                 visible: root.visiblePane === ChatBridge.FriendInfoPage
                 profile: bridge.profile
+                controller: bridge
                 onChatRequested: bridge.openChat(bridge.profile.uid)
                 onDeleteRequested: bridge.askDeleteFriend(bridge.profile.uid)
                 onBackRequested: bridge.backFromProfile()
@@ -1475,7 +2009,8 @@ Item {
                 anchors.fill: parent
                 visible: root.visiblePane === ChatBridge.GroupInfoPage
                 controller: bridge
-                onBackRequested: bridge.backToChat()
+                onBackRequested: bridge.mode === ChatBridge.ContactMode
+                    ? bridge.backToContactList() : bridge.backToChat()
             }
             ApplyFriendPage {
                 anchors.fill: parent
@@ -1618,6 +2153,7 @@ Item {
         id: profileDialogs
         anchors.fill: parent
         controller: bridge
+        onAvatarEditRequested: avatarEditor.chooseImage()
     }
 
     AvatarEditor {
@@ -1638,198 +2174,72 @@ Item {
         anchors.fill: parent
     }
 
-    // 清除聊天记录确认：只清本机，文案里要说清楚，避免以为对方也看不到了
-    Rectangle {
-        anchors.fill: parent
-        visible: bridge.clearConfirmVisible
-        color: Theme.overlay
-        z: 30
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: bridge.cancelClearHistory()
+    // 清除、删除、退出共用一套确认骨架：标题、后果、动词按钮
+    ConfirmDialog {
+        id: clearConfirm
+        title: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
+        body: bridge.clearConfirmDelete
+            ? "删除与「" + bridge.clearConfirmTitle + "」的会话？聊天记录只从这台设备移除，"
+              + "好友关系和服务端记录都会保留，收到新消息时会话会重新出现。"
+            : "清除与「" + bridge.clearConfirmTitle + "」的聊天记录？只删除这台设备上的内容，"
+              + "服务器与对方的记录不受影响。"
+        confirmText: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
+        danger: true
+        onConfirmed: {
+            bridge.confirmClearHistory()
+            close()
         }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.min(420, parent.width - 64)
-            implicitHeight: clearContent.implicitHeight + 48
-            radius: Theme.dialogRadius
-            color: Theme.surfaceFloating
-            border.width: 1
-            border.color: Theme.line
-
-            Column {
-                id: clearContent
-                x: 24
-                y: 24
-                width: parent.width - 48
-                spacing: 14
-
-                Text {
-                    text: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
-                    color: Theme.textPrimary
-                    font.pixelSize: 18
-                    font.bold: true
-                }
-                Text {
-                    width: parent.width
-                    text: bridge.clearConfirmDelete
-                        ? "删除与「" + bridge.clearConfirmTitle + "」的本机会话与聊天记录？"
-                          + "好友关系和服务端记录都会保留，收到新消息时这个会话会重新出现。"
-                        : "清除与「" + bridge.clearConfirmTitle + "」的本地聊天记录？"
-                          + "只删除这台设备上的内容，服务器与对方的记录不受影响。"
-                    color: Theme.textSecondary
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                }
-                Row {
-                    width: parent.width
-                    spacing: 12
-
-                    CodeButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        text: "取消"
-                        onClicked: bridge.cancelClearHistory()
-                    }
-                    AppButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        variant: "danger"
-                        text: bridge.clearConfirmDelete ? "删除会话" : "清除聊天记录"
-                        onClicked: bridge.confirmClearHistory()
-                    }
-                }
-            }
-        }
+        onCancelled: bridge.cancelClearHistory()
     }
 
-    // 删除好友确认：资料页与联系人菜单共用同一层，避免各页面各写一份
-    Rectangle {
+    ConfirmDialog {
         id: deleteConfirm
-        anchors.fill: parent
-        visible: bridge.deleteConfirmVisible
-        color: Theme.overlay
-        z: 30
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: bridge.cancelDeleteFriend()
+        title: "删除好友"
+        body: "删除「" + bridge.deleteTargetName + "」？对方不会收到通知，"
+            + "你们的历史消息仍会保留，但不能再发消息。"
+        confirmText: "删除好友"
+        danger: true
+        onConfirmed: {
+            bridge.confirmDeleteFriend()
+            close()
         }
+        onCancelled: bridge.cancelDeleteFriend()
+    }
 
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.min(420, parent.width - 64)
-            implicitHeight: deleteContent.implicitHeight + 48
-            radius: Theme.dialogRadius
-            color: Theme.surfaceFloating
-            border.width: 1
-            border.color: Theme.line
+    ConfirmDialog {
+        id: logoutConfirm
+        title: "退出登录"
+        body: "退出后会断开与服务器的连接。这台设备上的聊天记录与草稿会保留，"
+            + "正在编辑但还没发送的附件不会保留。"
+        confirmText: "退出登录"
+        danger: false
+        onConfirmed: {
+            bridge.confirmLogout()
+            close()
+        }
+        onCancelled: bridge.cancelLogout()
+    }
 
-            Column {
-                id: deleteContent
-                x: 24
-                y: 24
-                width: parent.width - 48
-                spacing: 14
-
-                Text {
-                    text: "删除好友"
-                    color: Theme.textPrimary
-                    font.pixelSize: 18
-                    font.bold: true
-                }
-                Text {
-                    width: parent.width
-                    text: "删除「" + bridge.deleteTargetName + "」？对方不会收到通知，"
-                        + "你们的历史消息仍会保留，但不能再发消息。"
-                    color: Theme.textSecondary
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                }
-                Row {
-                    width: parent.width
-                    spacing: 12
-
-                    CodeButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        text: "取消"
-                        onClicked: bridge.cancelDeleteFriend()
-                    }
-                    AppButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        variant: "danger"
-                        text: "删除好友"
-                        onClicked: bridge.confirmDeleteFriend()
-                    }
-                }
-            }
+    Connections {
+        target: bridge
+        function onClearConfirmChanged() {
+            if (bridge.clearConfirmVisible)
+                clearConfirm.ask()
+            else
+                clearConfirm.close()
+        }
+        function onDeleteConfirmChanged() {
+            if (bridge.deleteConfirmVisible)
+                deleteConfirm.ask()
+            else
+                deleteConfirm.close()
+        }
+        function onLogoutConfirmChanged() {
+            if (bridge.logoutConfirmVisible)
+                logoutConfirm.ask()
+            else
+                logoutConfirm.close()
         }
     }
 
-    // 退出登录确认：设置页里点一下不会立刻断线，避免误触丢失当前上下文
-    Rectangle {
-        anchors.fill: parent
-        visible: bridge.logoutConfirmVisible
-        color: Theme.overlay
-        z: 40
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: bridge.cancelLogout()
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.min(420, parent.width - 64)
-            implicitHeight: logoutContent.implicitHeight + 48
-            radius: Theme.dialogRadius
-            color: Theme.surfaceFloating
-            border.width: 1
-            border.color: Theme.line
-
-            Column {
-                id: logoutContent
-                x: 24
-                y: 24
-                width: parent.width - 48
-                spacing: 14
-
-                Text {
-                    text: "退出登录"
-                    color: Theme.textPrimary
-                    font.pixelSize: 18
-                    font.bold: true
-                }
-                Text {
-                    width: parent.width
-                    text: "退出后会断开与服务器的连接。本机聊天记录与草稿会保留，"
-                        + "正在编辑但还没发送的附件不会保留。"
-                    color: Theme.textSecondary
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                }
-                Row {
-                    width: parent.width
-                    spacing: 12
-
-                    CodeButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        text: "取消"
-                        onClicked: bridge.cancelLogout()
-                    }
-                    AppButton {
-                        width: (parent.width - 12) / 2
-                        height: 42
-                        text: "退出登录"
-                        onClicked: bridge.confirmLogout()
-                    }
-                }
-            }
-        }
-    }
 }

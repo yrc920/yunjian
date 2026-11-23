@@ -1,25 +1,87 @@
 import QtQuick
 
-// 账号字段由桥接层提供，头像保存后与侧栏及自己的消息同步刷新。
-// 布局与好友资料页一致：标题栏 + 限宽 480 的详情列。
+// 个人资料：信头（头像、名字、ID）在上，字段在下；内容列上限 680，宽窗只居中。
+// 每个字段可就地改，"编辑资料"保留批量入口，批量弹层里也能换头像。
 Item {
     id: root
     property var controller
     property bool avatarSaved: false
     readonly property var profile: controller ? controller.myProfile : ({})
     signal editAvatarRequested()
-    // field 为空表示打开批量编辑；"nick"/"sex"/"desc" 表示只针对这一项
     signal editProfileRequested(string field)
+
+    property string savingField: ""
+
+    // 和群资料同一套信纸版式：内容列固定上限 680，左右至少各留 48
+    readonly property real contentWidth: Math.min(width - 96, 680)
+    readonly property real inset: Math.max(48, (width - contentWidth) / 2)
+
+    readonly property string nickText: profile.nick || ""
+    readonly property int sexValue: profile.sex === undefined ? 0 : profile.sex
+    readonly property string sexText: sexValue === 1 ? "男" : (sexValue === 2 ? "女" : "不公开")
+    readonly property string descText: profile.desc || ""
+    readonly property string avatarStatus: {
+        if (!controller)
+            return ""
+        if (controller.avatarUploading)
+            return controller.avatarUploadPaused
+                ? "同步已暂停" : "正在同步 " + controller.avatarProgress + "%"
+        if (root.avatarSaved)
+            return "头像已更新"
+        return controller.avatarMessage
+    }
+
+    function closeOthers(except) {
+        if (except !== "nick")
+            nickField.cancel()
+        if (except !== "sex")
+            sexField.cancel()
+        if (except !== "desc")
+            descField.cancel()
+    }
+
+    function beginField(key) {
+        closeOthers(key)
+        if (controller)
+            controller.clearProfileMessages()
+    }
+
+    function saveField(key, value) {
+        if (!controller)
+            return
+        savingField = key
+        if (key === "nick")
+            controller.saveMyProfile(String(value), sexValue, descText)
+        else if (key === "sex")
+            controller.saveMyProfile(nickText, Number(value), descText)
+        else
+            controller.saveMyProfile(nickText, sexValue, String(value))
+    }
+
+    Connections {
+        target: root.controller
+        function onProfileSaved(ok) {
+            if (root.savingField.length === 0)
+                return
+            const field = root.savingField === "nick" ? nickField
+                        : root.savingField === "sex" ? sexField : descField
+            if (ok)
+                field.finish()
+            else
+                field.fail(root.controller.profileMessage)
+            root.savingField = ""
+        }
+    }
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
     }
 
     PageHeader {
         id: header
         title: "个人资料"
-        trailingIcon: "user"
+        inset: 24
     }
 
     Flickable {
@@ -27,195 +89,172 @@ Item {
         anchors.bottom: parent.bottom
         width: parent.width
         contentWidth: width
-        contentHeight: details.height + 84
+        contentHeight: body.height + 72
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
-        Column {
-            id: details
-            x: Math.max(30, (parent.width - 480) / 2)
-            y: 42
-            width: Math.min(parent.width - 60, 480)
+        Item {
+            id: body
+            x: root.inset
+            y: 36
+            width: root.contentWidth
+            height: identityBlock.height + 28 + fields.height
 
-            Row {
+            // 信头：头像与名字横排，字段始终在下方
+            Item {
+                id: identityBlock
                 width: parent.width
-                spacing: 22
-                // 头像本身就是一个入口：悬停出现"更换头像"，点一下直接进头像编辑
-                Item {
-                    width: 88
-                    height: 88
-                    Avatar {
-                        anchors.fill: parent
+                height: 92
+
+                Row {
+                    width: parent.width
+                    spacing: 16
+
+                    AvatarAction {
+                        width: 72
+                        height: 72
                         source: root.controller ? root.controller.myIcon : ""
                         name: root.controller ? root.controller.myName : ""
-                        textSize: 30
-                    }
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 12
-                        color: Qt.rgba(0, 0, 0, 0.42)
-                        visible: avatarArea.containsMouse
-                        Text {
-                            anchors.centerIn: parent
-                            text: "更换头像"
-                            color: "#FFFFFF"
-                            font.pixelSize: 11
-                        }
-                    }
-                    MouseArea {
-                        id: avatarArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
+                        uploading: root.controller ? root.controller.avatarUploading : false
+                        progress: root.controller ? root.controller.avatarProgress : 0
+                        onEditRequested: {
                             root.avatarSaved = false
                             root.editAvatarRequested()
                         }
                     }
-                }
-                Column {
-                    width: parent.width - 110
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-                    Text {
-                        width: parent.width
-                        text: root.controller ? root.controller.myName : ""
-                        textFormat: Text.PlainText
-                        color: Theme.textPrimary
-                        font.pixelSize: 25
-                        font.weight: Font.DemiBold
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+
+                    Column {
+                        width: parent.width - 88
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+
+                        Text {
+                            width: parent.width
+                            text: root.controller ? root.controller.myName : ""
+                            textFormat: Text.PlainText
+                            color: Theme.textPrimary
+                            font.pixelSize: 20
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            text: root.profile.uid ? "ID  " + root.profile.uid : ""
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontCaption
+                            font.letterSpacing: 1
+                        }
+                        Text {
+                            width: parent.width
+                            visible: root.avatarStatus.length > 0
+                            text: root.avatarStatus
+                            color: root.controller && root.controller.avatarUploading
+                                   ? Theme.textSecondary : Theme.success
+                            font.pixelSize: Theme.fontCaption
+                            elide: Text.ElideRight
+                        }
                     }
+                }
+            }
+
+            Column {
+                id: fields
+                x: 0
+                y: identityBlock.height + 28
+                width: root.contentWidth
+                spacing: 0
+
+                Item {
+                    width: parent.width
+                    height: 32
+
                     Text {
-                        text: root.profile.uid ? "ID  " + root.profile.uid : ""
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "资料"
                         color: Theme.textSecondary
                         font.pixelSize: Theme.fontSmall
-                        font.letterSpacing: 1
+                        font.weight: Font.Medium
                     }
-                }
-            }
 
-            Spacer { gap: 24 }
-            // 单项修改在字段行上直接点；这里只保留批量编辑入口
-            Row {
-                width: parent.width
-                spacing: 12
-                AppButton {
-                    objectName: "editProfileButton"
-                    width: 104
-                    height: 36
-                    text: "编辑资料"
-                    onClicked: {
-                        forceActiveFocus()
-                        root.editProfileRequested("")
-                    }
-                }
-            }
-            Text {
-                width: parent.width
-                topPadding: 12
-                text: "头像已保存"
-                visible: root.avatarSaved
-                color: Theme.success
-                font.pixelSize: Theme.fontSmall
-                wrapMode: Text.WordWrap
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
-            }
-
-            // 同步状态一行文字：上传中显示进度提示，完成后显示“头像已同步”，失败显示错误码
-            Text {
-                width: parent.width
-                topPadding: 6
-                text: root.controller ? root.controller.avatarMessage : ""
-                visible: text.length > 0
-                color: root.controller && root.controller.avatarUploading
-                       ? Theme.textSecondary : Theme.success
-                font.pixelSize: Theme.fontSmall
-                wrapMode: Text.WordWrap
-            }
-            // 进度条只在真正上传时出现；宽度按 0..100 的比例拉伸
-            Rectangle {
-                width: parent.width
-                height: 4
-                radius: 2
-                color: Theme.line
-                visible: root.controller ? root.controller.avatarUploading : false
-                Rectangle {
-                    width: parent.width * (root.controller ? root.controller.avatarProgress / 100 : 0)
-                    height: parent.height
-                    radius: parent.radius
-                    color: Theme.primary
-                    Behavior on width { NumberAnimation { duration: 120 } }
-                }
-            }
-            // 暂停只停止下一片，不取消已经在途的分片；继续时客户端会先向服务器同步进度
-            AppButton {
-                width: 112
-                height: 36
-                visible: root.controller ? root.controller.avatarUploading : false
-                text: root.controller && root.controller.avatarUploadPaused ? "继续同步" : "暂停同步"
-                onClicked: if (root.controller) root.controller.toggleAvatarUpload()
-            }
-
-            Spacer { gap: 30 }
-            // 分隔线只留一条发丝线：之前压了一小段主色短线，看起来像进度条
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: Theme.line
-            }
-            Spacer { gap: 12 }
-
-            Repeater {
-                model: [
-                    { label: "用户名", value: root.profile.name || "未设置", field: "" },
-                    { label: "昵称", value: root.profile.nick || "未设置", field: "nick" },
-                    { label: "性别", value: root.profile.sex === 1 ? "男" : (root.profile.sex === 2 ? "女" : "未设置"), field: "sex" },
-                    { label: "个性签名", value: root.profile.desc || "未设置", field: "desc" }
-                ]
-                delegate: Item {
-                    id: fieldRow
-                    width: details.width
-                    height: Math.max(48, valueText.implicitHeight + 26)
-                    readonly property bool editable: modelData.field.length > 0
-                    readonly property bool hovered: rowArea.containsMouse && editable
-
-                    Text {
-                        y: 13
-                        text: modelData.label
-                        color: Theme.textSecondary
-                        font.pixelSize: Theme.fontBody
-                    }
-                    Text {
-                        id: valueText
-                        x: 82
-                        y: 13
-                        width: parent.width - x - 44
-                        text: modelData.value
-                        textFormat: Text.PlainText
-                        color: Theme.textPrimary
-                        font.pixelSize: Theme.fontBody
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    }
-                    // 可改的字段悬停时右侧出现「修改」，点一下只改这一项
-                    Text {
+                    AppButton {
                         anchors.right: parent.right
-                        anchors.rightMargin: 2
-                        y: 13
-                        text: "修改"
-                        visible: fieldRow.hovered
-                        color: Theme.primary
-                        font.pixelSize: Theme.fontSmall
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 108
+                        height: 32
+                        text: "编辑资料"
+                        variant: "outline"
+                        onClicked: {
+                            if (!root.controller)
+                                return
+                            root.closeOthers("")
+                            root.editProfileRequested("")
+                        }
                     }
-                    MouseArea {
-                        id: rowArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        enabled: fieldRow.editable
-                        cursorShape: fieldRow.editable ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: root.editProfileRequested(modelData.field)
-                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.lineSoft
+                }
+
+                EditableField {
+                    id: nickField
+                    label: "昵称"
+                    value: root.nickText
+                    placeholder: "未设置"
+                    maxLength: 20
+                    busy: root.savingField === "nick" && root.controller && root.controller.profileSaving
+                    onEditStarted: root.beginField("nick")
+                    onCommitted: (value) => root.saveField("nick", value)
+                }
+
+                EditableField {
+                    id: sexField
+                    label: "性别"
+                    value: root.sexText
+                    mode: "choice"
+                    options: [{ label: "不公开", value: 0 }, { label: "男", value: 1 }, { label: "女", value: 2 }]
+                    choiceValue: root.sexValue
+                    busy: root.savingField === "sex" && root.controller && root.controller.profileSaving
+                    onEditStarted: root.beginField("sex")
+                    onCommitted: (value) => root.saveField("sex", value)
+                }
+
+                EditableField {
+                    id: descField
+                    label: "个性签名"
+                    value: root.descText
+                    placeholder: "还没有签名"
+                    mode: "multiline"
+                    maxLength: 60
+                    maxLines: 3
+                    busy: root.savingField === "desc" && root.controller && root.controller.profileSaving
+                    onEditStarted: root.beginField("desc")
+                    onCommitted: (value) => root.saveField("desc", value)
+                }
+
+                EditableField {
+                    label: "用户名"
+                    value: root.profile.name || ""
+                    placeholder: "未设置"
+                    editable: false
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.lineSoft
+                }
+
+                Text {
+                    width: parent.width - 96
+                    x: 96
+                    topPadding: 10
+                    text: "登录与搜索用，不可修改。"
+                    color: Theme.textHint
+                    font.pixelSize: Theme.fontCaption
+                    wrapMode: Text.WordWrap
                 }
             }
         }

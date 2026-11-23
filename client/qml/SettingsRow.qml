@@ -1,24 +1,26 @@
 import QtQuick
 
-// 设置页统一的可点击行：标题、说明和右侧状态保持同一条基线。
+// 设置页统一的可点击行：标题、说明和右侧状态同一条基线。
+// 设置项不再逐行放图标，减少左侧噪音；选中态用一张纸卡 + 2px 墨线。
 Rectangle {
     id: root
 
-    property string iconName: ""
     property string title: ""
     property string subtitle: ""
     property string value: ""
     property bool selected: false
     property bool danger: false
     property bool showChevron: false
+    property string chevronKind: "chevronRight"
     signal clicked()
 
     width: parent ? parent.width : 0
-    height: Math.max(56, labels.implicitHeight + 20)
-    radius: Theme.controlRadius
-    color: selected ? Theme.selected : (area.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
-    border.width: activeFocus ? 1 : 0
-    border.color: Theme.focusRing
+    height: Math.max(48, labels.implicitHeight + 16)
+    radius: 8
+    color: selected ? Theme.panelBg
+                    : (area.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
+    border.width: selected ? 1 : (activeFocus ? 1 : 0)
+    border.color: selected ? Theme.line : Theme.focusRing
     activeFocusOnTab: true
     Accessible.role: Accessible.Button
     Accessible.name: title
@@ -26,17 +28,19 @@ Rectangle {
     Keys.onReturnPressed: root.clicked()
     Keys.onSpacePressed: root.clicked()
 
-    AppIcon {
-        x: 16
-        anchors.verticalCenter: parent.verticalCenter
-        name: root.iconName
-        size: 20
-        color: root.danger ? Theme.danger : root.selected ? Theme.primary : Theme.textSecondary
+    Rectangle {
+        visible: root.selected
+        x: 0
+        y: 9
+        width: 2
+        height: parent.height - 18
+        radius: 1
+        color: Theme.primary
     }
 
     Column {
         id: labels
-        x: 52
+        x: 16
         anchors.verticalCenter: parent.verticalCenter
         width: Math.max(0, valueText.x - x - 12)
         spacing: root.subtitle.length > 0 ? 3 : 0
@@ -46,7 +50,7 @@ Rectangle {
             text: root.title
             color: root.danger ? Theme.danger : Theme.textPrimary
             font.pixelSize: Theme.fontBody
-            font.weight: root.selected ? Font.DemiBold : Font.Normal
+            font.weight: root.selected ? Font.Medium : Font.Normal
             elide: Text.ElideRight
         }
         Text {
@@ -54,21 +58,22 @@ Rectangle {
             visible: root.subtitle.length > 0
             text: root.subtitle
             color: Theme.textSecondary
-            font.pixelSize: Theme.fontSmall
+            font.pixelSize: Theme.fontCaption
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         }
     }
 
     Text {
         id: valueText
-        width: root.value.length > 0 ? Math.min(implicitWidth, root.width * 0.32) : 0
+        width: root.value.length > 0 ? Math.min(implicitWidth, root.width * 0.34) : 0
         visible: root.value.length > 0
         anchors.right: root.showChevron ? chevron.left : parent.right
         anchors.rightMargin: root.showChevron ? 8 : 16
         anchors.verticalCenter: parent.verticalCenter
         text: root.value
+        textFormat: Text.PlainText
         color: Theme.textSecondary
-        font.pixelSize: Theme.fontSmall
+        font.pixelSize: Theme.fontCaption
         elide: Text.ElideRight
     }
 
@@ -78,8 +83,8 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: 14
         anchors.verticalCenter: parent.verticalCenter
-        name: "chevronRight"
-        size: 15
+        name: root.chevronKind
+        size: 14
         color: Theme.textHint
     }
 

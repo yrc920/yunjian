@@ -10,7 +10,7 @@ Item {
     id: root
 
     property string title: ""
-    property string subtitle: "" //群聊显示成员数，好友签名在资料页展示
+    property string subtitle: "" //群聊显示成员数，单聊显示好友签名
     property var messages: null
     property var bridge: null
     property int currentUid: 0
@@ -56,6 +56,9 @@ Item {
 
     readonly property bool hasAttachment: composerBridge.hasAttachment
     readonly property int headerHeight: Theme.toolbarHeight
+    // 正文与输入区共用一个 880 的内容列：超宽窗口不把气泡拉成一条长线
+    readonly property real columnWidth: Math.min(880, Math.max(1, width - 56))
+    readonly property real columnInset: Math.max(28, (width - columnWidth) / 2)
     //附件先横向排，放不下换行；区域最多两行高，编辑区高度保持不变
     readonly property real attachmentCardWidth: Math.min(250,
         Math.max(170, Math.floor((width - 84) / 3)))
@@ -66,7 +69,7 @@ Item {
         category: "Layout"
         property int composerExtra: 0
     }
-    readonly property int composerHeight: 118 + composerExtra
+    readonly property int composerHeight: 128 + composerExtra
         + (attachmentView.visible ? attachmentView.height + 8 : 0)
 
     property int saveAsMessageId: 0
@@ -251,7 +254,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
     }
 
     // 标题栏：左边是当前会话名，右边「资料」打开好友资料页
@@ -259,17 +262,17 @@ Item {
         id: header
         width: parent.width
         height: root.headerHeight
-        color: Theme.chatBg
+        color: Theme.sheet
 
-        // 会话身份固定为头像、名称与群人数，好友签名留在资料页查看。
+        // 头像 + 名字，第二行是好友签名或群成员数；两行作为一个整体垂直居中
         Item {
             id: titleRow
             anchors.left: parent.left
-            anchors.leftMargin: 20
+            anchors.leftMargin: root.columnInset
             anchors.right: messageSearchButton.left
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
-            height: 40
+            height: 44
 
             Avatar {
                 id: conversationAvatar
@@ -290,34 +293,39 @@ Item {
                 anchors.leftMargin: 12
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                height: root.isGroup && root.subtitle.length > 0 ? 36 : titleText.implicitHeight
+                height: titleText.implicitHeight
 
+                // 签名最多占四成宽度，名字至少留下六成，长签名不会把名字挤没
+                readonly property real subtitleReserve: subtitleText.visible
+                    ? Math.min(subtitleText.implicitWidth + 12, width * 0.4) : 0
+
+                // 名字单独垂直居中；签名/群人数作为更小的一行文字跟在名字右侧
                 Text {
                     id: titleText
                     anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: root.isGroup && root.subtitle.length > 0
-                        ? undefined : parent.verticalCenter
-                    anchors.top: root.isGroup && root.subtitle.length > 0 ? parent.top : undefined
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(0, Math.min(implicitWidth, parent.width - titleStack.subtitleReserve))
                     text: root.title
                     textFormat: Text.PlainText
-                    font.pixelSize: 17
+                    font.pixelSize: Theme.fontTitle
                     font.weight: Font.DemiBold
                     color: titleHover.containsMouse ? Theme.primary : Theme.textPrimary
                     elide: Text.ElideRight
                     Behavior on color { ColorAnimation { duration: 120 } }
                 }
                 Text {
-                    anchors.left: parent.left
+                    id: subtitleText
+                    anchors.left: titleText.right
+                    anchors.leftMargin: 8
                     anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    width: parent.width
-                    visible: root.isGroup && root.subtitle.length > 0
+                    anchors.baseline: titleText.baseline
+                    visible: root.subtitle.length > 0
                     text: root.subtitle
                     textFormat: Text.PlainText
                     font.pixelSize: Theme.fontCaption
                     color: Theme.textSecondary
                     elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
             }
             MouseArea {
@@ -338,10 +346,10 @@ Item {
         Rectangle {
             id: messageSearchButton
             anchors.right: profileButton.left
-            anchors.rightMargin: 8
+            anchors.rightMargin: 4
             anchors.verticalCenter: parent.verticalCenter
-            width: 34
-            height: 34
+            width: 36
+            height: 36
             radius: Theme.controlRadius
             color: searchButtonArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
             activeFocusOnTab: true
@@ -362,15 +370,20 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.messageSearchOpen = true
             }
+
+            AppToolTip {
+                text: "搜索消息"
+                hovered: searchButtonArea.containsMouse
+            }
         }
 
         Rectangle {
             id: profileButton
             anchors.right: parent.right
-            anchors.rightMargin: 24
+            anchors.rightMargin: root.columnInset
             anchors.verticalCenter: parent.verticalCenter
-            width: 72
-            height: 34
+            width: 36
+            height: 36
             radius: Theme.controlRadius
             visible: !(root.isGroup && root.groupLeftState > 0)
             color: profileArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
@@ -382,17 +395,9 @@ Item {
             Keys.onSpacePressed: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             Keys.onReturnPressed: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             AppIcon {
-                x: 10
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.centerIn: parent
                 name: "user"
                 size: 17
-                color: Theme.textSecondary
-            }
-            Text {
-                x: 34
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.isGroup ? "群资料" : "资料"
-                font.pixelSize: 12
                 color: Theme.textSecondary
             }
             MouseArea {
@@ -402,14 +407,18 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.isGroup ? root.groupInfoRequested() : root.profileRequested()
             }
+            AppToolTip {
+                text: root.isGroup ? "群资料" : "联系人资料"
+                hovered: profileArea.containsMouse
+            }
         }
 
         Rectangle {
-            x: 28
+            x: 0
             anchors.bottom: parent.bottom
-            width: parent.width - 56
+            width: parent.width
             height: 1
-            color: Theme.line
+            color: Theme.lineSoft
         }
     }
 
@@ -454,7 +463,7 @@ Item {
 
         Text {
             anchors.left: parent.left
-            anchors.leftMargin: 28
+            anchors.leftMargin: root.columnInset
             anchors.right: blockedAction.visible ? blockedAction.left : parent.right
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
@@ -534,7 +543,7 @@ Item {
                 Text {
                     text: "发送好友申请"
                     color: Theme.textPrimary
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontTitle
                     font.bold: true
                 }
                 Text {
@@ -583,6 +592,15 @@ Item {
 
     // 消息列表：模型来自 MessageModel，条目高度由气泡内容决定；
     // 数量或内容高度变化后滚到底，正在翻历史时由模型增量插入避免重建
+    RulePaper {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: root.blockedText.length > 0 ? blockedBar.bottom
+                   : (root.hasNotice ? groupNoticeBar.bottom : header.bottom)
+        anchors.bottom: root.selecting ? selectionBar.top
+                        : (root.inputLocked ? readOnlyBar.top : composer.top)
+    }
+
     ListView {
         id: messageList
         objectName: "messageList"
@@ -592,8 +610,8 @@ Item {
                    : (root.hasNotice ? groupNoticeBar.bottom : header.bottom)
         anchors.bottom: root.selecting ? selectionBar.top
                         : (root.inputLocked ? readOnlyBar.top : composer.top)
-        anchors.leftMargin: 28
-        anchors.rightMargin: 28
+        anchors.leftMargin: root.columnInset
+        anchors.rightMargin: root.columnInset
         anchors.topMargin: 24
         anchors.bottomMargin: 24
         clip: true
@@ -615,21 +633,12 @@ Item {
                 width: parent.width
                 spacing: 0
 
-                // 时间条：与上一条间隔超过 5 分钟才出现，居中一行浅色小字
-                Item {
+                // 时间条：与上一条间隔超过 5 分钟才出现，像信纸上的邮戳
+                PostmarkDivider {
                     width: parent.width
                     height: model.timeText.length > 0 ? 30 : 0
                     visible: height > 0
-                    Text {
-                        anchors.centerIn: parent
-                        width: parent.width - 40
-                        text: model.timeText
-                        textFormat: Text.PlainText
-                        color: Theme.textHint
-                        font.pixelSize: Theme.fontCaption
-                        horizontalAlignment: Text.AlignHCenter
-                        elide: Text.ElideRight
-                    }
+                    text: model.timeText
                 }
 
                 // 进入会话时的未读起点：一条细线加一枚小标签，位置固定在这条消息上，
@@ -1049,8 +1058,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.leftMargin: 24
-        anchors.rightMargin: 24
+        anchors.leftMargin: root.columnInset
+        anchors.rightMargin: root.columnInset
         anchors.bottomMargin: 22
         height: root.inputLocked ? 0 : root.composerHeight
         radius: Theme.panelRadius
@@ -1091,7 +1100,22 @@ Item {
             }
         }
 
-        // 底部工具条：左边工具、右边发送，错误提示夹在中间
+        // 错误独占工具条上方一行，不再和图标挤在一起
+        Text {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            anchors.bottom: bottomBar.top
+            anchors.bottomMargin: 2
+            text: composerBridge.errorText
+            visible: text.length > 0
+            elide: Text.ElideRight
+            color: Theme.danger
+            font.pixelSize: Theme.fontCaption
+        }
+
+        // 底部工具条：左边工具、右边发送
         Item {
             id: bottomBar
             anchors.left: parent.left
@@ -1130,37 +1154,50 @@ Item {
                 }
             }
 
-            Text {
-                anchors.left: tools.right
-                anchors.leftMargin: 8
-                anchors.right: sendButton.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                text: composerBridge.errorText
-                visible: text.length > 0
-                elide: Text.ElideRight
-                color: Theme.danger
-                font.pixelSize: Theme.fontCaption
-            }
-
-            AppButton {
+            Rectangle {
                 id: sendButton
+                Accessible.role: Accessible.Button
                 Accessible.name: "发送消息"
-                ToolTip.visible: sendHover.hovered || activeFocus
-                ToolTip.text: "发送消息（Enter），Shift+Enter 换行"
-                ToolTip.delay: 400
-                HoverHandler { id: sendHover }
                 anchors.right: parent.right
-                anchors.rightMargin: 6
+                anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                width: 40
-                height: 32
-                iconName: "send"
+                width: 38
+                height: 38
+                radius: 19
                 enabled: (input.length > 0 || root.hasAttachment) && !input.inputMethodComposing
-                onClicked: {
-                    root.emojiOpen = false
-                    root.submit()
-                    input.forceActiveFocus()
+                color: !enabled ? Theme.panelAlt
+                     : sendArea.pressed ? Theme.primaryPressed
+                     : sendArea.containsMouse ? Theme.primaryHover : Theme.primary
+                scale: sendArea.pressed && enabled ? 0.94 : 1
+                Behavior on color { ColorAnimation { duration: 120 } }
+                Behavior on scale { NumberAnimation { duration: 90 } }
+                activeFocusOnTab: enabled
+                Keys.onReturnPressed: if (enabled) { root.emojiOpen = false; root.submit(); input.forceActiveFocus() }
+                Keys.onSpacePressed: if (enabled) { root.emojiOpen = false; root.submit(); input.forceActiveFocus() }
+
+                AppIcon {
+                    anchors.centerIn: parent
+                    name: "send"
+                    size: 18
+                    color: sendButton.enabled ? Theme.primaryText : Theme.textHint
+                }
+
+                MouseArea {
+                    id: sendArea
+                    anchors.fill: parent
+                    enabled: sendButton.enabled
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                        root.emojiOpen = false
+                        root.submit()
+                        input.forceActiveFocus()
+                    }
+                }
+
+                AppToolTip {
+                    text: "发送（Enter）"
+                    hovered: sendArea.containsMouse
                 }
             }
         }
@@ -1293,6 +1330,7 @@ Item {
             y: 10 + (attachmentView.visible ? attachmentView.height + 8 : 0)
             width: parent.width - 28
             height: parent.height - y - 56
+                - (composerBridge.errorText.length > 0 ? 18 : 0)
             contentWidth: width
             contentHeight: Math.max(input.contentHeight, height)
             clip: true
@@ -1361,7 +1399,7 @@ Item {
 
             Text {
                 visible: input.length === 0 && !input.inputMethodComposing
-                text: "发消息"
+                text: "写点什么…"
                 color: Theme.textHint
                 font.pixelSize: Theme.fontBody
             }
@@ -1458,19 +1496,33 @@ Item {
         }
     }
 
-    // 表情面板：Grid 按可用宽度自动换行，窄窗口不会把表情挤出边界
+    // 表情面板打开时，点空白处先收起；面板本身在更上层，不受影响
+    MouseArea {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: composer.top
+        visible: root.emojiOpen
+        z: 25
+        onClicked: root.emojiOpen = false
+    }
+
+    // 表情面板：贴着输入区左下角浮出的小面板，5 列两行，不再铺满整个输入区宽度。
+    // 窄窗口自动减列，面板始终留在输入区上方。
     Rectangle {
         id: emojiPanel
         visible: root.emojiOpen
         anchors.left: composer.left
-        anchors.right: composer.right
+        anchors.leftMargin: 8
         anchors.bottom: composer.top
         anchors.bottomMargin: 8
-        readonly property int cell: 56
-        readonly property int gap: 6
-        readonly property int columns: Math.max(1, Math.floor((width - 24 + gap) / (cell + gap)))
+        width: Math.min(232, composer.width - 16)
+        readonly property int cell: 40
+        readonly property int gap: 4
+        readonly property int pad: 8
+        readonly property int columns: Math.max(3, Math.floor((width - 2 * pad + gap) / (cell + gap)))
         readonly property int rows: Math.ceil(Emoji.items.length / columns)
-        height: 20 + rows * cell + Math.max(0, rows - 1) * gap
+        height: 2 * pad + rows * cell + Math.max(0, rows - 1) * gap
         radius: 10
         color: Theme.panelBg
         border.width: 1
@@ -1478,8 +1530,8 @@ Item {
         z: 30
 
         Grid {
-            x: 12
-            y: 10
+            x: emojiPanel.pad
+            y: emojiPanel.pad
             columns: emojiPanel.columns
             rowSpacing: emojiPanel.gap
             columnSpacing: emojiPanel.gap
@@ -1489,14 +1541,14 @@ Item {
                 delegate: Rectangle {
                     width: emojiPanel.cell
                     height: emojiPanel.cell
-                    radius: 9
+                    radius: 7
                     color: emojiHover.containsMouse ? Theme.selected : "transparent"
 
                     Image {
                         anchors.centerIn: parent
-                        //面板按素材比例放大到两倍消息内尺寸，和消息里长得一样，不压扁
-                        width: Emoji.size * 2
-                        height: Emoji.height * 2
+                        // 比消息内尺寸略大即可；再放大只会让面板显得笨重
+                        width: Emoji.size * 1.4
+                        height: Emoji.height * 1.4
                         source: Emoji.assetUrl(modelData.file)
                         fillMode: Image.PreserveAspectFit
                         smooth: true
@@ -1506,11 +1558,10 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        Accessible.role: Accessible.Button
+                        Accessible.name: modelData.name
                         onClicked: root.insertEmoji(modelData.token, Emoji.assetUrl(modelData.file))
                     }
-                    ToolTip.visible: emojiHover.containsMouse
-                    ToolTip.text: modelData.name
-                    ToolTip.delay: 350
                 }
             }
         }
@@ -2257,7 +2308,7 @@ Item {
                     text: root.recordView ? (root.recordView.title || "聊天记录") : ""
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
-                    font.pixelSize: 16
+                    font.pixelSize: Theme.fontTitle
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
                 }
@@ -2331,7 +2382,7 @@ Item {
                                 text: modelData.c || ""
                                 textFormat: Text.PlainText
                                 color: Theme.textPrimary
-                                font.pixelSize: 13
+                                font.pixelSize: Theme.fontBody
                                 wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                             }
                         }

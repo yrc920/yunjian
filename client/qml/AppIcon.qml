@@ -77,6 +77,8 @@ Canvas {
         case "back": poly([14, 5, 7, 12, 14, 19], false); break
         case "arrowRight": line(4, 12, 20, 12); poly([14, 6, 20, 12, 14, 18], false); break
         case "chevronRight": poly([9, 5, 16, 12, 9, 19], false); break
+        case "chevronLeft": poly([15, 5, 8, 12, 15, 19], false); break
+        case "chevronDown": poly([5, 9, 12, 16, 19, 9], false); break
         case "send": poly([3, 4, 21, 12, 3, 20, 6, 12, 3, 4], false); line(6, 12, 21, 12); break
         case "mail":
             c.beginPath(); rounded(3, 5, 18, 14, 2); c.stroke()
@@ -88,6 +90,11 @@ Canvas {
         case "user":
             circle(12, 7, 4)
             c.beginPath(); c.arc(12, 21, 8, Math.PI, 0); c.stroke(); break
+        case "group":
+            circle(9, 8.5, 3)
+            c.beginPath(); c.arc(9, 19, 6, Math.PI, 0); c.stroke()
+            circle(17, 10, 2.4)
+            c.beginPath(); c.arc(17, 19.5, 4.4, Math.PI, 0); c.stroke(); break
         case "eye": case "eyeOff":
             c.beginPath(); c.moveTo(2, 12); c.bezierCurveTo(7, 3, 17, 3, 22, 12)
             c.bezierCurveTo(17, 21, 7, 21, 2, 12); c.stroke()
@@ -144,10 +151,17 @@ Canvas {
             c.beginPath(); rounded(4, 5, 15, 15, 2); c.stroke()
             line(11, 13, 20, 4); poly([15, 4, 20, 4, 20, 9], false); break
         case "edit":
-            // 铅笔：笔杆 + 笔尖，16px 下也能看出是"编辑"
-            c.beginPath(); c.moveTo(5, 19); c.lineTo(6.5, 13.5); c.lineTo(15, 5)
-            c.lineTo(19, 9); c.lineTo(10.5, 17.5); c.closePath(); c.stroke()
-            line(14, 6, 18, 10); break
+            // 铅笔：宽笔杆 + 实心三角笔尖，去掉内长线，避免小尺寸下被读成回形针
+            c.lineWidth = 1.7
+            c.beginPath(); c.moveTo(8, 16); c.lineTo(15, 9); c.lineTo(19, 13)
+            c.lineTo(12, 20); c.closePath(); c.stroke()
+            c.beginPath(); c.moveTo(8, 16); c.lineTo(12, 20); c.lineTo(4.5, 21)
+            c.closePath(); c.fill()
+            line(15.5, 9.5, 18.5, 12.5); break
+        case "camera":
+            c.beginPath(); rounded(3, 7, 18, 13, 2); c.stroke()
+            c.beginPath(); rounded(9, 4, 6, 4, 1); c.stroke()
+            circle(12, 13, 4); break
         case "more":
             dot(5, 12, 1.5); dot(12, 12, 1.5); dot(19, 12, 1.5); break
         case "pin":

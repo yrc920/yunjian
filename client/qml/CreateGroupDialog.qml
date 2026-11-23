@@ -55,14 +55,14 @@ Popup {
         Text {
             text: "发起群聊"
             color: Theme.textPrimary
-            font.pixelSize: 18
+            font.pixelSize: Theme.fontTitle
             font.bold: true
         }
         Text {
             width: parent.width
             text: "勾选好友，给群起个名字；不填就用「群聊」"
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
             wrapMode: Text.Wrap
         }
         AppInput {
@@ -80,7 +80,7 @@ Popup {
                 anchors.verticalCenter: parent.verticalCenter
                 text: "选择好友 · 已选 " + root.selected.length
                 color: Theme.textPrimary
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSmall
                 font.bold: true
             }
         }
@@ -99,14 +99,14 @@ Popup {
                 height: 48
                 Rectangle {
                     anchors.fill: parent
-                    radius: 7
+                    radius: 8
                     color: pickArea.containsMouse ? Theme.panelAlt : "transparent"
                 }
                 Avatar {
                     x: 8
                     width: 32
                     height: 32
-                    radius: 9
+                    radius: 12
                     anchors.verticalCenter: parent.verticalCenter
                     source: modelData.icon
                     name: modelData.name
@@ -118,7 +118,7 @@ Popup {
                     text: modelData.name
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSmall
                     elide: Text.ElideRight
                 }
                 Rectangle {
@@ -127,7 +127,7 @@ Popup {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 18
                     height: 18
-                    radius: 5
+                    radius: 6
                     color: root.selected.indexOf(modelData.uid) >= 0 ? Theme.primary : "transparent"
                     border.width: 1
                     border.color: root.selected.indexOf(modelData.uid) >= 0
@@ -148,7 +148,7 @@ Popup {
             visible: root.message.length > 0
             text: root.message
             color: root.busy ? Theme.textSecondary : Theme.danger
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
             wrapMode: Text.Wrap
         }
 

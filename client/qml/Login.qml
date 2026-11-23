@@ -48,23 +48,46 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: "欢迎回来，继续上次的对话"
+            text: "欢迎回来，接着说上次的话。"
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
 
-        Item { width: 1; height: 22 }
+        // 注册/改密成功后的回执：固定占一行，没有回执时也不跳版
+        Item {
+            width: parent.width
+            // 没有回执时只留一段空隙；有回执才展开，表单不会平白多出一大块
+            height: AuthDraft.notice.length > 0 ? 38 : 14
+            Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+            Text {
+                width: parent.width
+                anchors.top: parent.top
+                anchors.topMargin: 12
+                horizontalAlignment: Text.AlignHCenter
+                visible: AuthDraft.notice.length > 0
+                text: AuthDraft.notice
+                textFormat: Text.PlainText
+                color: Theme.success
+                font.pixelSize: Theme.fontCaption
+                elide: Text.ElideRight
+            }
+        }
 
         AppInput {
             id: emailInput
             width: parent.width
             labeled: true
             label: "邮箱"
-            onTextEdited: bridge.email = text
+            onTextEdited: {
+                bridge.email = text
+                AuthDraft.email = text
+                AuthDraft.clearNotice()
+            }
             onAccepted: passwordInput.forceInputFocus()
         }
 
-        Item { width: 1; height: 14 }
+        Item { width: 1; height: 12 }
 
         AppInput {
             id: passwordInput
@@ -73,37 +96,29 @@ Item {
             label: "密码"
             password: true
             reveal: bridge.passwordVisible
-            onTextEdited: bridge.password = text
-            onAccepted: bridge.login()
+            onTextEdited: {
+                bridge.password = text
+                AuthDraft.password = text
+                AuthDraft.clearNotice()
+            }
+            onAccepted: {
+                AuthDraft.clearNotice()
+                bridge.login()
+            }
             onRevealToggled: bridge.togglePasswordVisible()
         }
 
-        Item { width: 1; height: 12 }
-
-        // 提交级错误：没有错误时不占高度，出现时表单只下移一行
-        Text {
-            width: parent.width
-            text: bridge.errorText
-            color: Theme.danger
-            font.pixelSize: Theme.fontSmall
-            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-            height: text.length > 0 ? Math.max(18, implicitHeight) : 0
-            visible: height > 0
-            opacity: text.length > 0 ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 120 } }
-        }
-
-        Item { width: 1; height: 12 }
+        Item { width: 1; height: 18 }
 
         // 记住登录与找回密码同排：一个决定下次是否自动进入，一个是账号自救入口
         Item {
             width: parent.width
-            height: 20
+            height: 28
 
             Item {
                 id: rememberToggle
                 width: 26 + rememberLabel.implicitWidth
-                height: 20
+                height: 28
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
 
@@ -137,7 +152,11 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: bridge.remember = !bridge.remember
+                    onClicked: {
+                        bridge.remember = !bridge.remember
+                        AuthDraft.remember = bridge.remember
+                        AuthDraft.rememberTouched = true
+                    }
                 }
             }
 
@@ -149,16 +168,34 @@ Item {
             }
         }
 
-        Item { width: 1; height: 18 }
+        Item { width: 1; height: 4 }
+
+        // 提交级错误放在按钮上方：和输入区留出距离，又不会把“自动登录”推远
+        Text {
+            width: parent.width
+            text: bridge.errorText
+            color: Theme.danger
+            font.pixelSize: Theme.fontSmall
+            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            // 固定预留一行：提示出现时按钮不上下跳，长文案仍可自然增高
+            height: Math.max(18, implicitHeight)
+            opacity: text.length > 0 ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 120 } }
+        }
+
+        Item { width: 1; height: 8 }
 
         AppButton {
             width: parent.width
             text: bridge.busy ? bridge.busyText : "登录"
             busy: bridge.busy
-            onClicked: bridge.login()
+            onClicked: {
+                AuthDraft.clearNotice()
+                bridge.login()
+            }
         }
 
-        Item { width: 1; height: 18 }
+        Item { width: 1; height: 12 }
 
         RowLayout {
             width: parent.width
@@ -181,10 +218,36 @@ Item {
         }
     }
 
+    // 登录到一半去注册/找回再回来：邮箱、密码、自动登录选项都恢复
+    function restoreDraft() {
+        // 注册/改密成功回执带的邮箱优先于上次登录记录：返回登录后直接看到刚注册的邮箱
+        if (AuthDraft.email.length > 0) {
+            bridge.email = AuthDraft.email
+            emailInput.text = AuthDraft.email
+        }
+        if (AuthDraft.password.length > 0 && bridge.password.length === 0) {
+            bridge.password = AuthDraft.password
+            passwordInput.text = AuthDraft.password
+        }
+        if (!AuthDraft.rememberTouched)
+            AuthDraft.remember = bridge.remember
+        bridge.remember = AuthDraft.remember
+        // 邮箱可能由上次登录记录预填：同步进草稿，注册/找回页才能接着用
+        if (AuthDraft.email.length === 0 && bridge.email.length > 0)
+            AuthDraft.email = bridge.email
+    }
+
     Component.onCompleted: {
-        // 有上次的令牌就直接恢复会话，失败时表单接住并把焦点交给密码框
-        if (!bridge.tryAutoLogin())
-            emailInput.forceInputFocus()
+        // 注册/改密刚成功时先不自动登录：回执要落到新账号的邮箱上
+        const hasReceipt = AuthDraft.notice.length > 0
+        // 有上次的令牌就直接恢复会话；失败时把草稿放回来，并聚焦到该输入的位置
+        if (hasReceipt || !bridge.tryAutoLogin()) {
+            restoreDraft()
+            if (emailInput.text.length > 0)
+                passwordInput.forceInputFocus()
+            else
+                emailInput.forceInputFocus()
+        }
     }
 
     Connections {

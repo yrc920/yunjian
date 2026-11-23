@@ -108,6 +108,7 @@ Column {
         Repeater {
             model: root.presets
             delegate: Rectangle {
+                id: presetChip
                 readonly property bool chosen: root.tags.indexOf(modelData) >= 0
                 width: presetLabel.implicitWidth + 22
                 height: 29
@@ -119,7 +120,7 @@ Column {
                     id: presetLabel
                     anchors.centerIn: parent
                     text: modelData
-                    color: chosen ? Theme.textPrimary : Theme.textSecondary
+                    color: presetChip.chosen ? Theme.textPrimary : Theme.textSecondary
                     font.pixelSize: Theme.fontSmall
                 }
                 MouseArea {

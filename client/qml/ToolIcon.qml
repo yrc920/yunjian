@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 
 // 编辑区工具入口，未实现的动作保持不可用。
 Rectangle {
@@ -9,9 +8,15 @@ Rectangle {
     property bool usable: false
     signal clicked()
 
-    width: 30
-    height: 30
-    radius: 6
+    readonly property string tipText: kind === "emoji" ? "表情"
+        : kind === "image" ? "插入图片"
+        : kind === "video" ? "发送视频"
+        : kind === "folder" ? "发送文件"
+        : kind === "close" ? "移除" : kind
+
+    width: 32
+    height: 32
+    radius: 7
     activeFocusOnTab: usable
     color: usable && (area.containsMouse || activeFocus) ? Theme.panelAlt : "transparent"
     opacity: usable ? 1 : 0.42
@@ -21,9 +26,10 @@ Rectangle {
     Keys.onSpacePressed: if (usable) clicked()
     Keys.onReturnPressed: if (usable) clicked()
 
-    ToolTip.visible: area.containsMouse || activeFocus
-    ToolTip.text: Accessible.name
-    ToolTip.delay: 450
+    AppToolTip {
+        text: root.tipText
+        hovered: area.containsMouse
+    }
 
     AppIcon {
         anchors.centerIn: parent

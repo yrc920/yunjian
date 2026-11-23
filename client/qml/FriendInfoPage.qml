@@ -1,278 +1,285 @@
 import QtQuick
 
-// 联系人资料按字段排列，所有可见信息来自当前好友。
-// profile 是 ChatBridge 生成的快照，字段缺失时用占位文案，不在这里补业务数据。
-//
-// 字段统一「左侧标签 + 右侧内容」：标签固定在 x=0，内容从 x=82 开始并占满剩余宽度，
-// 长内容换行时整行高度跟着长高。签名与标签也走同一套排版，不再单独占一块。
+// 联系人资料：信头（头像、名字、ID）在上，字段在下；内容列上限 680，宽窗只居中。
+// 备注与标签可就地改，也保留"编辑备注与标签"批量入口；删除好友只留一条文字链。
 Item {
     id: root
 
     property var profile: ({})
+    property var controller: null
     signal chatRequested()
     signal editRelationRequested()
-    // 删除确认由外层弹层统一处理，页面只负责发起
     signal deleteRequested()
-    // 从聊天里点进来时，看完资料要能回到原来的会话
     signal backRequested()
 
+    property string savingField: ""
+
     readonly property int sex: profile.sex === undefined ? 0 : profile.sex
-    // 备注 > 昵称 > 用户名，与列表、聊天标题保持同一条规则
     readonly property string display: profile.displayName || profile.name || ""
     readonly property var tags: profile.tags || []
-    readonly property bool hasDesc: (profile.desc || "").length > 0
+    readonly property string remark: profile.remark || ""
+    readonly property bool friend: profile.friend !== false
+    readonly property string sexText: sex === 1 ? "男" : (sex === 2 ? "女" : "不公开")
+    readonly property string descText: profile.desc || ""
+
+    // 和群资料同一套信纸版式：内容列固定上限 680，左右至少各留 48
+    readonly property real contentWidth: Math.min(width - 96, 680)
+    readonly property real inset: Math.max(48, (width - contentWidth) / 2)
+
+    function closeOthers(except) {
+        if (except !== "remark")
+            remarkField.cancel()
+        if (except !== "tags")
+            tagsField.cancel()
+    }
+
+    function saveRelation(remarkValue, tagsValue) {
+        if (!controller || !profile.uid || !friend)
+            return
+        controller.saveFriendRemark(profile.uid, remarkValue, tagsValue)
+    }
+
+    Connections {
+        target: root.controller
+        function onRemarkSaved(ok, uid) {
+            if (!root.profile || uid !== root.profile.uid || root.savingField.length === 0)
+                return
+            const field = root.savingField === "tags" ? tagsField : remarkField
+            if (ok)
+                field.finish()
+            else
+                field.fail(root.controller.remarkMessage)
+            root.savingField = ""
+        }
+    }
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
     }
 
     PageHeader {
         id: header
         title: "联系人资料"
+        inset: 24
         backVisible: true
         onBackRequested: root.backRequested()
     }
 
-    // 资料区限宽 480 并居中，窗口变窄时先减两侧留白
     Flickable {
         anchors.top: header.bottom
         anchors.bottom: parent.bottom
         width: parent.width
         contentWidth: width
-        contentHeight: details.height + 84
+        contentHeight: body.height + 64
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
-        Column {
-            id: details
-            x: Math.max(30, (parent.width - 480) / 2)
-            y: 42
-            width: Math.min(parent.width - 60, 480)
-            spacing: 0
+        Item {
+            id: body
+            x: root.inset
+            y: 36
+            width: root.contentWidth
+            height: identityBlock.height + 28 + fields.height
 
-            Row {
+            // 信头：头像与名字横排，字段始终在下方
+            Item {
+                id: identityBlock
                 width: parent.width
-                spacing: 20
+                height: 92
 
-                Avatar {
-                    width: 76
-                    height: 76
-                    source: root.profile.icon || ""
-                    name: root.display
-                    textSize: 26
-                }
+                Row {
+                    width: parent.width
+                    spacing: 16
 
-                Column {
-                    width: parent.width - 96
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 9
-
-                    Text {
-                        width: parent.width
-                        text: root.display
-                        textFormat: Text.PlainText
-                        color: Theme.textPrimary
-                        font.pixelSize: Theme.fontDisplay
-                        font.weight: Font.DemiBold
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    Avatar {
+                        width: 72
+                        height: 72
+                        radius: 18
+                        source: root.profile.icon || ""
+                        name: root.display
+                        textSize: 22
                     }
+
+                    Column {
+                        width: parent.width - 88
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+
+                        Text {
+                            width: parent.width
+                            text: root.display
+                            textFormat: Text.PlainText
+                            color: Theme.textPrimary
+                            font.pixelSize: 20
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            text: root.profile.uid ? "ID  " + root.profile.uid : ""
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontCaption
+                            font.letterSpacing: 1
+                        }
+                    }
+                }
+            }
+
+            Column {
+                id: fields
+                x: 0
+                y: identityBlock.height + 28
+                width: root.contentWidth
+                spacing: 0
+
+                Item {
+                    width: parent.width
+                    height: 32
+
                     Text {
-                        text: root.profile.uid ? "ID  " + root.profile.uid : ""
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "资料"
                         color: Theme.textSecondary
                         font.pixelSize: Theme.fontSmall
-                        font.letterSpacing: 1
+                        font.weight: Font.Medium
                     }
-                }
-            }
 
-            Spacer { gap: 16 }
-            // 资料页只留两个真实动作：发消息与编辑资料；语音、视频等能力就绪后再加回来
-            Row {
-                width: parent.width
-                spacing: 12
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 12
 
-                AppButton {
-                    width: Math.min(168, parent.width - 132)
-                    height: 46
-                    text: "发消息"
-                    iconName: "chat"
-                    onClicked: root.chatRequested()
-                }
-                CodeButton {
-                    width: 120
-                    height: 46
-                    text: "备注与标签"
-                    // 关系已经断了：备注与标签编辑没有意义，只保留发消息（进去补验证）
-                    visible: root.profile.friend !== false
-                    onClicked: root.editRelationRequested()
-                }
-            }
-
-            Spacer { gap: 24 }
-            Rectangle { width: parent.width; height: 1; color: Theme.line }
-            Spacer { gap: 12 }
-
-            // 固定资料字段；值过长时换行，行高跟着内容增长
-            Repeater {
-                model: [
-                    { label: "昵称", value: root.profile.nick || "未设置" },
-                    { label: "性别", value: root.sex === 1 ? "男" : (root.sex === 2 ? "女" : "未设置") }
-                ]
-
-                delegate: Item {
-                    width: details.width
-                    height: Math.max(48, valueText.implicitHeight + 26)
-
-                    Text {
-                        x: 0
-                        y: 13
-                        text: modelData.label
-                        color: Theme.textSecondary
-                        font.pixelSize: Theme.fontBody
-                    }
-                    Text {
-                        id: valueText
-                        x: 82
-                        y: 13
-                        width: parent.width - x
-                        text: modelData.value
-                        textFormat: Text.PlainText
-                        color: Theme.textPrimary
-                        font.pixelSize: Theme.fontBody
-                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    }
-                }
-            }
-
-            // 备注只对自己生效，与其他字段同一行排版
-            Item {
-                width: details.width
-                height: Math.max(48, remarkValue.implicitHeight + 26)
-                Text {
-                    x: 0
-                    y: 13
-                    text: "备注"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontBody
-                }
-                Text {
-                    id: remarkValue
-                    x: 82
-                    y: 13
-                    width: parent.width - x
-                    text: root.profile.remark || "未设置"
-                    textFormat: Text.PlainText
-                    color: root.profile.remark ? Theme.textPrimary : Theme.textHint
-                    font.pixelSize: Theme.fontBody
-                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                }
-            }
-
-            // 个性签名：好友没写时给一句轻默认文案，只做展示不写库；长文本整段换行
-            Item {
-                width: details.width
-                height: Math.max(48, descValue.implicitHeight + 26)
-                Text {
-                    x: 0
-                    y: 13
-                    text: "个性签名"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontBody
-                }
-                Text {
-                    id: descValue
-                    x: 82
-                    y: 13
-                    width: parent.width - x
-                    text: root.hasDesc ? root.profile.desc : "未填写"
-                    textFormat: Text.PlainText
-                    color: root.hasDesc ? Theme.textPrimary : Theme.textHint
-                    font.pixelSize: Theme.fontBody
-                    lineHeight: 1.4
-                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                }
-            }
-
-            // 分组标签：与备注一起在「编辑资料」里维护，只对自己可见
-            Item {
-                width: details.width
-                height: Math.max(48, tagFlow.height + 24)
-                Text {
-                    x: 0
-                    y: 13
-                    text: "标签"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontBody
-                }
-                Flow {
-                    id: tagFlow
-                    x: 82
-                    y: 12
-                    width: parent.width - x
-                    spacing: 7
-                    Repeater {
-                        model: root.tags
-                        delegate: Rectangle {
-                            width: tagLabel.implicitWidth + 22
-                            height: 26
-                            radius: 5
-                            color: Theme.selected
-                            Text {
-                                id: tagLabel
-                                anchors.centerIn: parent
-                                text: modelData
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontSmall
+                        AppButton {
+                            width: 92
+                            height: 32
+                            text: "发消息"
+                            onClicked: root.chatRequested()
+                        }
+                        Text {
+                            height: 32
+                            verticalAlignment: Text.AlignVCenter
+                            text: "编辑备注"
+                            color: Theme.primary
+                            font.pixelSize: Theme.fontSmall
+                            visible: root.friend
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -6
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.editRelationRequested()
                             }
                         }
                     }
                 }
-                Text {
-                    x: 82
-                    y: 13
-                    visible: root.tags.length === 0
-                    text: "未设置"
-                    color: Theme.textHint
-                    font.pixelSize: Theme.fontBody
-                }
-            }
 
-            Spacer { gap: 12 }
-            Rectangle { width: parent.width; height: 1; color: Theme.line }
-            Spacer { gap: 28 }
-
-            // 删除好友：做成次要按钮而不是一行小字，误点风险由确认弹层兜住。
-            // 不是好友时这里换成"清除聊天记录"由会话菜单处理，页面不再提供删除入口
-            Rectangle {
-                width: parent.width
-                height: 42
-                visible: root.profile.friend !== false
-                radius: 8
-                color: deleteArea.containsMouse ? Theme.panelAlt : "transparent"
-                border.width: 1
-                border.color: Theme.line
-
-                AppIcon {
-                    x: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: "minus"
-                    size: 16
-                    color: Theme.danger
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.lineSoft
                 }
-                Text {
-                    x: 38
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "删除好友"
-                    color: Theme.danger
-                    font.pixelSize: Theme.fontSmall
+
+                EditableField {
+                    label: "昵称"
+                    value: root.profile.nick || ""
+                    placeholder: "未设置"
+                    editable: false
                 }
-                MouseArea {
-                    id: deleteArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.deleteRequested()
+
+                EditableField {
+                    label: "性别"
+                    value: root.sexText
+                    editable: false
+                }
+
+                EditableField {
+                    id: remarkField
+                    label: "备注"
+                    value: root.remark
+                    placeholder: "未设置"
+                    maxLength: 20
+                    editable: root.friend
+                    busy: root.savingField === "remark" && root.controller && root.controller.remarkSaving
+                    onEditStarted: {
+                        root.closeOthers("remark")
+                        if (root.controller)
+                            root.controller.clearProfileMessages()
+                    }
+                    onCommitted: (value) => {
+                        root.savingField = "remark"
+                        root.saveRelation(value, root.tags)
+                    }
+                }
+
+                EditableField {
+                    id: tagsField
+                    label: "标签"
+                    mode: "tags"
+                    tags: root.tags
+                    placeholder: "未设置"
+                    editable: root.friend
+                    busy: root.savingField === "tags" && root.controller && root.controller.remarkSaving
+                    onEditStarted: {
+                        root.closeOthers("tags")
+                        if (root.controller)
+                            root.controller.clearProfileMessages()
+                    }
+                    onTagsCommitted: (list) => {
+                        root.savingField = "tags"
+                        root.saveRelation(root.remark, list)
+                    }
+                }
+
+                EditableField {
+                    label: "个性签名"
+                    value: root.descText
+                    placeholder: "还没有签名"
+                    mode: "multiline"
+                    maxLines: 4
+                    editable: false
+                }
+
+                EditableField {
+                    label: "用户名"
+                    value: root.profile.name || ""
+                    placeholder: "未设置"
+                    editable: false
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.lineSoft
+                    visible: root.friend
+                }
+
+                Item { width: 1; height: 16; visible: root.friend }
+
+                Column {
+                    width: parent.width
+                    visible: root.friend
+                    spacing: 4
+
+                    Text {
+                        text: "删除好友"
+                        color: Theme.danger
+                        font.pixelSize: Theme.fontSmall
+                        font.weight: Font.Medium
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.deleteRequested()
+                        }
+                    }
+                    Text {
+                        text: "对方不会收到通知，聊天记录仍会保留在这台设备。"
+                        color: Theme.textHint
+                        font.pixelSize: Theme.fontCaption
+                        wrapMode: Text.WordWrap
+                        width: parent.width
+                    }
                 }
             }
         }

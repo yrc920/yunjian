@@ -88,7 +88,7 @@ Popup {
                 y: 23
                 text: "编辑头像"
                 color: Theme.textPrimary
-                font.pixelSize: 20
+                font.pixelSize: Theme.fontDisplay
                 font.weight: Font.DemiBold
             }
             Text {

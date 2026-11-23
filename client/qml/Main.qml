@@ -8,8 +8,8 @@ import XiguChat
 Window {
     id: window
     visible: true
-    title: "xiguchat"
-    color: Theme.bgTop
+    title: "信笺"
+    color: Theme.desk
 
     //通知点击后要回到哪条会话；关闭到托盘时用 quitting 区分"隐藏"和"真退出"
     property int notifyThread: 0
@@ -23,10 +23,12 @@ Window {
     Settings {
         id: windowPrefs
         category: "Window"
-        property int chatWidth: 1060
-        property int chatHeight: 740
+        property int chatWidth: 1120
+        property int chatHeight: 760
         property int chatX: -1
         property int chatY: -1
+        // 布局版本：升级到新版默认尺寸时只迁移一次，不覆盖之后的用户调整
+        property int layoutVersion: 0
     }
     Timer {
         id: windowSaver
@@ -60,7 +62,7 @@ Window {
     TrayController {
         id: tray
         tooltip: shell.unreadTotal > 0
-            ? "xiguchat · " + shell.unreadTotal + " 条未读" : "xiguchat"
+            ? "信笺 · " + shell.unreadTotal + " 条未读" : "信笺"
 
         onOpenRequested: {
             window.show()
@@ -120,7 +122,7 @@ Window {
         const limitH = Math.max(480, areaH - 16)
         const enteringChat = name === "chat" && lastPage !== "chat"
         if (name === "chat") {
-            minimumWidth = Math.min(900, limitW)
+            minimumWidth = Math.min(700, limitW)
             minimumHeight = Math.min(620, limitH)
             // 尺寸取上次退出时的值，并夹在最小尺寸与屏幕可用区之间
             width = Math.min(Math.max(windowPrefs.chatWidth, minimumWidth), limitW)
@@ -130,7 +132,8 @@ Window {
             if (enteringChat) {
                 const sx = windowPrefs.chatX
                 const sy = windowPrefs.chatY
-                const restored = sx >= areaX && sy >= areaY
+                // 贴到屏幕左上角的旧位置不算“用户选择的窗口位置”，改为居中
+                const restored = sx >= areaX + 12 && sy >= areaY + 12
                     && sx + width <= areaX + areaW && sy + height <= areaY + areaH
                 x = restored ? sx : areaX + Math.max(8, (areaW - width) / 2)
                 y = restored ? sy : areaY + Math.max(8, (areaH - height) / 2)
@@ -141,8 +144,8 @@ Window {
                     y = areaY + Math.max(8, (areaH - height) / 2)
             }
         } else {
-            // 认证页高度按内容区分：登录 550、注册 584、找回 536；超出屏幕时由 AuthPage 内部滚动
-            const h = name === "register" ? 584 : name === "reset" ? 536 : 550
+            // 登录、注册、找回共用同一个窗口尺寸；注册表单刚好放满，上下不再空一截
+            const h = 560
             const pageH = Math.min(h, limitH)
             minimumWidth = 420
             minimumHeight = pageH
@@ -153,8 +156,13 @@ Window {
             x = areaX + Math.max(0, (areaW - width) / 2)
             y = areaY + Math.max(0, (areaH - height) / 2)
         }
+        // 认证页之间淡入淡出；进出聊天页不淡，避免整窗闪一下底色
+        const fadePage = name !== "chat" && lastPage !== "" && lastPage !== "chat"
         lastPage = name
+        loader.opacity = fadePage ? 0 : 1
         loader.setSource(pageFile(name))
+        if (fadePage)
+            pageFade.restart()
     }
     // 系统外观由平台上报，Unknown 视为浅色；是否采纳由 Theme 的跟随开关决定
     function syncSystemScheme() {
@@ -167,6 +175,14 @@ Window {
 
     Component.onCompleted: {
         syncSystemScheme()
+        // 旧版本留下的 780 宽窗口会把右侧挤得很窄：首次升级到新默认尺寸并重新居中
+        if (windowPrefs.layoutVersion < 4) {
+            windowPrefs.chatWidth = 1120
+            windowPrefs.chatHeight = 760
+            windowPrefs.chatX = -1
+            windowPrefs.chatY = -1
+            windowPrefs.layoutVersion = 4
+        }
         showPage(shell.page)
         Qt.callLater(syncChrome)
     }
@@ -181,7 +197,14 @@ Window {
     }
     Connections {
         target: shell
-        function onPageChanged() { window.showPage(shell.page) }
+        function onPageChanged() {
+            // 已进入聊天：密码草稿和回执都不再需要，避免退出登录后又被带回登录框
+            if (shell.page === "chat") {
+                AuthDraft.clearPassword()
+                AuthDraft.clearNotice()
+            }
+            window.showPage(shell.page)
+        }
     }
 
     //普通断线时先给一条非阻塞的重连横条：缓存消息还能看，不强行弹回登录页
@@ -214,6 +237,16 @@ Window {
                 elide: Text.ElideRight
             }
         }
+    }
+
+    NumberAnimation {
+        id: pageFade
+        target: loader
+        property: "opacity"
+        from: 0
+        to: 1
+        duration: 180
+        easing.type: Easing.OutCubic
     }
 
     Loader {
@@ -276,7 +309,7 @@ Window {
             width: 352
             height: content.height + 56
             color: Theme.panelBg
-            radius: 12
+            radius: Theme.dialogRadius
             border.color: Theme.line
             MouseArea { anchors.fill: parent }
             Column {
@@ -291,8 +324,8 @@ Window {
                     color: Theme.stamp
                 }
                 Text {
-                    text: "连接中断了"
-                    font.pixelSize: 22
+                    text: "连接断开了"
+                    font.pixelSize: Theme.fontDisplay
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }

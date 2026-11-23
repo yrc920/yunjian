@@ -67,9 +67,9 @@ Item {
 
     Rectangle {
         id: panel
-        width: 150
+        width: 160
         height: column.implicitHeight + 12
-        radius: 9
+        radius: Theme.panelRadius
         color: Theme.surfaceFloating
         border.width: 1
         border.color: Theme.line
@@ -86,8 +86,8 @@ Item {
 
                 delegate: Rectangle {
                     width: column.width
-                    height: 31
-                    radius: 5
+                    height: 34
+                    radius: 6
                     readonly property bool highlighted: index === root.activeIndex
                     color: (itemArea.containsMouse || highlighted) && modelData.enabled !== false
                         ? Theme.panelAlt : "transparent"

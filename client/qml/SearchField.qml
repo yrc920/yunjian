@@ -15,11 +15,11 @@ Rectangle {
     signal focusGained()
     signal clearRequested()
 
-    implicitHeight: 38
+    implicitHeight: 36
     radius: Theme.controlRadius
-    color: input.activeFocus || clearButton.activeFocus ? Theme.fieldBg : Theme.panelAlt
+    color: Theme.fieldBg
     border.width: 1
-    border.color: input.activeFocus || clearButton.activeFocus ? Theme.focusRing : "transparent"
+    border.color: input.activeFocus || clearButton.activeFocus ? Theme.focusRing : Theme.lineSoft
 
     function forceInputFocus() {
         input.forceActiveFocus()
@@ -38,7 +38,7 @@ Rectangle {
         x: 11
         anchors.verticalCenter: parent.verticalCenter
         name: "search"
-        size: 16
+        size: 15
         color: Theme.textHint
     }
 
@@ -52,7 +52,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         height: 28
         verticalAlignment: TextInput.AlignVCenter
-        font.pixelSize: 12
+        font.pixelSize: 13
         color: Theme.textPrimary
         selectionColor: Theme.selected
         selectedTextColor: Theme.textPrimary
@@ -75,7 +75,7 @@ Rectangle {
         visible: input.length === 0 && !input.inputMethodComposing
         text: root.placeholder
         color: Theme.textHint
-        font.pixelSize: 12
+        font.pixelSize: 13
     }
 
     Rectangle {
@@ -86,7 +86,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         width: 26
         height: 26
-        radius: 5
+        radius: 6
         color: clearArea.containsMouse || activeFocus ? Theme.selected : "transparent"
         activeFocusOnTab: visible
         Accessible.role: Accessible.Button

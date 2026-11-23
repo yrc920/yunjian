@@ -13,11 +13,11 @@ Rectangle {
     signal textEdited()
 
     implicitHeight: 108
-    radius: Theme.radius
-    color: Theme.panelBg
+    radius: Theme.controlRadius
+    color: Theme.fieldBg
     border.width: 1
     border.color: overLimit ? Theme.danger
-                : area.activeFocus ? Theme.primary : Theme.fieldBorder
+                : area.activeFocus ? Theme.focusRing : Theme.fieldBorder
     Behavior on border.color { ColorAnimation { duration: 130 } }
 
     function forceInputFocus() {

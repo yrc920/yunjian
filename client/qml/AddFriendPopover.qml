@@ -20,7 +20,7 @@ Rectangle {
 
     implicitHeight: content.implicitHeight + 24
     height: implicitHeight
-    radius: 10
+    radius: 12
     color: Theme.surfaceFloating
     border.width: 1
     border.color: Theme.line
@@ -41,23 +41,23 @@ Rectangle {
 
         Item {
             width: parent.width
-            height: 22
+            height: 28
 
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: "添加朋友"
                 color: Theme.textPrimary
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSmall
                 font.weight: Font.DemiBold
             }
             Rectangle {
                 id: closeButton
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: 22
-                height: 22
-                radius: 5
+                width: 28
+                height: 28
+                radius: 7
                 color: closeArea.containsMouse || activeFocus ? Theme.selected : "transparent"
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
@@ -68,7 +68,7 @@ Rectangle {
                 AppIcon {
                     anchors.centerIn: parent
                     name: "close"
-                    size: 12
+                    size: 14
                     color: Theme.textSecondary
                 }
                 MouseArea {
@@ -86,7 +86,7 @@ Rectangle {
             width: parent.width
             text: "用户名或 ID 都行"
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
             elide: Text.ElideRight
         }
 
@@ -132,7 +132,7 @@ Rectangle {
                     Avatar {
                         width: 38
                         height: 38
-                        radius: 10
+                        radius: 12
                         source: root.result.icon || ""
                         name: resultRow.displayName
                         textSize: 15
@@ -147,7 +147,7 @@ Rectangle {
                             text: resultRow.displayName
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSmall
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
@@ -228,7 +228,7 @@ Rectangle {
                             : "正在发送申请…"
                         textFormat: Text.PlainText
                         color: root.sent ? Theme.primary : Theme.textSecondary
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontCaption
                         elide: Text.ElideRight
                     }
                 }
@@ -269,7 +269,7 @@ Rectangle {
             visible: root.controller.searchState === ChatBridge.SearchSelf
             text: root.controller.searchMessage || "这是你自己的账号"
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         }
 
@@ -282,7 +282,7 @@ Rectangle {
                 width: parent.width
                 text: root.controller.searchMessage || "没有找到这位用户"
                 color: Theme.textSecondary
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontCaption
             }
             Text {
                 width: parent.width

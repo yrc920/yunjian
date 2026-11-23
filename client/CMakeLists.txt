@@ -194,6 +194,7 @@ set(BRIDGE_SOURCES
     bridge/registerbridge.cpp
     bridge/resetbridge.cpp
     bridge/friendlistmodel.cpp
+    bridge/grouplistmodel.cpp
     bridge/conversationmodel.cpp
     bridge/applylistmodel.cpp
     bridge/messagemodel.cpp
@@ -215,6 +216,7 @@ set(BRIDGE_HEADERS
     bridge/registerbridge.h
     bridge/resetbridge.h
     bridge/friendlistmodel.h
+    bridge/grouplistmodel.h
     bridge/conversationmodel.h
     bridge/applylistmodel.h
     bridge/messagemodel.h
@@ -253,16 +255,23 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}"
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 # 表情目录同样是只读单例：token 与资源名集中在一处，气泡与输入框共用
 set_source_files_properties(qml/Emoji.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+# 认证页草稿：登录/注册/找回之间共享，只存在内存里
+set_source_files_properties(qml/AuthDraft.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 set(QML_FILES
     qml/Main.qml
     qml/Theme.qml
     qml/Emoji.qml
-    qml/BrandMark.qml
+    qml/AuthDraft.qml
     qml/AppIcon.qml
+    qml/AppToolTip.qml
+    qml/AvatarAction.qml
+    qml/EditableField.qml
+    qml/RulePaper.qml
+    qml/PostmarkDivider.qml
+    qml/ConfirmDialog.qml
     qml/PaperCompanion.qml
     qml/AuthPage.qml
-    qml/AppearanceMenu.qml
     qml/Login.qml
     qml/Register.qml
     qml/Reset.qml
@@ -300,6 +309,7 @@ set(QML_FILES
     qml/AppLink.qml
     qml/CodeButton.qml
     qml/Spacer.qml
+    qml/SpineRibbon.qml
 )
 
 qt_add_qml_module(xiguchat

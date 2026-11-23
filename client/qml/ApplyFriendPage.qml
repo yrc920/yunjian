@@ -11,7 +11,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.chatBg
+        color: Theme.sheet
     }
 
     PageHeader {
@@ -19,7 +19,6 @@ Item {
         title: "新的朋友"
         subtitle: root.applies && root.applies.pendingCount > 0
             ? root.applies.pendingCount + " 条申请待处理" : "好友申请"
-        trailingIcon: "contacts"
     }
 
     // 一条申请占一行：头像、申请人、留言，右侧按钮在已处理时换成对勾
