@@ -1,12 +1,15 @@
 import QtQuick
 
-// 轻量文字操作：默认次要色，悬停或聚焦时变主色并加下划线。
+// 轻量文字操作：默认次要色，悬停或聚焦时变主色并加下划线；危险操作用 danger。
 Text {
     id: root
     property bool emphasize: false
+    property bool danger: false
     signal clicked()
     font.pixelSize: Theme.fontSmall
-    color: area.containsMouse || activeFocus ? Theme.primary : emphasize ? Theme.textPrimary : Theme.textSecondary
+    color: area.containsMouse || activeFocus
+        ? (root.danger ? Theme.danger : Theme.primary)
+        : root.danger ? Theme.danger : root.emphasize ? Theme.textPrimary : Theme.textSecondary
     font.underline: area.containsMouse || activeFocus
     activeFocusOnTab: true
     Accessible.role: Accessible.Link

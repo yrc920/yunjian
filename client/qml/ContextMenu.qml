@@ -1,12 +1,14 @@
 import QtQuick
 
-// 轻量右键菜单：条目由调用方给出 {text, enabled, action}，点击后先关闭再执行。
+// 轻量右键菜单：条目由调用方给出 {text, icon, enabled, action}，点击后先关闭再执行。
 // 覆盖整个父项，菜单外的点击或 Esc 都只关闭菜单，不把事件传给下层。
 Item {
     id: root
 
     property var items: []
     property int activeIndex: -1
+    // 宽度按最长一项算，和加号菜单同一套：左右各 12
+    property real panelWidth: 120
     visible: false
     z: 600
     focus: visible
@@ -15,7 +17,18 @@ Item {
         items = list || []
         if (items.length === 0)
             return
-        activeIndex = 0
+        let widest = 0
+        let hasIcon = false
+        for (let i = 0; i < items.length; ++i) {
+            widest = Math.max(widest, metrics.advanceWidth(String(items[i].text || "")))
+            if (items[i].icon)
+                hasIcon = true
+        }
+        // 有图标时左侧固定 16 图标 + 8 间距；左右各 12
+        root.panelWidth = Math.max(72,
+            Math.min(240, Math.ceil(widest) + (hasIcon ? 48 : 26)))
+        // 刚打开时不高亮第一项：鼠标菜单没有默认动作，方向键再开始选
+        activeIndex = -1
         panel.x = Math.max(8, Math.min(px, width - panel.width - 8))
         const below = py + panel.height + 8 <= height
         panel.y = below ? py : Math.max(8, py - panel.height)
@@ -65,9 +78,16 @@ Item {
         onWheel: root.close()
     }
 
+    // FontMetrics 同步返回当前文字的宽度，不会像隐藏 Text 那样读到上一轮的旧值
+    FontMetrics {
+        id: metrics
+        font.pixelSize: Theme.fontSmall
+        font.weight: Font.Normal
+    }
+
     Rectangle {
         id: panel
-        width: 160
+        width: root.panelWidth
         height: column.implicitHeight + 12
         radius: Theme.panelRadius
         color: Theme.surfaceFloating
@@ -86,22 +106,30 @@ Item {
 
                 delegate: Rectangle {
                     width: column.width
-                    height: 34
-                    radius: 6
+                    height: 36
+                    radius: Theme.controlRadius
                     readonly property bool highlighted: index === root.activeIndex
                     color: (itemArea.containsMouse || highlighted) && modelData.enabled !== false
-                        ? Theme.panelAlt : "transparent"
+                        ? Theme.selected : "transparent"
                     opacity: modelData.enabled === false ? 0.4 : 1
+
+                    AppIcon {
+                        x: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: modelData.icon || ""
+                        size: 16
+                        color: modelData.enabled === false ? Theme.textHint : Theme.textSecondary
+                    }
 
                     Text {
                         anchors.left: parent.left
-                        anchors.leftMargin: 10
+                        anchors.leftMargin: modelData.icon ? 32 : 10
                         anchors.right: parent.right
-                        anchors.rightMargin: 8
+                        anchors.rightMargin: modelData.icon ? 4 : 8
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.text || ""
                         color: Theme.textPrimary
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSmall
                         elide: Text.ElideRight
                     }
 

@@ -13,7 +13,7 @@ Rectangle {
     readonly property string label: kind === "settings" ? "设置" : kind === "chat" ? "聊天" : "联系人"
     signal clicked()
 
-    width: showLabel ? 60 : 52
+    width: showLabel ? 56 : 52
     height: showLabel ? 58 : 52
     radius: 12
     activeFocusOnTab: true
@@ -27,7 +27,7 @@ Rectangle {
     Keys.onSpacePressed: root.clicked()
     Keys.onReturnPressed: root.clicked()
 
-    Behavior on color { ColorAnimation { duration: 120 } }
+    // 透明到 spineHover 做颜色插值会闪过一层灰，直接切换
 
     // 选中线：只占按钮左侧，和列表选中态是同一套语言
     Rectangle {

@@ -22,9 +22,11 @@ Rectangle {
                                       : _danger ? _dangerBg
                                       : _outline ? "transparent"
                                       : variant === "secondary" ? Theme.panelAlt : Theme.primary
+    // 悬停底色统一用 selected：和列表行、设置行的悬停是同一块颜色，
+    // 描边按钮不再单独变成 panelAlt
     readonly property color _bgHover: _danger ? _dangerHover
-                                     : variant === "secondary" ? Theme.selected
-                                     : _outline ? Theme.panelAlt : Theme.primaryHover
+                                     : (variant === "secondary" || _outline) ? Theme.selected
+                                     : Theme.primaryHover
     readonly property color _bgPressed: _danger ? _dangerHover
                                        : variant === "secondary" ? Theme.selected
                                        : _outline ? Theme.selected : Theme.primaryPressed
@@ -46,7 +48,8 @@ Rectangle {
     Accessible.onPressAction: if (enabled && !busy) clicked()
     Keys.onReturnPressed: if (!busy) clicked()
     Keys.onSpacePressed: if (!busy) clicked()
-    Behavior on color { ColorAnimation { duration: 140 } }
+    // 描边按钮的底色是透明，插值到纸色会先闪一层灰；只保留实色变体的过渡
+    Behavior on color { enabled: !root._outline; ColorAnimation { duration: 140 } }
     Behavior on scale { NumberAnimation { duration: 110 } }
 
     // 文字与图标作为一组居中，图标为空时不占宽度

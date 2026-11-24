@@ -110,10 +110,10 @@ Popup {
         showTimer.start()
 
     background: Rectangle {
-        color: Theme.dark ? "#202B35" : "#1B2A38"
+        color: Theme.tooltipBg
         radius: 8
         border.width: 1
-        border.color: Theme.dark ? "#34414D" : "#2A3B4C"
+        border.color: Theme.tooltipBorder
     }
 
     contentItem: Text {
@@ -121,9 +121,10 @@ Popup {
         width: root.availableWidth
         text: root.text
         textFormat: Text.PlainText
-        color: Theme.dark ? "#E9EEF3" : "#F7F3E9"
+        color: Theme.tooltipText
         font.pixelSize: Theme.fontSmall
         font.weight: Font.Medium
+        horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         lineHeight: 1.3
         verticalAlignment: Text.AlignVCenter

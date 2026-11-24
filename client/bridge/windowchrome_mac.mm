@@ -29,6 +29,7 @@ void WindowChrome::apply(QWindow *window, bool dark)
         return;
 
     nsWindow.titleVisibility = NSWindowTitleHidden;
-    // 手动切到深色而系统仍是浅色时，标题栏也要跟着变深，避免白条压在深色窗口上
-    nsWindow.appearance = dark ? [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua] : nil;
+    // 必须显式给 Aqua：nil 的含义是“跟随系统”，系统深色时会把浅色应用画成深灰标题栏
+    nsWindow.appearance = dark ? [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]
+                               : [NSAppearance appearanceNamed:NSAppearanceNameAqua];
 }

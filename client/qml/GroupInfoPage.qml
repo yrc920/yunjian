@@ -340,19 +340,12 @@ Item {
                     font.pixelSize: Theme.fontSmall
                     font.weight: Font.Medium
                 }
-                Text {
+                AppLink {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     visible: root.memberCount > 0
                     text: "邀请好友"
-                    color: Theme.primary
-                    font.pixelSize: Theme.fontSmall
-                    MouseArea {
-                        anchors.fill: parent
-                        anchors.margins: -8
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: invitePopup.openWith(root.inviteCandidates())
-                    }
+                    onClicked: invitePopup.openWith(root.inviteCandidates())
                 }
             }
 
@@ -464,17 +457,10 @@ Item {
                 width: parent.width
                 spacing: 4
 
-                Text {
+                AppLink {
                     text: root.isOwner ? "解散群聊" : "退出群聊"
-                    color: Theme.danger
-                    font.pixelSize: Theme.fontSmall
-                    font.weight: Font.Medium
-                    MouseArea {
-                        anchors.fill: parent
-                        anchors.margins: -6
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.isOwner ? dismissConfirm.ask() : leaveConfirm.ask()
-                    }
+                    danger: true
+                    onClicked: root.isOwner ? dismissConfirm.ask() : leaveConfirm.ask()
                 }
                 Text {
                     width: parent.width
@@ -750,7 +736,7 @@ Item {
                 AppButton {
                     width: (parent.width - 12) / 2
                     height: 40
-                    text: root.batchSaving ? "保存中" : "保存"
+                    text: root.batchSaving ? "正在保存…" : "保存"
                     busy: root.batchSaving
                     onClicked: {
                         const name = editProfile.draftName.trim()
@@ -877,7 +863,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 20
                         height: 20
-                        radius: 5
+                        radius: 4
                         color: invitePopup.selected.indexOf(modelData.uid) >= 0
                             ? Theme.primary : "transparent"
                         border.width: 1

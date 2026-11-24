@@ -32,7 +32,7 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: "注册后就能添加联系人、开始对话。"
+            text: "先取个名字，再去找想写信的人。"
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
@@ -86,7 +86,7 @@ Item {
             CodeButton {
                 Layout.preferredWidth: 112
                 text: bridge.countdown > 0 ? bridge.countdown + " 秒后重发"
-                                           : (bridge.codeBusy ? "发送中…" : "获取验证码")
+                                           : (bridge.codeBusy ? "正在发送…" : "获取验证码")
                 usable: bridge.countdown === 0 && !bridge.codeBusy && !bridge.busy && !bridge.done
                 onClicked: bridge.sendCode()
             }

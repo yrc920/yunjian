@@ -58,7 +58,7 @@ Column {
             delegate: Rectangle {
                 width: Math.min(selectedFlow.width, selectedText.implicitWidth + 42)
                 height: 29
-                radius: 5
+                radius: Theme.controlRadius
                 color: Theme.selected
                 Text {
                     id: selectedText
@@ -112,7 +112,7 @@ Column {
                 readonly property bool chosen: root.tags.indexOf(modelData) >= 0
                 width: presetLabel.implicitWidth + 22
                 height: 29
-                radius: 5
+                radius: Theme.controlRadius
                 color: chosen ? Theme.selected : Theme.panelAlt
                 border.width: 1
                 border.color: chosen ? Theme.primary : "transparent"

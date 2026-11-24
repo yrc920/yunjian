@@ -16,11 +16,11 @@ Item {
             anchors.fill: parent
             color: Theme.desk
         },
-        // 返回登录：固定在卡片左上角，不随表单滚动
+        // 返回登录：固定在卡片左上角，与表单共用 32px 内缘
         Item {
             visible: root.backVisible
             x: 30
-            y: 26
+            y: 22
             width: backLabel.implicitWidth + 30
             height: 32
             z: 2
@@ -68,8 +68,8 @@ Item {
         Flickable {
             id: scroll
             anchors.fill: card
-            // 登录页没有返回链接，不必为返回区留高度；注册/找回保留
-            anchors.topMargin: root.backVisible ? 40 : 24
+            // 三页共用同一顶距：表单自己居中，返回链接只占页眉，不再把内容整体推低
+            anchors.topMargin: 24
             clip: true
             contentWidth: width
             contentHeight: Math.max(height, column.y + column.height + 16)

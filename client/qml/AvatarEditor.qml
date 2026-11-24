@@ -184,7 +184,7 @@ Popup {
                     Text {
                         text: "聊天中的样子"
                         color: Theme.textHint
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontCaption
                     }
                     Avatar { width: 36; height: 36; source: cropper.previewSource; name: "" }
                 }
@@ -217,7 +217,7 @@ Popup {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "拖动选框移动 · 拖动边角调整大小"
                     color: Theme.textHint
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontCaption
                 }
             }
 

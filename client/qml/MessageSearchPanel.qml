@@ -15,15 +15,15 @@ FocusScope {
     property bool open: false
     property double currentThreadId: 0
     property int currentKind: 1
-    //范围：默认全部会话；打开时重置
-    property bool currentOnly: false
+    //范围：默认只搜当前会话（从聊天页进来时一定有），没有当前会话才退到全部
+    property bool currentOnly: true
     readonly property string query: input.text.trim()
     readonly property int resultCount: controller ? controller.messageSearchCount : 0
     signal closeRequested()
 
     onOpenChanged: {
         if (open) {
-            currentOnly = false
+            currentOnly = currentThreadId > 0
             input.setText("")
             if (controller)
                 controller.clearMessageSearch()
@@ -147,25 +147,8 @@ FocusScope {
                 width: 78
                 height: 28
                 radius: 14
-                color: !root.currentOnly ? Theme.selected : "transparent"
-                border.width: 1
-                border.color: !root.currentOnly ? Theme.primary : Theme.line
-                Text {
-                    anchors.centerIn: parent
-                    text: "全部会话"
-                    font.pixelSize: Theme.fontCaption
-                    color: !root.currentOnly ? Theme.primary : Theme.textSecondary
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.chooseScope(false)
-                }
-            }
-            Rectangle {
-                width: 78
-                height: 28
-                radius: 14
+                enabled: root.currentThreadId > 0
+                opacity: enabled ? 1 : 0.45
                 color: root.currentOnly ? Theme.selected : "transparent"
                 border.width: 1
                 border.color: root.currentOnly ? Theme.primary : Theme.line
@@ -179,6 +162,25 @@ FocusScope {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.chooseScope(true)
+                }
+            }
+            Rectangle {
+                width: 78
+                height: 28
+                radius: 14
+                color: !root.currentOnly ? Theme.selected : "transparent"
+                border.width: 1
+                border.color: !root.currentOnly ? Theme.primary : Theme.line
+                Text {
+                    anchors.centerIn: parent
+                    text: "全部会话"
+                    font.pixelSize: Theme.fontCaption
+                    color: !root.currentOnly ? Theme.primary : Theme.textSecondary
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.chooseScope(false)
                 }
             }
             Text {
@@ -229,10 +231,11 @@ FocusScope {
             clip: true
             spacing: 2
             model: root.controller ? root.controller.messageSearchResults : []
-            ScrollBar.vertical: ScrollBar {}
+            // 右侧留 12px 给滚动条，行与时间都不被压住
+            ScrollBar.vertical: ScrollBar { width: 8 }
 
             delegate: Rectangle {
-                width: ListView.view.width
+                width: ListView.view.width - 12
                 height: 66
                 radius: 8
                 color: rowArea.containsMouse ? Theme.selected : "transparent"
@@ -250,7 +253,7 @@ FocusScope {
                         text: modelData.threadTitle
                         textFormat: Text.PlainText
                         font.pixelSize: Theme.fontSmall
-                        font.bold: true
+                        font.weight: Font.Medium
                         color: Theme.textPrimary
                         elide: Text.ElideRight
                     }
@@ -290,6 +293,12 @@ FocusScope {
                 }
             }
         }
+    }
+
+    //面板空白区吞掉滚轮；结果列表自己的滚动仍交给 Flickable，聊天页由 ChatPage 锁住
+    WheelHandler {
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        blocking: true
     }
 
     //输入防抖：连续打字只查最后一次

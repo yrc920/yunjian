@@ -78,7 +78,7 @@ Item {
         Item {
             id: body
             x: root.inset
-            y: 36
+            y: 32
             width: root.contentWidth
             height: identityBlock.height + 28 + fields.height
 
@@ -111,7 +111,7 @@ Item {
                             text: root.display
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
-                            font.pixelSize: 20
+                            font.pixelSize: Theme.fontDisplay
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
@@ -157,19 +157,12 @@ Item {
                             text: "发消息"
                             onClicked: root.chatRequested()
                         }
-                        Text {
+                        AppLink {
                             height: 32
                             verticalAlignment: Text.AlignVCenter
                             text: "编辑备注"
-                            color: Theme.primary
-                            font.pixelSize: Theme.fontSmall
                             visible: root.friend
-                            MouseArea {
-                                anchors.fill: parent
-                                anchors.margins: -6
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.editRelationRequested()
-                            }
+                            onClicked: root.editRelationRequested()
                         }
                     }
                 }
@@ -261,17 +254,11 @@ Item {
                     visible: root.friend
                     spacing: 4
 
-                    Text {
+                    AppLink {
                         text: "删除好友"
-                        color: Theme.danger
-                        font.pixelSize: Theme.fontSmall
+                        danger: true
                         font.weight: Font.Medium
-                        MouseArea {
-                            anchors.fill: parent
-                            anchors.margins: -6
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.deleteRequested()
-                        }
+                        onClicked: root.deleteRequested()
                     }
                     Text {
                         text: "对方不会收到通知，聊天记录仍会保留在这台设备。"

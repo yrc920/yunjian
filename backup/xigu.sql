@@ -1,4 +1,4 @@
--- XiguChat 数据库快照（含演示数据）
+-- XiguChat 数据库快照：仅 5 个演示账号，无好友/申请/会话/消息
 -- 适用：MySQL 8.0+ / 9.x，字符集 utf8mb4
 -- 导入：mysql -uroot -p xigu < backup/xigu.sql
 --
@@ -165,29 +165,8 @@ INSERT INTO `user` (`uid`,`name`,`email`,`pwd`,`nick`,`desc`,`sex`,`icon`) VALUE
 (1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$gNlpRDd7H5TFIwsvI/uZVQ$sh+mt+qXh0xQ0fA5Ij1E75KRnWrUVl4MMlFihDbccUs','','',0,''),
 (1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');
 
-INSERT INTO `friend` (`self_id`,`friend_id`,`back`,`tags`) VALUES
-(1003,1004,'','["朋友"]'),
-(1004,1003,'','[]');
-
-INSERT INTO `friend_apply` (`id`,`from_uid`,`to_uid`,`status`,`descs`,`back_name`,`tags`) VALUES
-(1,1003,1004,1,'你好，我是test1','','[]');
-
-INSERT INTO `conversation` (`thread_id`,`thread_type`,`dm_key`,`name`,`owner_id`,`state`,`dissolved_at`,`notice`,`last_message_id`,`last_message_at`,`created_at`) VALUES
-(1,1,'1003:1004','',0,0,NULL,'',9,'2026-11-16 13:17:47','2026-11-16 13:00:58');
-
-INSERT INTO `conversation_member` (`thread_id`,`uid`,`role`,`nickname`,`muted`,`last_read_message_id`,`joined_at`) VALUES
-(1,1003,0,'',0,7,'2026-11-16 13:00:58'),
-(1,1004,0,'',0,6,'2026-11-16 13:00:58');
-
-INSERT INTO `chat_message` (`message_id`,`thread_id`,`sender_id`,`recv_id`,`client_msg_id`,`content`,`created_at`,`state`,`upload_state`,`msg_type`,`mentions`) VALUES
-(1,1,1003,1004,'friend-welcome-1003-1004-1794834058','你好，我是test1','2026-11-16 13:00:58',0,1,0,''),
-(2,1,1004,1003,'friend-welcome-1004-1003-1794834058','好友验证通过了，随时可以找我聊天','2026-11-16 13:00:58',0,1,0,''),
-(3,1,1004,1003,'{13896843-b65f-44bf-bed3-5fe2bd1c35ce}','你好','2026-11-16 13:01:26',0,1,0,''),
-(4,1,1004,1003,'{577d250f-6787-48c5-9094-85e23f46fd57}','1','2026-11-16 13:03:09',0,1,0,''),
-(5,1,1003,1004,'{1bf81bba-2f25-46b7-add5-dedabc34efac}','1','2026-11-16 13:04:18',0,1,0,''),
-(6,1,1004,1003,'{07ea059e-2b5c-4692-a1a7-69a2ff11a485}','123','2026-11-16 13:04:34',0,1,0,''),
-(7,1,1003,1004,'{ce676104-135b-4c49-bae9-104d9054ffa7}','123','2026-11-16 13:04:44',0,1,0,''),
-(9,1,1003,1004,'{92f6e99a-b5b5-40cd-9d3a-acc6ac3327a6}','1','2026-11-16 13:17:47',0,1,0,'');
+-- 种子库只保留 5 个演示账号；好友、申请、会话、消息均为空，
+-- 需要关系时由客户端重新发起申请，避免洗库后自带好友。
 
 SET FOREIGN_KEY_CHECKS = 1;
 SET UNIQUE_CHECKS = 1;

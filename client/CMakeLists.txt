@@ -196,6 +196,7 @@ set(BRIDGE_SOURCES
     bridge/friendlistmodel.cpp
     bridge/grouplistmodel.cpp
     bridge/conversationmodel.cpp
+    bridge/conversationfiltermodel.cpp
     bridge/applylistmodel.cpp
     bridge/messagemodel.cpp
     bridge/composerbridge.cpp
@@ -218,6 +219,7 @@ set(BRIDGE_HEADERS
     bridge/friendlistmodel.h
     bridge/grouplistmodel.h
     bridge/conversationmodel.h
+    bridge/conversationfiltermodel.h
     bridge/applylistmodel.h
     bridge/messagemodel.h
     bridge/composerbridge.h
@@ -261,6 +263,8 @@ set_source_files_properties(qml/AuthDraft.qml PROPERTIES QT_QML_SINGLETON_TYPE T
 set(QML_FILES
     qml/Main.qml
     qml/Theme.qml
+    qml/ThemePreview.qml
+    qml/ThemePreviewScene.qml
     qml/Emoji.qml
     qml/AuthDraft.qml
     qml/AppIcon.qml
@@ -283,7 +287,6 @@ set(QML_FILES
     qml/TagFilterPopover.qml
     qml/SearchField.qml
     qml/AddFriendPopover.qml
-    qml/FriendSearchPopup.qml
     qml/MessageSearchPanel.qml
     qml/ForwardDialog.qml
     qml/ChatPage.qml

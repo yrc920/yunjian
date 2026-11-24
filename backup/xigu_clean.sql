@@ -1,4 +1,4 @@
--- XiguChat 数据库快照（干净库：仅账号、好友关系与一个空会话）
+-- XiguChat 数据库快照（干净库：仅 5 个演示账号，无好友/会话/消息）
 -- 适用：MySQL 8.0+ / 9.x，字符集 utf8mb4
 -- 导入：mysql -uroot -p xigu < backup/xigu.sql
 --
@@ -165,16 +165,8 @@ INSERT INTO `user` (`uid`,`name`,`email`,`pwd`,`nick`,`desc`,`sex`,`icon`) VALUE
 (1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$gNlpRDd7H5TFIwsvI/uZVQ$sh+mt+qXh0xQ0fA5Ij1E75KRnWrUVl4MMlFihDbccUs','','',0,''),
 (1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');
 
-INSERT INTO `friend` (`self_id`,`friend_id`,`back`,`tags`) VALUES
-(1003,1004,'','["朋友"]'),
-(1004,1003,'','[]');
-
-INSERT INTO `conversation` (`thread_id`,`thread_type`,`dm_key`,`name`,`owner_id`,`state`,`dissolved_at`,`notice`,`last_message_id`,`last_message_at`,`created_at`) VALUES
-(1,1,'1003:1004','',0,0,NULL,'',0,'2026-11-16 13:00:58','2026-11-16 13:00:58');
-
-INSERT INTO `conversation_member` (`thread_id`,`uid`,`role`,`nickname`,`muted`,`last_read_message_id`,`joined_at`) VALUES
-(1,1003,0,'',0,0,'2026-11-16 13:00:58'),
-(1,1004,0,'',0,0,'2026-11-16 13:00:58');
+-- 种子库只保留 5 个演示账号；好友、申请、会话、消息均为空，
+-- 需要关系时由客户端重新发起申请，避免洗库后自带好友。
 
 SET FOREIGN_KEY_CHECKS = 1;
 SET UNIQUE_CHECKS = 1;

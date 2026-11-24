@@ -96,7 +96,7 @@ Item {
         Item {
             id: body
             x: root.inset
-            y: 36
+            y: 32
             width: root.contentWidth
             height: identityBlock.height + 28 + fields.height
 
@@ -133,7 +133,7 @@ Item {
                             text: root.controller ? root.controller.myName : ""
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
-                            font.pixelSize: 20
+                            font.pixelSize: Theme.fontDisplay
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }

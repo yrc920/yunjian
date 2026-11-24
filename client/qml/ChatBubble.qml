@@ -141,7 +141,6 @@ Item {
         color: root.bubbleColor
         border.width: root.highlighted ? 2 : (root.isSelf ? 0 : 1)
         border.color: root.highlighted ? Theme.accent : Theme.line
-        Behavior on color { ColorAnimation { duration: 160 } }
 
         TextEdit {
             id: label
@@ -359,7 +358,6 @@ Item {
     //图片右键：查看、复制、另存为；左键仍走上面的点击预览
     MouseArea {
         anchors.fill: pictureFrame
-        enabled: root.localImage
         acceptedButtons: Qt.RightButton
         onPressed: (mouse) => {
             const p = mapToItem(root, mouse.x, mouse.y)
@@ -382,7 +380,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             text: "图片"
             color: Theme.textHint
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontCaption
         }
     }
 

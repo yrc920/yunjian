@@ -57,7 +57,7 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 28
                 height: 28
-                radius: 7
+                radius: Theme.controlRadius
                 color: closeArea.containsMouse || activeFocus ? Theme.selected : "transparent"
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
@@ -93,7 +93,7 @@ Rectangle {
         AppButton {
             width: parent.width
             height: 34
-            text: root.controller.searchState === ChatBridge.SearchSearching ? "搜索中…" : "搜索"
+            text: root.controller.searchState === ChatBridge.SearchSearching ? "正在搜索…" : "搜索"
             busy: root.controller.searchState === ChatBridge.SearchSearching
             enabled: root.controller.searchText.trim().length > 0
             onClicked: root.controller.search()
@@ -240,7 +240,7 @@ Rectangle {
 
                     Text {
                         width: parent.width
-                        text: root.controller.applyMessage || "申请没有发出去，请稍后再试"
+                        text: root.controller.applyMessage || "申请没有发出去，稍后再试。"
                         textFormat: Text.PlainText
                         color: Theme.danger
                         font.pixelSize: Theme.fontCaption

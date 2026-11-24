@@ -231,7 +231,7 @@ Item {
         Rectangle {
             width: 34
             height: 30
-            radius: 7
+            radius: Theme.controlRadius
             color: zoomOut.containsMouse ? "#33FFFFFF" : "#22FFFFFF"
             Text { anchors.centerIn: parent; text: "−"; color: "#EEF3F8"; font.pixelSize: 18 }
             MouseArea {
@@ -245,13 +245,13 @@ Item {
         Rectangle {
             width: 54
             height: 30
-            radius: 7
+            radius: Theme.controlRadius
             color: zoomReset.containsMouse ? "#33FFFFFF" : "#22FFFFFF"
             Text {
                 anchors.centerIn: parent
                 text: Math.round(root.zoom * 100) + "%"
                 color: "#EEF3F8"
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontCaption
             }
             MouseArea {
                 id: zoomReset
@@ -268,9 +268,9 @@ Item {
         Rectangle {
             width: 34
             height: 30
-            radius: 7
+            radius: Theme.controlRadius
             color: zoomIn.containsMouse ? "#33FFFFFF" : "#22FFFFFF"
-            Text { anchors.centerIn: parent; text: "+"; color: "#EEF3F8"; font.pixelSize: 17 }
+            Text { anchors.centerIn: parent; text: "+"; color: "#EEF3F8"; font.pixelSize: Theme.fontTitle }
             MouseArea {
                 id: zoomIn
                 anchors.fill: parent
@@ -466,7 +466,7 @@ Item {
             anchors.centerIn: parent
             text: root.notice
             color: "#EEF3F8"
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSmall
         }
     }
 

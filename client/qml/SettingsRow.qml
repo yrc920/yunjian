@@ -12,21 +12,27 @@ Rectangle {
     property bool danger: false
     property bool showChevron: false
     property string chevronKind: "chevronRight"
+    // 只读行：整行不响应点击，右侧给一个明确的动作按钮（清理这类不可逆操作）
+    property bool actionMode: false
+    property string actionText: ""
+    signal actionTriggered()
+    readonly property bool hasAction: actionMode && actionText.length > 0
     signal clicked()
 
     width: parent ? parent.width : 0
     height: Math.max(48, labels.implicitHeight + 16)
     radius: 8
-    color: selected ? Theme.panelBg
-                    : (area.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
-    border.width: selected ? 1 : (activeFocus ? 1 : 0)
+    color: root.hasAction ? "transparent"
+           : selected ? Theme.panelBg
+                      : (area.containsMouse || activeFocus ? Theme.panelAlt : "transparent")
+    border.width: selected ? 1 : (activeFocus && !root.hasAction ? 1 : 0)
     border.color: selected ? Theme.line : Theme.focusRing
-    activeFocusOnTab: true
-    Accessible.role: Accessible.Button
+    activeFocusOnTab: !root.hasAction
+    Accessible.role: root.hasAction ? Accessible.Grouping : Accessible.Button
     Accessible.name: title
-    Accessible.onPressAction: root.clicked()
-    Keys.onReturnPressed: root.clicked()
-    Keys.onSpacePressed: root.clicked()
+    Accessible.onPressAction: if (!root.hasAction) root.clicked()
+    Keys.onReturnPressed: if (!root.hasAction) root.clicked()
+    Keys.onSpacePressed: if (!root.hasAction) root.clicked()
 
     Rectangle {
         visible: root.selected
@@ -42,7 +48,7 @@ Rectangle {
         id: labels
         x: 16
         anchors.verticalCenter: parent.verticalCenter
-        width: Math.max(0, valueText.x - x - 12)
+        width: Math.max(0, root.hasAction ? root.width - 108 : valueText.x - x - 12)
         spacing: root.subtitle.length > 0 ? 3 : 0
 
         Text {
@@ -66,7 +72,7 @@ Rectangle {
     Text {
         id: valueText
         width: root.value.length > 0 ? Math.min(implicitWidth, root.width * 0.34) : 0
-        visible: root.value.length > 0
+        visible: !root.hasAction && root.value.length > 0
         anchors.right: root.showChevron ? chevron.left : parent.right
         anchors.rightMargin: root.showChevron ? 8 : 16
         anchors.verticalCenter: parent.verticalCenter
@@ -75,6 +81,18 @@ Rectangle {
         color: Theme.textSecondary
         font.pixelSize: Theme.fontCaption
         elide: Text.ElideRight
+    }
+
+    AppButton {
+        visible: root.hasAction
+        anchors.right: parent.right
+        anchors.rightMargin: 16
+        anchors.verticalCenter: parent.verticalCenter
+        width: 64
+        height: 32
+        text: root.actionText
+        variant: "outline"
+        onClicked: root.actionTriggered()
     }
 
     AppIcon {
@@ -92,7 +110,8 @@ Rectangle {
         id: area
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
+        enabled: !root.hasAction
+        cursorShape: root.hasAction ? Qt.ArrowCursor : Qt.PointingHandCursor
         onClicked: {
             root.forceActiveFocus(Qt.MouseFocusReason)
             root.clicked()

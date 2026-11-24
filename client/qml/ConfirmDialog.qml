@@ -8,7 +8,7 @@ Popup {
 
     property string title: ""
     property string body: ""
-    property string confirmText: "确定"
+    property string confirmText: "继续"
     property string cancelText: "取消"
     property bool danger: false
     property bool busy: false
@@ -78,10 +78,11 @@ Popup {
             width: parent.width
             spacing: 12
 
-            CodeButton {
+            AppButton {
                 id: cancelButton
                 width: (parent.width - 12) / 2
                 height: 40
+                variant: "secondary"
                 text: root.cancelText
                 onClicked: root.close()
             }
@@ -90,7 +91,7 @@ Popup {
                 width: (parent.width - 12) / 2
                 height: 40
                 variant: root.danger ? "danger" : "primary"
-                text: root.busy ? "处理中" : root.confirmText
+                text: root.busy ? "正在处理…" : root.confirmText
                 busy: root.busy
                 onClicked: {
                     if (root.busy)

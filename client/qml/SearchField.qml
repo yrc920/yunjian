@@ -19,7 +19,7 @@ Rectangle {
     radius: Theme.controlRadius
     color: Theme.fieldBg
     border.width: 1
-    border.color: input.activeFocus || clearButton.activeFocus ? Theme.focusRing : Theme.lineSoft
+    border.color: input.activeFocus || clearButton.activeFocus ? Theme.focusRing : Theme.fieldBorder
 
     function forceInputFocus() {
         input.forceActiveFocus()
@@ -52,7 +52,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         height: 28
         verticalAlignment: TextInput.AlignVCenter
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontBody
         color: Theme.textPrimary
         selectionColor: Theme.selected
         selectedTextColor: Theme.textPrimary
@@ -75,7 +75,8 @@ Rectangle {
         visible: input.length === 0 && !input.inputMethodComposing
         text: root.placeholder
         color: Theme.textHint
-        font.pixelSize: 13
+        // 占位比输入文字小一档：14 在 36 高的框里显得压不住
+        font.pixelSize: Theme.fontSmall
     }
 
     Rectangle {
@@ -86,7 +87,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         width: 26
         height: 26
-        radius: 6
+        radius: Theme.controlRadius
         color: clearArea.containsMouse || activeFocus ? Theme.selected : "transparent"
         activeFocusOnTab: visible
         Accessible.role: Accessible.Button

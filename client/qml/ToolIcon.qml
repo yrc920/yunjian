@@ -16,7 +16,7 @@ Rectangle {
 
     width: 32
     height: 32
-    radius: 7
+    radius: Theme.controlRadius
     activeFocusOnTab: usable
     color: usable && (area.containsMouse || activeFocus) ? Theme.panelAlt : "transparent"
     opacity: usable ? 1 : 0.42

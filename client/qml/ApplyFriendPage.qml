@@ -26,17 +26,17 @@ Item {
         id: requests
         anchors.top: header.bottom
         anchors.bottom: parent.bottom
-        anchors.topMargin: 14
+        anchors.topMargin: 6
         anchors.bottomMargin: 16
-        x: 22
-        width: parent.width - 44
+        x: 10
+        width: parent.width - 20
         model: root.applies
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
         delegate: Rectangle {
             width: requests.width
-            height: 92
+            height: 80
             color: hover.hovered ? Theme.panelAlt : "transparent"
             HoverHandler { id: hover }
 
@@ -154,6 +154,13 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             color: Theme.textSecondary
             font.pixelSize: Theme.fontBody
+        }
+        Text {
+            width: parent.width
+            text: "有人想加你时，会先到这里。"
+            horizontalAlignment: Text.AlignHCenter
+            color: Theme.textHint
+            font.pixelSize: Theme.fontSmall
         }
     }
 }

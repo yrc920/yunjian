@@ -12,7 +12,7 @@ Rectangle {
     border.width: activeFocus ? 1 : 0
     border.color: Theme.primary
     activeFocusOnTab: usable
-    opacity: usable ? 1 : 0.5
+    opacity: usable ? 1 : 0.6
     Accessible.role: Accessible.Button
     Accessible.name: text
     Keys.onReturnPressed: if (usable) clicked()

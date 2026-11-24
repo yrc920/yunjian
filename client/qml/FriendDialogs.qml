@@ -25,7 +25,7 @@ FocusScope {
 
     // 标题与主按钮文案由 overlay 推导，申请和通过共用一套骨架
     readonly property string heading: overlay === "apply" ? "添加朋友" : "通过好友申请"
-    readonly property string actionText: overlay === "apply" ? "发送申请" : "同意添加"
+    readonly property string actionText: overlay === "apply" ? "发送申请" : "通过"
 
     function closeDialog() {
         overlay = ""
@@ -196,7 +196,7 @@ FocusScope {
                             text: root.pendingName
                             textFormat: Text.PlainText
                             color: Theme.textPrimary
-                            font.pixelSize: 17
+                            font.pixelSize: Theme.fontTitle
                             font.weight: Font.DemiBold
                             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                         }

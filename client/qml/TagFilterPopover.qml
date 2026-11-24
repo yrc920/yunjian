@@ -80,7 +80,7 @@ Item {
                     id: rowItem
                     width: listColumn.width
                     height: root.rowHeight
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: rowArea.containsMouse ? Theme.selected : "transparent"
                     readonly property bool chosen: root.controller.tagFilter === modelData.tag
 

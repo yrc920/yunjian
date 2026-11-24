@@ -11,6 +11,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include "applylistmodel.h"
+#include "conversationfiltermodel.h"
 #include "conversationmodel.h"
 #include "friendlistmodel.h"
 #include "grouplistmodel.h"
@@ -38,6 +39,8 @@ class ChatBridge : public QObject
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(ConversationModel *conversations READ conversations CONSTANT)
+    // 聊天列表用过滤视图；转发等场景继续用完整 conversations
+    Q_PROPERTY(ConversationFilterModel *filteredConversations READ filteredConversations CONSTANT)
     Q_PROPERTY(FriendListModel *friends READ friends CONSTANT)
     Q_PROPERTY(GroupListModel *groups READ groups CONSTANT)
     Q_PROPERTY(ApplyListModel *applies READ applies CONSTANT)
@@ -85,8 +88,6 @@ class ChatBridge : public QObject
     Q_PROPERTY(int messageSearchCount READ messageSearchCount NOTIFY messageSearchChanged)
     Q_PROPERTY(qint64 scrollToMessageId READ scrollToMessageId NOTIFY scrollToMessageChanged)
     Q_PROPERTY(bool addFriendOpen READ addFriendOpen NOTIFY addFriendOpenChanged)
-    Q_PROPERTY(QString friendQuery READ friendQuery WRITE setFriendQuery NOTIFY friendQueryChanged)
-    Q_PROPERTY(QVariantList friendMatches READ friendMatches NOTIFY friendMatchesChanged)
     Q_PROPERTY(int applyState READ applyState NOTIFY applyStateChanged)
     Q_PROPERTY(QString applyMessage READ applyMessage NOTIFY applyStateChanged)
     Q_PROPERTY(bool avatarUploading READ avatarUploading NOTIFY avatarSyncChanged)
@@ -127,6 +128,7 @@ public:
     explicit ChatBridge(QObject *parent = nullptr);
 
     ConversationModel *conversations() const { return _conversations; }
+    ConversationFilterModel *filteredConversations() const { return _filteredConversations; }
     FriendListModel *friends() const { return _friends; }
     GroupListModel *groups() const { return _groups; }
     ApplyListModel *applies() const { return _applies; }
@@ -215,11 +217,6 @@ public:
     Q_INVOKABLE void openAddFriend();
     Q_INVOKABLE void closeAddFriend();
 
-    // 聊天页的好友过滤：只匹配名字与昵称，不触发服务端搜索
-    QString friendQuery() const { return _friendQuery; }
-    void setFriendQuery(const QString &query);
-    QVariantList friendMatches() const { return _friendMatches; }
-    Q_INVOKABLE void clearFriendSearch();
 
     // 申请发送状态：浮层显示「发送中 / 已发送 / 失败」
     int applyState() const { return _applyState; }
@@ -254,6 +251,8 @@ public:
     Q_INVOKABLE void openChat(int uid);
     // 打开群聊：thread_id 已经确定，不再走建会话请求
     Q_INVOKABLE void openGroup(qint64 threadId);
+    // 再次点击当前会话：收起聊天回到空态；草稿与历史仍在本机，重新点开可恢复
+    Q_INVOKABLE void clearConversation();
     //通知点击：按会话类型回到对应聊天；私聊优先用 peer uid，兼容还没有 thread_id 的老数据
     Q_INVOKABLE void openThread(qint64 threadId, int kind, int peerUid);
     //多选转发：keys 是 {msgId, messageId} 列表，返回实际发出的条数
@@ -306,6 +305,8 @@ public:
     Q_INVOKABLE void openGroupInfo();
     //联系人页点群行：先切到该群，再进群资料，不经过聊天页
     Q_INVOKABLE void openGroupInfoFor(qint64 threadId);
+    // 再次点击已选中的好友/群：右侧回到联系人空态，左侧列表不动
+    Q_INVOKABLE void clearContactSelection();
     //从联系人里的群资料退回联系人列表（不切到聊天）
     Q_INVOKABLE void backToContactList();
     //从群资料页回到会话，不重置消息模型与滚动位置
@@ -336,6 +337,8 @@ public:
     Q_INVOKABLE bool copyText(const QString &text);
     //优先复制完整图片，缺失时退回气泡里的 data/file URL
     Q_INVOKABLE bool copyImage(qint64 messageId, const QUrl &fallback = {});
+    //视频/文件：把本地文件放进剪贴板，粘贴到 Finder/资源管理器即可
+    Q_INVOKABLE bool copyResourceFile(qint64 messageId);
     //当前会话可查看的图片与已下载视频，按消息顺序排列，供查看器左右切换
     Q_INVOKABLE QVariantList mediaItems();
     Q_INVOKABLE void search();
@@ -372,8 +375,6 @@ signals:
     void messageSearchChanged();
     void scrollToMessageChanged();
     void addFriendOpenChanged();
-    void friendQueryChanged();
-    void friendMatchesChanged();
     void applyStateChanged();
     void avatarSyncChanged();
     //资料与备注的保存状态；成功后 QML 关闭弹层，失败时保留表单并显示 message
@@ -410,7 +411,6 @@ private:
     void refreshFriendSnapshot(int uid);
     //按好友当前数据重建资料页快照，openProfile 与刷新共用
     void rebuildProfile(const std::shared_ptr<FriendInfo> &info);
-    void rebuildFriendMatches();
     void setApplyState(int state, const QString &message = {});
     void setGroupState(bool busy, const QString &message);
     void processPendingSaves(); //消息下载完成后处理排队的另存为
@@ -419,6 +419,7 @@ private:
     ConversationRef currentConversation() const;
 
     ConversationModel *_conversations = nullptr;
+    ConversationFilterModel *_filteredConversations = nullptr;
     FriendListModel *_friends = nullptr;
     GroupListModel *_groups = nullptr;
     ApplyListModel *_applies = nullptr;
@@ -466,8 +467,6 @@ private:
     qint64 _pendingGroupThread = 0;
     QString _pendingGroupIconPath;
     bool _addFriendOpen = false;
-    QString _friendQuery;
-    QVariantList _friendMatches;
 
     // 最近一次申请的目标与文案，失败重试时原样再发
     int _applyUid = 0;

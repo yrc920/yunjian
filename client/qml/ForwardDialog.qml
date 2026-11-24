@@ -76,8 +76,11 @@ FocusScope {
     Rectangle {
         id: panel
         anchors.centerIn: parent
-        width: Math.min(420, parent.width - 48)
-        height: Math.min(520, parent.height - 40)
+        width: Math.min(440, parent.width - 48)
+        // 高度跟着收件人数走：两三个人时不留一整块空列表；超过 5 行再滚动
+        readonly property int visibleRows: Math.min(5, Math.max(1, root.filteredRows.length))
+        // 加上列表底部 10 的内边距，正好放下 N 行，不出多余滚动条；5 行以内不滚动
+        height: Math.min(540, Math.max(320, 142 + visibleRows * 58 + 104))
         radius: Theme.dialogRadius
         color: Theme.surfaceFloating
         border.width: 1
@@ -91,15 +94,15 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.margins: 18
-            height: 32
+            anchors.margins: 24
+            height: 40
 
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: (root.mergeMode ? "合并转发 " : "转发 ") + root.count + " 条消息到"
                 font.pixelSize: Theme.fontTitle
-                font.bold: true
+                font.weight: Font.DemiBold
                 color: Theme.textPrimary
             }
 
@@ -107,9 +110,9 @@ FocusScope {
                 id: closeButton
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: 30
-                height: 30
-                radius: 6
+                width: 32
+                height: 32
+                radius: Theme.controlRadius
                 color: closeArea.containsMouse ? Theme.panelAlt : "transparent"
                 AppIcon {
                     anchors.centerIn: parent
@@ -132,9 +135,9 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: head.bottom
-            anchors.leftMargin: 18
-            anchors.rightMargin: 18
-            anchors.topMargin: 12
+            anchors.leftMargin: 24
+            anchors.rightMargin: 24
+            anchors.topMargin: 8
             placeholder: "搜索会话"
             inputObjectName: "forwardSearchInput"
             Keys.onDownPressed: root.focusRow(0)
@@ -157,8 +160,8 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: input.bottom
-            anchors.leftMargin: 18
-            anchors.rightMargin: 18
+            anchors.leftMargin: 24
+            anchors.rightMargin: 24
             anchors.topMargin: 10
             height: 1
             color: Theme.line
@@ -168,7 +171,7 @@ FocusScope {
             anchors.centerIn: list
             visible: root.filteredRows.length === 0
             text: root.filter.length > 0 ? "没有匹配的会话" : "还没有可转发的会话"
-            font.pixelSize: Theme.fontCaption
+            font.pixelSize: Theme.fontSmall
             color: Theme.textHint
         }
 
@@ -178,8 +181,8 @@ FocusScope {
             anchors.right: parent.right
             anchors.top: divider.bottom
             anchors.bottom: footer.top
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
             anchors.topMargin: 6
             anchors.bottomMargin: 10
             clip: true
@@ -189,8 +192,8 @@ FocusScope {
 
             delegate: Rectangle {
                 width: ListView.view.width
-                height: 54
-                radius: 8
+                height: 56
+                radius: Theme.controlRadius
                 color: root.recipient && root.recipient.threadId === modelData.threadId
                     ? Theme.selected : rowArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
                 activeFocusOnTab: true
@@ -212,8 +215,8 @@ FocusScope {
                     anchors.left: parent.left
                     anchors.leftMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 34
-                    height: 34
+                    width: 36
+                    height: 36
                     group: modelData.kind === 2
                     showGroupBadge: false
                     textSize: 13
@@ -232,7 +235,7 @@ FocusScope {
                         width: parent.width
                         text: modelData.displayName || ""
                         textFormat: Text.PlainText
-                        font.pixelSize: Theme.fontSmall
+                        font.pixelSize: Theme.fontBody
                         color: Theme.textPrimary
                         elide: Text.ElideRight
                     }
@@ -264,7 +267,7 @@ FocusScope {
             height: 104
             Rectangle { width: parent.width; height: 1; color: Theme.lineSoft }
             Text {
-                x: 20; y: 12; width: parent.width - 40
+                x: 24; y: 12; width: parent.width - 48
                 text: root.recipient ? "发送给：" + root.recipient.displayName : "选择一个收件人"
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
@@ -272,7 +275,7 @@ FocusScope {
                 color: Theme.textSecondary
             }
             Row {
-                x: 20; y: 40; width: parent.width - 40; spacing: 12
+                x: 24; y: 40; width: parent.width - 48; spacing: 12
                 AppButton {
                     width: (parent.width - 12) / 2; height: 40
                     text: "取消"; variant: "secondary"

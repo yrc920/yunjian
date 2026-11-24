@@ -16,8 +16,7 @@ Rectangle {
     // 小尺寸只放一个字：34px 以下两个方字会挤在一起
     readonly property int fallbackChars: group ? (width >= 40 ? 2 : 1) : 1
 
-    // 名字/种子派生色相：只动色相，饱和度与明度固定在浅色纸片范围，
-    // 保证深色模式下的字仍然可读
+    // 名字/种子派生色相：只动色相，饱和度与明度固定；深色抬到 .42，避免群头像变成脏色块
     function hueOf(text) {
         let hash = 0
         for (let i = 0; i < text.length; ++i)
@@ -27,7 +26,7 @@ Rectangle {
 
     radius: width * 0.24
     color: group
-        ? Qt.hsla(hueOf(name), 0.30, Theme.dark ? 0.36 : 0.78, 1)
+        ? Qt.hsla(hueOf(name), 0.30, Theme.dark ? 0.42 : 0.78, 1)
         : Theme.selected
 
     Text {

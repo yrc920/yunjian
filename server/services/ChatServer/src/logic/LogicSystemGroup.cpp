@@ -182,7 +182,7 @@ void LogicSystem::CreateGroup(std::shared_ptr<CSession> session,
 		auto self = MysqlDao::GetInstance()->GetUser(uid);
 		const std::string actor = self ? (self->nick.empty() ? self->name : self->nick)
 			: std::to_string(uid);
-		return actor + " 创建了群聊，快和大家打个招呼吧";
+		return actor + " 创建了群聊";
 	}();
 	ChatMessageInfo message;
 	if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid, text, message)) {
@@ -429,7 +429,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 
 		std::vector<int> members;
 		MysqlDao::GetInstance()->GetGroupMemberIds(thread_id, members);
-		const std::string text = userName(uid) + " 邀请 " + names + " 加入了群聊";
+		const std::string text = userName(uid) + " 邀请 " + names + " 加入群聊";
 		ChatMessageInfo message;
 		Json::Value detail;
 		detail["member_count"] = member_count;
@@ -520,7 +520,7 @@ void LogicSystem::GroupMemberOp(std::shared_ptr<CSession> session,
 			PushGroupChanged(thread_id, members, uid, "members", detail);
 		ChatMessageInfo message;
 		if (MysqlDao::GetInstance()->AddGroupSystemMessage(thread_id, uid,
-			userName(uid) + " 退出了群聊", message) && !members.empty()) {
+			userName(uid) + " 退出群聊", message) && !members.empty()) {
 			Json::Value payload;
 			payload["error"] = ErrorCodes::Success;
 			payload["thread_id"] = Json::Int64(thread_id);

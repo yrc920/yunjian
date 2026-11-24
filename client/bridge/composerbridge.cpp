@@ -134,6 +134,26 @@ void ComposerBridge::clearDraft()
         UserMgr::GetInstance()->SetThreadDraft(_draftKey, QString());
 }
 
+void ComposerBridge::refreshInlineContent()
+{
+    bool has = false;
+    if (_document) {
+        for (QTextBlock block = _document->begin(); block.isValid() && !has; block = block.next()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fragment = it.fragment();
+                if (fragment.isValid() && fragment.charFormat().isImageFormat()) {
+                    has = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (has == _hasInlineContent)
+        return;
+    _hasInlineContent = has;
+    emit inlineContentChanged();
+}
+
 void ComposerBridge::setError(const QString &message)
 {
     _errorText = message;
@@ -226,6 +246,7 @@ int ComposerBridge::insertImageData(QQuickTextDocument *document, int position, 
     cursor.setPosition(qBound(0, position, document->textDocument()->characterCount() - 1));
     cursor.insertImage(format);
     _images.insert(imageKey(source), InsertedImage{upload_path, thumb.size()});
+    refreshInlineContent();
     setError({});
     return cursor.position();
 }
@@ -473,9 +494,13 @@ void ComposerBridge::switchConversation(QQuickTextDocument *document, qint64 thr
         if (_document)
             disconnect(_document, &QTextDocument::contentsChanged, this, nullptr);
         _document = doc;
-        connect(doc, &QTextDocument::contentsChanged, this, [this] { _draftTimer.start(); });
+        connect(doc, &QTextDocument::contentsChanged, this, [this] {
+            _draftTimer.start();
+            refreshInlineContent();
+        });
     }
     normalizeEmoji(document); //草稿里的连续同款表情要重新拆开
+    refreshInlineContent();
     //把这个会话上次留下的附件换回来；没有就是空列表
     _attachments = _attachment_drafts.value(key);
     emit attachmentsChanged();
@@ -508,6 +533,7 @@ int ComposerBridge::insertEmoji(QQuickTextDocument *document, int position,
     //图片顶部贴行顶；高度不超过字体行高，整行的行高与纯文字行完全一致
     format.setVerticalAlignment(QTextCharFormat::AlignTop);
     cursor.insertImage(format);
+    refreshInlineContent();
     return cursor.position();
 }
 

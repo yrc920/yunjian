@@ -10,6 +10,13 @@ Item {
     readonly property real contentWidth: Math.min(width - 96, 640)
     readonly property real inset: Math.max(48, (width - contentWidth) / 2)
 
+    // 外观三选一：预览卡读 Theme 的两套色板，和真实界面同源
+    readonly property var appearanceOptions: [
+        { value: "light", label: "浅色" },
+        { value: "dark", label: "深色" },
+        { value: "system", label: "跟随系统" }
+    ]
+
     Rectangle {
         anchors.fill: parent
         color: Theme.sheet
@@ -40,17 +47,113 @@ Item {
             Text {
                 x: 16
                 bottomPadding: 8
+                text: "外观"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+                font.weight: Font.Medium
+            }
+
+            Row {
+                id: themeRow
+                width: parent.width
+                spacing: 12
+
+                Repeater {
+                    model: root.appearanceOptions
+                    delegate: Rectangle {
+                        id: themeCard
+                        readonly property bool chosen: Theme.mode === modelData.value
+                        width: (themeRow.width - 24) / 3
+                        height: 8 + preview.height + 12 + labelText.implicitHeight + 8
+                        radius: Theme.panelRadius
+                        color: Theme.panelBg
+                        border.width: 1
+                        border.color: cardArea.containsMouse ? Theme.fieldBorder : Theme.line
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "外观：" + modelData.label
+                        Accessible.onPressAction: Theme.setMode(modelData.value)
+                        Keys.onReturnPressed: Theme.setMode(modelData.value)
+                        Keys.onSpacePressed: Theme.setMode(modelData.value)
+                        Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                        ThemePreview {
+                            id: preview
+                            x: 8
+                            y: 8
+                            width: parent.width - 16
+                            height: width * (96 / 176)
+                            mode: modelData.value
+                        }
+
+                        Text {
+                            id: labelText
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            y: preview.y + preview.height + 12
+                            text: modelData.label
+                            color: themeCard.chosen ? Theme.textPrimary : Theme.textSecondary
+                            font.pixelSize: Theme.fontSmall
+                            font.weight: themeCard.chosen ? Font.Medium : Font.Normal
+                        }
+
+                        // 选中环：2px 墨环压在卡边，不改卡片几何
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: parent.radius
+                            color: "transparent"
+                            border.width: 2
+                            border.color: themeCard.activeFocus ? Theme.focusRing : Theme.primary
+                            visible: themeCard.chosen || themeCard.activeFocus
+                        }
+
+                        // 印点：和列表选中线、蜡封同一种“标记”语言
+                        Rectangle {
+                            visible: themeCard.chosen
+                            x: preview.x + preview.width - 26
+                            y: preview.y + 8
+                            width: 18
+                            height: 18
+                            radius: 9
+                            color: Theme.primary
+                            AppIcon {
+                                anchors.centerIn: parent
+                                name: "check"
+                                size: 12
+                                color: Theme.primaryText
+                            }
+                        }
+
+                        MouseArea {
+                            id: cardArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                themeCard.forceActiveFocus(Qt.MouseFocusReason)
+                                Theme.setMode(modelData.value)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Item { width: 1; height: 32 }
+
+            Text {
+                x: 16
+                bottomPadding: 8
                 text: "本地数据"
-                color: Theme.textHint
-                font.pixelSize: Theme.fontCaption
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
                 font.weight: Font.Medium
             }
 
             SettingsRow {
                 title: "清理图片与文件"
                 subtitle: "删除这台设备保存的图片、视频和文件；再次查看会重新下载"
-                value: "清理"
-                onClicked: {
+                actionMode: true
+                actionText: "清理"
+                onActionTriggered: {
                     root.pending = "media"
                     confirm.ask()
                 }
@@ -59,8 +162,9 @@ Item {
             SettingsRow {
                 title: "清除聊天记录"
                 subtitle: "删除这台设备保存的消息与草稿；服务器与其他设备不受影响"
-                value: "清理"
-                onClicked: {
+                actionMode: true
+                actionText: "清理"
+                onActionTriggered: {
                     root.pending = "history"
                     confirm.ask()
                 }

@@ -22,12 +22,15 @@ class ComposerBridge : public QObject
     //本次待发送的视频/文件：可以一次添加多个，输入区按卡片逐条列出
     Q_PROPERTY(QVariantList attachments READ attachments NOTIFY attachmentsChanged)
     Q_PROPERTY(bool hasAttachment READ hasAttachment NOTIFY attachmentsChanged)
+    //纯图片/纯表情消息没有文本长度，发送按钮要用它判断
+    Q_PROPERTY(bool hasInlineContent READ hasInlineContent NOTIFY inlineContentChanged)
 
 public:
     explicit ComposerBridge(QObject *parent = nullptr);
     QString errorText() const { return _errorText; }
     QVariantList attachments() const { return _attachments; }
     bool hasAttachment() const { return !_attachments.isEmpty(); }
+    bool hasInlineContent() const { return _hasInlineContent; }
     Q_INVOKABLE int insertImage(QQuickTextDocument *document, int position, const QUrl &url);
     Q_INVOKABLE int paste(QQuickTextDocument *document, int position, int selectionEnd);
     //草稿按会话保存：thread_id 是单聊与群聊共用的键，切换会话不丢未发送内容
@@ -54,6 +57,7 @@ public:
 signals:
     void errorTextChanged();
     void attachmentsChanged();
+    void inlineContentChanged();
 
 private:
     //一次插入的图片：上传文件在本机临时目录，尺寸是气泡缩略图的像素大小
@@ -68,6 +72,7 @@ private:
     static QString imageKey(const QString &source); //缩略图 data URL 的短哈希
     //草稿从 HTML 恢复后，给每个表情重新发一个唯一格式号，避免相邻同款表情被合并
     void normalizeEmoji(QQuickTextDocument *document);
+    void refreshInlineContent(); //文档里是否还有图片/表情
     //把输入框当前内容写进本地库：停止输入后由定时器触发，切会话时立即触发
     void saveDraft();
     QString _errorText;
@@ -81,6 +86,7 @@ private:
     QHash<QString, int> _mentions; //@显示名 -> uid，发送时按正文里是否还有该名字过滤
     QHash<QString, InsertedImage> _images; //缩略图哈希 -> 上传文件与尺寸
     QVariantList _attachments; //待发送的视频/文件，每项含 kind/path/name/size
+    bool _hasInlineContent = false;
 };
 
 #endif // COMPOSERBRIDGE_H

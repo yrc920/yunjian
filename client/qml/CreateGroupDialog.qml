@@ -34,9 +34,10 @@ Popup {
     anchors.centerIn: parent
     modal: true
     focus: true
-    width: 420
-    height: 520
+    width: 340
+    height: form.implicitHeight + 48
     padding: 0
+    Overlay.modal: Rectangle { color: Theme.overlay }
     closePolicy: busy ? Popup.NoAutoClose : Popup.CloseOnEscape
     background: Rectangle {
         radius: Theme.dialogRadius
@@ -46,23 +47,24 @@ Popup {
     }
 
     Column {
-        x: 20
-        y: 18
-        width: parent.width - 40
-        height: parent.height - 36
+        id: form
+        x: 24
+        y: 24
+        width: parent.width - 48
+        height: implicitHeight
         spacing: 12
 
         Text {
             text: "发起群聊"
             color: Theme.textPrimary
             font.pixelSize: Theme.fontTitle
-            font.bold: true
+            font.weight: Font.DemiBold
         }
         Text {
             width: parent.width
             text: "勾选好友，给群起个名字；不填就用「群聊」"
             color: Theme.textSecondary
-            font.pixelSize: Theme.fontCaption
+            font.pixelSize: Theme.fontSmall
             wrapMode: Text.Wrap
         }
         AppInput {
@@ -81,13 +83,13 @@ Popup {
                 text: "选择好友 · 已选 " + root.selected.length
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontSmall
-                font.bold: true
+                font.weight: Font.Medium
             }
         }
 
         ListView {
             width: parent.width
-            height: parent.height - 214
+            height: Math.min(3, Math.max(1, root.candidates.length)) * 50 - 2
             clip: true
             model: root.candidates
             spacing: 2
@@ -127,7 +129,7 @@ Popup {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 18
                     height: 18
-                    radius: 6
+                    radius: 4
                     color: root.selected.indexOf(modelData.uid) >= 0 ? Theme.primary : "transparent"
                     border.width: 1
                     border.color: root.selected.indexOf(modelData.uid) >= 0
@@ -146,6 +148,7 @@ Popup {
         Text {
             width: parent.width
             visible: root.message.length > 0
+            height: visible ? implicitHeight : 0
             text: root.message
             color: root.busy ? Theme.textSecondary : Theme.danger
             font.pixelSize: Theme.fontCaption
@@ -153,12 +156,13 @@ Popup {
         }
 
         Row {
-            spacing: 10
+            spacing: 12
             anchors.right: parent.right
             AppButton {
-                width: 92
-                height: 36
+                width: 96
+                height: 40
                 text: "取消"
+                variant: "secondary"
                 enabled: !root.busy
                 onClicked: {
                     root.reset()
@@ -166,13 +170,44 @@ Popup {
                 }
             }
             AppButton {
-                width: 100
-                height: 36
-                text: root.busy ? "创建中…" : "创建"
+                width: 112
+                height: 40
+                text: root.busy ? "正在创建…" : "创建"
                 busy: root.busy
                 enabled: root.selected.length > 0
                 onClicked: controller.createGroup(groupName.text, root.selected)
             }
+        }
+    }
+
+    // 关闭：和资料/好友弹层同一个 32 的图标位
+    Rectangle {
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: 20
+        anchors.topMargin: 20
+        width: 32
+        height: 32
+        radius: Theme.controlRadius
+        color: closeArea.containsMouse || activeFocus ? Theme.panelAlt : "transparent"
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: "关闭"
+        Accessible.onPressAction: controller.closeCreateGroup()
+        Keys.onReturnPressed: controller.closeCreateGroup()
+        Keys.onSpacePressed: controller.closeCreateGroup()
+        AppIcon {
+            anchors.centerIn: parent
+            name: "close"
+            size: 16
+            color: Theme.textSecondary
+        }
+        MouseArea {
+            id: closeArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: controller.closeCreateGroup()
         }
     }
 

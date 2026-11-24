@@ -23,7 +23,7 @@ Column {
     property bool showLabel: true
     property bool busy: false
     property string error: ""
-    property string busyText: "保存中"
+    property string busyText: "正在保存…"
 
     signal committed(var value)
     signal tagsCommitted(var list)
@@ -200,7 +200,7 @@ Column {
                     delegate: Rectangle {
                         width: tagText.implicitWidth + 20
                         height: 26
-                        radius: 6
+                        radius: Theme.controlRadius
                         color: Theme.selected
                         Text {
                             id: tagText
@@ -232,7 +232,7 @@ Column {
                     Behavior on opacity { NumberAnimation { duration: 120 } }
                     Rectangle {
                         anchors.fill: parent
-                        radius: 6
+                        radius: Theme.controlRadius
                         color: "transparent"
                         AppIcon {
                             anchors.centerIn: parent
@@ -269,7 +269,7 @@ Column {
 
                 Rectangle {
                     anchors.fill: parent
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: "transparent"
 
                     AppIcon {
@@ -431,7 +431,7 @@ Column {
                             readonly property bool chosen: root.choiceDraft === modelData.value
                             width: choiceLabel.implicitWidth + 28
                             height: 30
-                            radius: 6
+                            radius: Theme.controlRadius
                             color: chosen ? Theme.selected : Theme.panelAlt
                             border.width: 1
                             border.color: chosen ? Theme.primary : "transparent"

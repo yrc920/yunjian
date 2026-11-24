@@ -169,6 +169,35 @@ Canvas {
             c.beginPath(); c.moveTo(7, 4); c.lineTo(17, 4); c.lineTo(15.5, 9)
             c.lineTo(18, 13); c.lineTo(6, 13); c.lineTo(8.5, 9); c.closePath(); c.stroke()
             break
+        case "copy":
+            c.beginPath(); rounded(4, 4, 11, 11, 2); c.stroke()
+            c.beginPath(); rounded(9, 9, 11, 11, 2); c.stroke(); break
+        case "forward":
+            line(4, 12, 20, 12); poly([14, 6, 20, 12, 14, 18], false); break
+        case "trash":
+            line(4, 7, 20, 7); line(9, 4, 15, 4)
+            line(9, 7, 9, 4); line(15, 7, 15, 4)
+            c.beginPath(); c.moveTo(6, 7); c.lineTo(7, 20); c.lineTo(17, 20)
+            c.lineTo(18, 7); c.stroke()
+            line(10, 11, 10, 17); line(14, 11, 14, 17); break
+        case "undo":
+            c.beginPath(); c.arc(12, 12, 7, Math.PI * 0.35, Math.PI * 1.25, true); c.stroke()
+            poly([4, 7, 4, 12, 9, 12], false); break
+        case "cut":
+            circle(6, 18, 2.2); circle(6, 6, 2.2)
+            line(8, 7, 20, 19); line(8, 17, 20, 5); break
+        case "paste":
+            c.beginPath(); rounded(5, 5, 14, 16, 2); c.stroke()
+            c.beginPath(); rounded(9, 2.5, 6, 4, 1); c.stroke()
+            line(8, 11, 16, 11); line(8, 15, 13, 15); break
+        case "bell":
+            c.beginPath(); c.moveTo(6, 17); c.lineTo(18, 17); c.lineTo(16, 14)
+            c.lineTo(16, 10); c.arc(12, 10, 4, Math.PI, 0); c.lineTo(8, 14); c.closePath(); c.stroke()
+            line(12, 17, 12, 20); break
+        case "bellOff":
+            c.beginPath(); c.moveTo(6, 17); c.lineTo(18, 17); c.lineTo(16, 14)
+            c.lineTo(16, 10); c.arc(12, 10, 4, Math.PI, 0); c.lineTo(8, 14); c.closePath(); c.stroke()
+            line(12, 17, 12, 20); line(4, 4, 20, 20); break
         }
     }
 }

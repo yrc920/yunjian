@@ -48,7 +48,8 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: "欢迎回来，接着说上次的话。"
+            // 与其他认证页的副标题统一带句号
+            text: "见字如面，别来无恙。"
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
@@ -121,11 +122,25 @@ Item {
                 height: 28
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
+                activeFocusOnTab: true
+                Accessible.role: Accessible.CheckBox
+                Accessible.name: "自动登录"
+                Accessible.checkable: true
+                Accessible.checked: bridge.remember
+                Accessible.onPressAction: toggle()
+                Keys.onSpacePressed: toggle()
+                Keys.onReturnPressed: toggle()
+
+                function toggle() {
+                    bridge.remember = !bridge.remember
+                    AuthDraft.remember = bridge.remember
+                    AuthDraft.rememberTouched = true
+                }
 
                 Rectangle {
                     width: 18
                     height: 18
-                    radius: 5
+                    radius: 4
                     anchors.verticalCenter: parent.verticalCenter
                     color: bridge.remember ? Theme.primary : Theme.panelBg
                     border.width: 1
@@ -153,9 +168,8 @@ Item {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        bridge.remember = !bridge.remember
-                        AuthDraft.remember = bridge.remember
-                        AuthDraft.rememberTouched = true
+                        rememberToggle.forceActiveFocus(Qt.MouseFocusReason)
+                        rememberToggle.toggle()
                     }
                 }
             }

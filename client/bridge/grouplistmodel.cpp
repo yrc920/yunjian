@@ -100,7 +100,9 @@ QVariantMap GroupListModel::get(int row) const
     if (row < 0 || row >= _view.size())
         return map;
     const QModelIndex idx = index(row, 0);
-    for (auto it = roleNames().constBegin(); it != roleNames().constEnd(); ++it)
+    // roleNames() 返回临时 QHash，迭代器必须来自同一份实例，不能每次调用重取
+    const QHash<int, QByteArray> roles = roleNames();
+    for (auto it = roles.constBegin(); it != roles.constEnd(); ++it)
         map.insert(QString::fromUtf8(it.value()), data(idx, it.key()));
     return map;
 }

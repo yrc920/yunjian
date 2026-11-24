@@ -1,6 +1,7 @@
 #include "chatbridge.h"
 
 #include <QClipboard>
+#include <QMimeData>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -71,6 +72,8 @@ bool isSelectedMessage(const std::shared_ptr<TextChatData> &message,
 ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
 {
     _conversations = new ConversationModel(this);
+    _filteredConversations = new ConversationFilterModel(this);
+    _filteredConversations->setSource(_conversations);
     _friends = new FriendListModel(this);
     _groups = new GroupListModel(this);
     _applies = new ApplyListModel(this);
@@ -260,9 +263,6 @@ ChatBridge::ChatBridge(QObject *parent) : QObject(parent)
     connect(userMgr, &UserMgr::FriendListChanged, this, [this] {
         //关系恢复（重新通过验证）后顶部的关系提示要立刻收起来
         emit chatBlockedChanged();
-        if (!_friendQuery.trimmed().isEmpty())
-            rebuildFriendMatches();
-
         //新好友第一次建会话：4001 之后 4002 才带回 thread_id。这里接住它，
         //否则会一直停在 thread_id=0 上，新消息只能留下最新一条预览
         if (!isGroup()
@@ -588,66 +588,6 @@ void ChatBridge::closeAddFriend()
         emit addFriendOpenChanged();
 }
 
-// 聊天页过滤：只在本地好友数据里找，不发请求
-void ChatBridge::setFriendQuery(const QString &query)
-{
-    if (_friendQuery == query)
-        return;
-    _friendQuery = query;
-    emit friendQueryChanged();
-    rebuildFriendMatches();
-}
-
-void ChatBridge::clearFriendSearch()
-{
-    if (_friendQuery.isEmpty() && _friendMatches.isEmpty())
-        return;
-    _friendQuery.clear();
-    _friendMatches.clear();
-    emit friendQueryChanged();
-    emit friendMatchesChanged();
-}
-
-// 重建聊天页过滤结果：只读 UserMgr 的好友数据，不复制业务状态
-void ChatBridge::rebuildFriendMatches()
-{
-    QVariantList matches;
-    const QString query = _friendQuery.trimmed();
-    if (!query.isEmpty()) {
-        auto *mgr = UserMgr::GetInstance().get();
-        const int count = mgr->FriendCount();
-        for (int row = 0; row < count; ++row) {
-            auto info = mgr->FriendAt(row);
-            if (!info)
-                continue;
-            // 备注也要参与匹配：用户可能只记得自己给对方起的名字
-            if (!info->_name.contains(query, Qt::CaseInsensitive)
-                && !info->_nick.contains(query, Qt::CaseInsensitive)
-                && !info->_back.contains(query, Qt::CaseInsensitive))
-                continue;
-
-            // 摘要与好友列表保持一致；图片消息只显示占位
-            QString lastText = info->_last_msg;
-            if (!info->_chat_thread->_chat_msgs.empty()) {
-                const auto &last = info->_chat_thread->_chat_msgs.back();
-                lastText = last->_imageSource.isEmpty()
-                    ? last->_msg_content : QStringLiteral("[图片]");
-            }
-            matches.append(QVariantMap{
-                {QStringLiteral("uid"), info->_uid},
-                {QStringLiteral("name"), info->_name},
-                {QStringLiteral("nick"), info->_nick},
-                {QStringLiteral("displayName"), DisplayName(info->_back, info->_nick,
-                                                            info->_name)},
-                {QStringLiteral("icon"), info->_icon},
-                {QStringLiteral("lastText"), lastText},
-            });
-        }
-    }
-    _friendMatches = matches;
-    emit friendMatchesChanged();
-}
-
 void ChatBridge::applyTo(int uid, const QString &name, const QString &nick,
                          const QString &icon, const QString &verify, const QString &remark,
                          const QStringList &tags)
@@ -896,14 +836,28 @@ QString ChatBridge::myUserName() const
 void ChatBridge::showChatMode()
 {
     closeAddFriend();
-    clearFriendSearch();
     navigate(ChatMode, _currentThreadId > 0 || _currentUid > 0 ? ChatPage : EmptyPane);
+}
+
+void ChatBridge::clearConversation()
+{
+    if (_currentThreadId <= 0 && _currentUid <= 0)
+        return;
+    _currentThreadId = 0;
+    _currentUid = 0;
+    _currentName.clear();
+    _currentSubtitle.clear();
+    _messages->setConversation(0, _currentKind, 0);
+    if (_mode == ChatMode)
+        setPane(EmptyPane);
+    emit currentChanged();
+    emit groupChanged();
+    emit chatBlockedChanged();
 }
 
 void ChatBridge::showContactMode()
 {
     closeAddFriend();
-    clearFriendSearch();
     if (_lastContactPane == FriendInfoPage) {
         auto info = UserMgr::GetInstance()->GetFriendById(_contactProfileUid);
         if (info && info->_is_friend)
@@ -917,21 +871,18 @@ void ChatBridge::showContactMode()
 void ChatBridge::showSettings()
 {
     closeAddFriend();
-    clearFriendSearch();
     navigate(SettingsMode, _lastSettingsPane);
 }
 
 void ChatBridge::openMyProfile()
 {
     closeAddFriend();
-    clearFriendSearch();
     navigate(SettingsMode, UserInfoPage);
 }
 
 void ChatBridge::openGeneralSettings()
 {
     closeAddFriend();
-    clearFriendSearch();
     navigate(SettingsMode, GeneralPage);
 }
 
@@ -1169,7 +1120,6 @@ void ChatBridge::openChat(int uid)
     }
 
     closeAddFriend();
-    clearFriendSearch();
 
     _currentKind = static_cast<int>(ChatThreadKind::Private);
     _currentUid = uid;
@@ -1219,7 +1169,6 @@ void ChatBridge::openGroup(qint64 threadId)
     }
 
     closeAddFriend();
-    clearFriendSearch();
     _pendingOpenGroup = 0;
     _currentKind = static_cast<int>(ChatThreadKind::Group);
     _currentUid = 0;
@@ -2061,6 +2010,20 @@ bool ChatBridge::copyImage(qint64 messageId, const QUrl &fallback)
     return true;
 }
 
+//视频/文件复制：剪贴板里放文件 URL，不复制字节，避免大文件卡住界面
+bool ChatBridge::copyResourceFile(qint64 messageId)
+{
+    QString path = savedPath(messageId);
+    if (path.isEmpty())
+        path = ChatService::LocalPathForMessage(messageId);
+    if (path.isEmpty())
+        return false;
+    auto *mime = new QMimeData;
+    mime->setUrls({QUrl::fromLocalFile(path)});
+    QGuiApplication::clipboard()->setMimeData(mime);
+    return true;
+}
+
 QVariantList ChatBridge::mediaItems()
 {
     QVariantList items;
@@ -2169,6 +2132,14 @@ void ChatBridge::createGroup(const QString &name, const QVariantList &uids)
 }
 
 //群资料页：从聊天标题进入，进页先保证成员列表是最新的
+void ChatBridge::clearContactSelection()
+{
+    if (_mode != ContactMode)
+        return;
+    _lastContactPane = EmptyPane;
+    navigate(ContactMode, EmptyPane);
+}
+
 void ChatBridge::openGroupInfoFor(qint64 threadId)
 {
     if (threadId <= 0)

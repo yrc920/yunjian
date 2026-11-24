@@ -285,7 +285,7 @@ FocusScope {
                                 readonly property bool chosen: root.sexValue === modelData.value
                                 width: sexLabel.implicitWidth + 34
                                 height: 32
-                                radius: 5
+                                radius: Theme.controlRadius
                                 color: chosen ? Theme.selected : Theme.panelAlt
                                 border.width: 1
                                 border.color: chosen ? Theme.primary : "transparent"
@@ -416,7 +416,7 @@ FocusScope {
                 AppButton {
                     width: (parent.width - 12) / 2
                     height: 40
-                    text: root.saving ? "保存中" : "保存"
+                    text: root.saving ? "正在保存…" : "保存"
                     busy: root.saving
                     onClicked: root.submit()
                 }

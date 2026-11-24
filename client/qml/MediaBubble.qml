@@ -181,7 +181,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: root.fileName
                     color: Theme.textHint
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontCaption
                     horizontalAlignment: Text.AlignHCenter
                     elide: Text.ElideMiddle
                 }
@@ -240,7 +240,7 @@ Item {
                 width: parent.width
                 text: root.fileName
                 color: Theme.textPrimary
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSmall
                 elide: Text.ElideMiddle
                 maximumLineCount: 1
             }
@@ -265,7 +265,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 42
                 height: 52
-                radius: 7
+                radius: Theme.controlRadius
                 color: Theme.primarySoft
 
                 Text {
@@ -296,7 +296,7 @@ Item {
                     width: parent.width
                     text: root.fileName
                     color: Theme.textPrimary
-                    font.pixelSize: 12
+                    font.pixelSize: Theme.fontSmall
                     elide: Text.ElideMiddle
                     maximumLineCount: 1
                 }
@@ -321,7 +321,7 @@ Item {
                     visible: root.done
                     width: 54
                     height: 24
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: actionArea.containsMouse ? Theme.primaryHover : Theme.primary
 
                     Text {
@@ -344,7 +344,7 @@ Item {
                     visible: root.done
                     width: 54
                     height: 22
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: revealArea.containsMouse ? Theme.panelAlt : "transparent"
                     border.width: 1
                     border.color: Theme.line
@@ -369,7 +369,7 @@ Item {
                     visible: !root.done
                     width: 54
                     height: 22
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: saveArea.containsMouse ? Theme.panelAlt : "transparent"
                     border.width: 1
                     border.color: Theme.line
@@ -394,7 +394,7 @@ Item {
                     visible: !root.done
                     width: 54
                     height: 28
-                    radius: 6
+                    radius: Theme.controlRadius
                     color: primaryArea.containsMouse ? Theme.primaryHover : Theme.primary
                     opacity: root.preparing ? 0.6 : 1
 

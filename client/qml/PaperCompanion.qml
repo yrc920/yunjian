@@ -43,8 +43,9 @@ Item {
 
         Rectangle {
             x: 41; y: 149; width: 160; height: 8; radius: 4
-            color: Theme.line
-            opacity: 0.65
+            // 阴影要永远比纸暗：深色下 line 比纸亮，直接沿用会变成一条亮杠
+            color: Theme.dark ? Qt.rgba(0, 0, 0, 0.38) : Theme.line
+            opacity: Theme.dark ? 1 : 0.65
         }
         Rectangle { x: 82; y: 135; width: 5; height: 15; radius: 2; rotation: 12; color: Theme.ink }
         Rectangle { x: 155; y: 135; width: 5; height: 15; radius: 2; rotation: -12; color: Theme.ink }
@@ -59,7 +60,7 @@ Item {
             Behavior on rotation { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
             Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
 
-            Rectangle { x: 3; y: 4; width: parent.width; height: parent.height; radius: 7; color: Theme.ink; opacity: 0.15 }
+            Rectangle { x: 3; y: 4; width: parent.width; height: parent.height; radius: 7; color: Theme.paperShadow; opacity: 0.15 }
             Rectangle {
                 anchors.fill: parent
                 color: Theme.paper

@@ -3,9 +3,12 @@ import QtQuick.Layouts
 import XiguChat
 
 // 找回密码通过用户名、邮箱与验证码验证，状态由 ResetBridge 提供。
-// 与注册页同一套字段节奏：单列、浮动标签、行内验证码按钮。
+// 与注册页同一套字段节奏：单列、浮动标签、行内验证码按钮、两次密码。
 Item {
     id: page
+
+    // 两次新密码不一致只在本地拦截，不把半成品交给 bridge
+    property string localError: ""
 
     ResetBridge {
         id: bridge
@@ -32,7 +35,7 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: "输入注册邮箱，我们会发一封验证码。"
+            text: "填上注册邮箱，验证码马上寄到。"
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
@@ -86,7 +89,7 @@ Item {
             CodeButton {
                 Layout.preferredWidth: 112
                 text: bridge.countdown > 0 ? bridge.countdown + " 秒后重发"
-                                           : (bridge.codeBusy ? "发送中…" : "获取验证码")
+                                           : (bridge.codeBusy ? "正在发送…" : "获取验证码")
                 usable: bridge.countdown === 0 && !bridge.codeBusy && !bridge.busy && !bridge.done
                 onClicked: bridge.sendCode()
             }
@@ -102,17 +105,34 @@ Item {
             placeholder: "6–15 位密码"
             password: true
             onRevealToggled: reveal = !reveal
-            onTextEdited: bridge.password = text
-            onAccepted: bridge.submit()
+            onTextEdited: {
+                bridge.password = text
+                page.localError = ""
+            }
+            onAccepted: confirmInput.forceInputFocus()
         }
 
         Item { width: 1; height: 12 }
 
-        // 提示位固定成一行：成功与失败共用，没内容时不留空洞
+        AppInput {
+            id: confirmInput
+            width: parent.width
+            labeled: true
+            label: "确认新密码"
+            password: true
+            onRevealToggled: reveal = !reveal
+            onTextEdited: page.localError = ""
+            onAccepted: page.submit()
+        }
+
+        Item { width: 1; height: 12 }
+
+        // 提示位固定成一行：本地不一致优先，其次才是 bridge 的成功/失败
         Text {
             width: parent.width
-            text: bridge.tipText
-            color: bridge.tipOk ? Theme.success : Theme.danger
+            text: page.localError.length > 0 ? page.localError : bridge.tipText
+            color: page.localError.length > 0 ? Theme.danger
+                 : bridge.tipOk ? Theme.success : Theme.danger
             font.pixelSize: Theme.fontSmall
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
             // 固定预留一行：提示出现时表单不上下跳，长文案仍可自然增高
@@ -127,9 +147,24 @@ Item {
             width: parent.width
             text: bridge.done ? "密码已更新" : (bridge.busy ? "正在更新…" : "更新密码")
             busy: bridge.busy || bridge.done
-            onClicked: bridge.submit()
+            onClicked: page.submit()
         }
 
+    }
+
+    function submit() {
+        if (passwordInput.text.length === 0) {
+            page.localError = "先填一个新密码。"
+            passwordInput.forceInputFocus()
+            return
+        }
+        if (passwordInput.text !== confirmInput.text) {
+            page.localError = "两次输入不一致，再确认一下。"
+            confirmInput.forceInputFocus()
+            return
+        }
+        page.localError = ""
+        bridge.submit()
     }
 
     // 从登录页带过来的邮箱与用户名

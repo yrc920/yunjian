@@ -144,17 +144,21 @@ Window {
                     y = areaY + Math.max(8, (areaH - height) / 2)
             }
         } else {
-            // 登录、注册、找回共用同一个窗口尺寸；注册表单刚好放满，上下不再空一截
+            // 登录、注册、找回共用同一个窗口尺寸；三页之间切换不再重新居中，
+            // 否则多显示器下会被“居中”到另一块屏
             const h = 560
             const pageH = Math.min(h, limitH)
+            const enteringAuth = lastPage === "" || lastPage === "chat"
             minimumWidth = 420
             minimumHeight = pageH
             maximumWidth = 420
             maximumHeight = pageH
             width = 420
             height = pageH
-            x = areaX + Math.max(0, (areaW - width) / 2)
-            y = areaY + Math.max(0, (areaH - height) / 2)
+            if (enteringAuth) {
+                x = areaX + Math.max(0, (areaW - width) / 2)
+                y = areaY + Math.max(0, (areaH - height) / 2)
+            }
         }
         // 认证页之间淡入淡出；进出聊天页不淡，避免整窗闪一下底色
         const fadePage = name !== "chat" && lastPage !== "" && lastPage !== "chat"
@@ -233,7 +237,7 @@ Window {
             Text {
                 text: shell.reconnectText
                 color: Theme.accent
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSmall
                 elide: Text.ElideRight
             }
         }
@@ -261,7 +265,9 @@ Window {
         id: appearanceButton
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 16
+        // 与返回登录对称：距卡片边缘各 16，不再为了对齐输入框而往左缩
+        anchors.rightMargin: 30
+        anchors.topMargin: 22
         width: 36
         height: 36
         radius: 18
@@ -332,7 +338,7 @@ Window {
                 Text {
                     width: parent.width
                     text: shell.notice
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontBody
                     color: Theme.textSecondary
                     wrapMode: Text.WordWrap
                 }
