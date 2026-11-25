@@ -215,7 +215,7 @@ Item {
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 12
                 text: root.failed ? "下载失败，点击重试" : "点击下载视频"
-                color: "#FFFFFF"
+                color: Theme.onMedia
                 font.pixelSize: Theme.fontCaption
                 style: Text.Outline
                 styleColor: Qt.rgba(0, 0, 0, 0.35)

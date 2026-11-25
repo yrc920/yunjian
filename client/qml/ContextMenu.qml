@@ -9,6 +9,8 @@ Item {
     property int activeIndex: -1
     // 宽度按最长一项算，和加号菜单同一套：左右各 12
     property real panelWidth: 120
+    // 关闭后通知调用方同步自己的开关状态；点击条目、按 Esc、点外部都会走到这里
+    signal closed()
     visible: false
     z: 600
     focus: visible
@@ -37,9 +39,15 @@ Item {
     }
 
     function close() {
+        if (!visible) {
+            items = []
+            activeIndex = -1
+            return
+        }
         visible = false
         items = []
         activeIndex = -1
+        closed()
     }
 
     function move(delta) {

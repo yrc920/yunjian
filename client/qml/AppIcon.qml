@@ -194,6 +194,11 @@ Canvas {
             c.beginPath(); c.moveTo(6, 17); c.lineTo(18, 17); c.lineTo(16, 14)
             c.lineTo(16, 10); c.arc(12, 10, 4, Math.PI, 0); c.lineTo(8, 14); c.closePath(); c.stroke()
             line(12, 17, 12, 20); break
+        case "logout":
+            //门框开在右侧，箭头指向门外
+            c.beginPath(); c.moveTo(13, 4); c.lineTo(5, 4); c.lineTo(5, 20)
+            c.lineTo(13, 20); c.stroke()
+            line(10, 12, 20, 12); poly([15, 7, 20, 12, 15, 17], false); break
         case "bellOff":
             c.beginPath(); c.moveTo(6, 17); c.lineTo(18, 17); c.lineTo(16, 14)
             c.lineTo(16, 10); c.arc(12, 10, 4, Math.PI, 0); c.lineTo(8, 14); c.closePath(); c.stroke()

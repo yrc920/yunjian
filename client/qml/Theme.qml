@@ -130,6 +130,8 @@ QtObject {
     readonly property color fieldBg: palette.fieldBg
     readonly property color fieldBorder: palette.fieldBorder
     readonly property color overlay: dark ? "#A60A0E12" : "#5E141C26"
+    //媒体上的文字：始终是浅色，不跟随主题翻转
+    readonly property color onMedia: "#FFFFFF"
     // 信纸横线：只比纸深一点，是质感不是表格
     readonly property color ruleLine: dark ? Qt.rgba(0.91, 0.93, 0.95, 0.05)
                                           : Qt.rgba(0.11, 0.16, 0.22, 0.045)

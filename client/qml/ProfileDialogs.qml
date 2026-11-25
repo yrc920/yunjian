@@ -156,7 +156,7 @@ FocusScope {
                 AppIcon {
                     anchors.centerIn: parent
                     name: "close"
-                    size: 18
+                    size: 16
                     color: Theme.textSecondary
                 }
                 MouseArea {

@@ -273,6 +273,7 @@ set(QML_FILES
     qml/EditableField.qml
     qml/RulePaper.qml
     qml/PostmarkDivider.qml
+    qml/AboutDialog.qml
     qml/ConfirmDialog.qml
     qml/PaperCompanion.qml
     qml/AuthPage.qml
@@ -295,6 +296,7 @@ set(QML_FILES
     qml/CreateGroupDialog.qml
     qml/ApplyFriendPage.qml
     qml/SettingsPanel.qml
+    qml/SettingsRailRow.qml
     qml/SettingsRow.qml
     qml/GeneralSettingsPage.qml
     qml/UserInfoPage.qml

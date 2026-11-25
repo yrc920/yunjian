@@ -34,7 +34,7 @@ Rectangle {
         visible: picture.status !== Image.Ready
         text: root.name.length > 0
             ? root.name.substring(0, root.fallbackChars) : "?"
-        color: Theme.dark && root.group ? "#F2F5F8" : root.textColor
+        color: Theme.dark && root.group ? Theme.spineText : root.textColor
         font.pixelSize: root.group ? Math.round(root.width * 0.30) : root.textSize
         font.weight: root.group ? Font.DemiBold : Font.Normal
         font.letterSpacing: root.group && root.fallbackChars > 1 ? -1 : 0

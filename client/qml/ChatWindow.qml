@@ -110,7 +110,7 @@ Item {
         if (compactIndex) {
             // 收起后没有搜索框，浮层要一起收掉，避免挂在头像条上
             bridge.closeAddFriend()
-            functionMenuOpen = false
+            root.closeFunctionMenu()
             tagFilterOpen = false
         }
         root.rebuildGroupRows()
@@ -446,9 +446,29 @@ Item {
         return "查看联系人"
     }
 
+    // 关闭加号菜单：菜单本身负责收起，根属性只同步状态（提示、图标、悬停）
+    function closeFunctionMenu() {
+        if (typeof functionMenu !== "undefined" && functionMenu.visible)
+            functionMenu.close()
+        functionMenuOpen = false
+    }
+
     function handlePlus() {
         if (bridge.mode === ChatBridge.ChatMode) {
-            functionMenuOpen = !functionMenuOpen
+            if (functionMenu.visible) {
+                functionMenu.close()
+                return
+            }
+            // 与消息右键同一套骨架：6px 上下留白、36 行高、16 图标槽
+            // 加号在展开时贴右缘、收起时居中，菜单左沿取按钮左沿，两种宽度下都对齐
+            const plusX = root.compactIndex
+                ? root.sidebarWidth + (root.indexPanelWidth - 32) / 2
+                : root.sidebarWidth + root.indexPanelWidth - 32 - 18
+            functionMenu.open(plusX, 58, [
+                { text: "添加好友", icon: "user", action: () => root.openAddFriendFromChat() },
+                { text: "发起群聊", icon: "contacts", action: () => root.openGroupCreator() }
+            ])
+            functionMenuOpen = true
             return
         }
         if (root.groupTab) {
@@ -474,7 +494,7 @@ Item {
             return
         root.contactTab = index
         root.tagFilterOpen = false
-        root.functionMenuOpen = false
+        root.closeFunctionMenu()
         bridge.closeAddFriend()
         bridge.clearSearch()
         bridge.groups.setFilter("")
@@ -485,7 +505,7 @@ Item {
     }
 
     function openAddFriendFromChat() {
-        functionMenuOpen = false
+        root.closeFunctionMenu()
         bridge.showContactMode()
         bridge.openAddFriend()
         Qt.callLater(addSearch.forceInputFocus)
@@ -495,7 +515,7 @@ Item {
     // 必须定义在根对象上：MouseArea 的 onClicked 处于自己的作用域，
     // 直接写 openGroupCreator() 会在运行时报 ReferenceError（父项里的函数不在作用域链上）
     function openGroupCreator() {
-        functionMenuOpen = false
+        root.closeFunctionMenu()
         bridge.openCreateGroup()
     }
 
@@ -535,7 +555,7 @@ Item {
             addSearch.setText(bridge.searchText)
         }
         function onModeChanged() {
-            root.functionMenuOpen = false
+            root.closeFunctionMenu()
             root.clearConversationFilter()
             if (bridge.mode !== ChatBridge.ContactMode)
                 bridge.groups.setFilter("")
@@ -921,7 +941,7 @@ Item {
                     onAccepted: root.openFirstFilteredConversation()
                     onEscapePressed: root.clearConversationFilter()
                     onClearRequested: root.clearConversationFilter()
-                    onFocusGained: root.functionMenuOpen = false
+                    onFocusGained: root.closeFunctionMenu()
                 }
                 SearchField {
                     id: addSearch
@@ -2066,6 +2086,7 @@ Item {
             height: parent.height
             visible: bridge.mode === ChatBridge.SettingsMode
             controller: bridge
+            onAboutRequested: aboutDialog.open()
         }
 
         // 右侧内容区：按 pane 切换页面，实例常驻以保留输入草稿和滚动位置
@@ -2306,106 +2327,18 @@ Item {
         }
     }
 
-    // 聊天页加号的功能菜单：挂在加号下方，向右甩开，超出的部分落在内容区
-    MouseArea {
-        visible: root.functionMenuOpen && bridge.mode === ChatBridge.ChatMode
-        x: root.sidebarWidth
-        y: 0
-        width: parent.width - root.sidebarWidth
-        height: parent.height
-        z: 28
-        onClicked: root.functionMenuOpen = false
-    }
-    Rectangle {
+    // 聊天页加号的功能菜单：与右键菜单同一个组件，位置挂在加号下方
+    ContextMenu {
         id: functionMenu
-        visible: root.functionMenuOpen && bridge.mode === ChatBridge.ChatMode
-        // 加号左边沿：面板宽减右边距和按钮宽，菜单从这里向右伸
-        x: root.sidebarWidth + root.indexPanelWidth - 48
-        y: 58
-        // 宽度按最长的一项算：左 12 + 图标 16 + 间距 8 + 文字 + 右 14，不再留一大块空
-        width: 12 + 16 + 8 + Math.max(addFriendLabel.implicitWidth, groupChatLabel.implicitWidth) + 14
-        height: 80
-        radius: Theme.panelRadius
-        color: Theme.panelBg
-        border.width: 1
-        border.color: Theme.line
-        z: 30
-
-        Column {
-            anchors.fill: parent
-            spacing: 0
-
-            // 加好友：切到联系人并打开搜索浮层
-            Rectangle {
-                width: parent.width
-                height: 40
-                radius: 8
-                color: menuArea.containsMouse || activeFocus ? Theme.selected : "transparent"
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
-                Accessible.name: "添加好友"
-                Accessible.onPressAction: root.openAddFriendFromChat()
-                Keys.onSpacePressed: root.openAddFriendFromChat()
-                Keys.onReturnPressed: root.openAddFriendFromChat()
-                Row {
-                    x: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-                    AppIcon { name: "user"; size: 16; color: Theme.primary }
-                    Text {
-                        id: addFriendLabel
-                        text: "添加好友"
-                        color: Theme.textPrimary
-                        font.pixelSize: Theme.fontSmall
-                    }
-                }
-                MouseArea {
-                    id: menuArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openAddFriendFromChat()
-                }
-            }
-
-            // 发起群聊：勾选好友后直接进入新群
-            Rectangle {
-                id: groupMenu
-                width: parent.width
-                height: 40
-                radius: 8
-                color: groupMenuArea.containsMouse || groupMenu.activeFocus
-                    ? Theme.selected : "transparent"
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
-                Accessible.name: "发起群聊"
-                Accessible.onPressAction: root.openGroupCreator()
-                Keys.onSpacePressed: root.openGroupCreator()
-                Keys.onReturnPressed: root.openGroupCreator()
-                Row {
-                    x: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-                    AppIcon { name: "contacts"; size: 16; color: Theme.primary }
-                    Text {
-                        id: groupChatLabel
-                        text: "发起群聊"
-                        color: Theme.textPrimary
-                        font.pixelSize: Theme.fontSmall
-                    }
-                }
-                MouseArea {
-                    id: groupMenuArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openGroupCreator()
-                }
-            }
-        }
+        anchors.fill: parent
+        onClosed: root.functionMenuOpen = false
     }
 
     // 发起群聊：Popup 自己处理模态与焦点，打开时底层 Row 由 dialogs 之外单独禁用
+    AboutDialog {
+        id: aboutDialog
+    }
+
     CreateGroupDialog {
         id: createGroupDialog
         controller: bridge

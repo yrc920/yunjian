@@ -1,12 +1,14 @@
 import QtQuick
 import XiguChat
 
-// 设置索引：账号卡、通用入口、底部退出登录。
-// 窄窗时收成 60 的头像条：头像进资料，设置进通用。
+// 设置索引：文字分组标签 + 单行条目 + 底部固定退出。
+// 不再堆小字：每行只留标题和右箭头，账号 ID、外观值、版本号都收进各自的页面。
+// 窄窗收成 72 头像条：入口贴顶，退出贴底。
 Rectangle {
     id: root
     property var controller
     property bool compact: false
+    signal aboutRequested()
 
     color: Theme.indexBg
     implicitWidth: Theme.indexWidth
@@ -18,115 +20,82 @@ Rectangle {
 
     // 完整设置索引
     Column {
-        x: 12
-        y: 6
+        x: 8
+        y: 0
         // 收起时保留完整排版宽度（内容透明且被裁），展开时跟随实际栏宽，避免 200 宽溢出
-        width: root.compact ? 220 : Math.max(0, parent.width - 24)
-        spacing: 4
+        width: root.compact ? 220 : Math.max(0, parent.width - 16)
+        spacing: 0
         opacity: root.compact ? 0 : 1
         enabled: !root.compact
         Behavior on opacity { NumberAnimation { duration: 120 } }
 
         Item {
             width: parent.width
-            height: 62
+            height: Theme.toolbarHeight
 
             Text {
-                x: 8
-                y: 4
+                x: 12
+                y: 10
                 text: "设置"
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontDisplay
                 font.weight: Font.DemiBold
             }
             Text {
-                x: 8
-                y: 34
-                text: root.profileSelected ? "账号与头像"
-                    : root.generalSelected ? "外观与本地数据" : "账号与通用"
+                x: 12
+                y: 39
+                width: parent.width - 24
+                text: "账号资料与应用偏好"
+                textFormat: Text.PlainText
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSmall
+                elide: Text.ElideRight
             }
         }
 
-        // 账号卡：头像与资料入口合一
-        Rectangle {
-            width: parent.width
-            height: 64
-            radius: 12
-            color: accountArea.containsMouse ? Theme.panelAlt : Theme.panelBg
-            border.width: 1
-            border.color: Theme.line
+        Item { width: parent.width; height: 8 }
 
-            Rectangle {
-                visible: root.profileSelected
-                x: 0
-                y: 10
-                width: 2
-                height: parent.height - 20
-                radius: 1
-                color: Theme.primary
-            }
-
-            Avatar {
-                id: accountAvatar
-                x: 10
-                anchors.verticalCenter: parent.verticalCenter
-                width: 36
-                height: 36
-                radius: 10
-                source: root.controller ? root.controller.myIcon : ""
-                name: root.controller ? root.controller.myName : ""
-                textSize: 13
-            }
-
-            Column {
-                x: 58
-                width: parent.width - 84
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
-                Text {
-                    width: parent.width
-                    text: root.controller ? root.controller.myName : ""
-                    textFormat: Text.PlainText
-                    color: Theme.textPrimary
-                    font.pixelSize: Theme.fontBody
-                    font.weight: Font.Medium
-                    elide: Text.ElideRight
-                }
-                Text {
-                    text: "查看资料"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontCaption
-                }
-            }
-
-            AppIcon {
-                anchors.right: parent.right
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                name: "chevronRight"
-                size: 14
-                color: Theme.textHint
-            }
-
-            MouseArea {
-                id: accountArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: if (root.controller) root.controller.openMyProfile()
-            }
-        }
-
-        // 账号卡与设置列表之间留一个分组标签，两段不再贴在一起
+        // 分组标签和联系人页的「全部联系人」同一种写法：只留一行小字，不加线
         Item {
             width: parent.width
-            height: 34
+            height: 26
             Text {
-                x: 16
+                id: accountLabel
+                x: 12
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: 8
+                anchors.bottomMargin: 6
+                text: "账号"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+                font.weight: Font.Medium
+            }
+        }
+
+        SettingsRailRow {
+            width: parent.width
+            selected: root.profileSelected
+            showAvatar: true
+            avatarSource: root.controller ? root.controller.myIcon : ""
+            avatarName: root.controller ? root.controller.myName : ""
+            title: root.controller ? root.controller.myName : ""
+            caption: "查看并编辑资料"
+            onClicked: {
+                root.forceActiveFocus()
+                if (root.controller)
+                    root.controller.openMyProfile()
+            }
+        }
+
+        Item { width: parent.width; height: 12 }
+
+        Item {
+            width: parent.width
+            height: 26
+            Text {
+                id: appLabel
+                x: 12
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 6
                 text: "应用"
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSmall
@@ -134,33 +103,123 @@ Rectangle {
             }
         }
 
-        SettingsRow {
-            title: "通用"
-            subtitle: "外观、缓存与聊天记录"
+        SettingsRailRow {
+            width: parent.width
             selected: root.generalSelected
-            showChevron: true
-            onClicked: if (root.controller) root.controller.openGeneralSettings()
+            icon: "settings"
+            title: "通用"
+            caption: "外观与本地数据"
+            onClicked: {
+                root.forceActiveFocus()
+                if (root.controller)
+                    root.controller.openGeneralSettings()
+            }
+        }
+
+        Item { width: parent.width; height: 12 }
+
+        Item {
+            width: parent.width
+            height: 26
+            Text {
+                x: 12
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 6
+                text: "关于"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+                font.weight: Font.Medium
+            }
+        }
+
+        SettingsRailRow {
+            width: parent.width
+            icon: "brand"
+            title: "关于信笺"
+            caption: "版本与作者的话"
+            onClicked: {
+                root.forceActiveFocus()
+                root.aboutRequested()
+            }
         }
     }
 
-    // 窄窗：只留头像与通用两个入口，和聊天/联系人的头像条同宽
-    Column {
-        y: 20
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: 14
+    // 底部：退出固定在栏底，不跟着内容走
+    Item {
+        anchors.fill: parent
+        visible: !root.compact
+
+        Rectangle {
+            x: 16
+            width: Math.max(0, parent.width - 32)
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 60
+            height: 1
+            color: Theme.lineSoft
+        }
+
+        // 退出是收尾动作：从分隔线到栏底整块做悬停反馈，不留上下边距
+        Item {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 59
+            anchors.bottom: parent.bottom
+
+            Rectangle {
+                anchors.fill: parent
+                color: Theme.selected
+                opacity: logoutArea.containsMouse ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            Row {
+                anchors.centerIn: parent
+                spacing: 6
+
+                AppIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "logout"
+                    size: 16
+                    color: Theme.danger
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "退出登录"
+                    color: Theme.danger
+                    font.pixelSize: Theme.fontBody
+                    font.weight: Font.Medium
+                }
+            }
+
+            MouseArea {
+                id: logoutArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: if (root.controller) root.controller.askLogout()
+            }
+        }
+    }
+
+    // 窄窗：头像条。顶部两个入口和聊天/联系人的头像起点对齐，退出贴底
+    Item {
+        anchors.fill: parent
         opacity: root.compact ? 1 : 0
         enabled: root.compact
         Behavior on opacity { NumberAnimation { duration: 120 } }
 
         Item {
+            id: compactProfile
+            y: Theme.toolbarHeight + 6
+            anchors.horizontalCenter: parent.horizontalCenter
             width: 48
             height: 48
 
             Rectangle {
                 anchors.fill: parent
-                radius: 12
+                radius: Theme.panelRadius
                 color: root.profileSelected ? Theme.panelBg
-                     : (compactProfileArea.containsMouse ? Theme.panelAlt : "transparent")
+                     : (compactProfileArea.containsMouse ? Theme.selected : "transparent")
                 border.width: root.profileSelected ? 1 : 0
                 border.color: Theme.line
             }
@@ -187,14 +246,18 @@ Rectangle {
         }
 
         Item {
+            id: compactGeneral
+            anchors.top: compactProfile.bottom
+            anchors.topMargin: 14
+            anchors.horizontalCenter: parent.horizontalCenter
             width: 48
             height: 48
 
             Rectangle {
                 anchors.fill: parent
-                radius: 12
+                radius: Theme.panelRadius
                 color: root.generalSelected ? Theme.panelBg
-                     : (compactGeneralArea.containsMouse ? Theme.panelAlt : "transparent")
+                     : (compactGeneralArea.containsMouse ? Theme.selected : "transparent")
                 border.width: root.generalSelected ? 1 : 0
                 border.color: Theme.line
             }
@@ -216,48 +279,69 @@ Rectangle {
                 hovered: compactGeneralArea.containsMouse
             }
         }
-    }
 
-    Rectangle {
-        visible: !root.compact
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 16
-        anchors.rightMargin: 16
-        anchors.bottomMargin: 64
-        height: 1
-        color: Theme.lineSoft
-    }
+        // 收起时也要能到「关于」，否则窄窗里这一页就丢了
+        Item {
+            anchors.top: compactGeneral.bottom
+            anchors.topMargin: 14
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 48
+            height: 48
 
-    Item {
-        width: parent.width
-        height: 46
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 10
-        visible: !root.compact
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.panelRadius
+                color: compactAboutArea.containsMouse ? Theme.selected : "transparent"
+            }
+            AppIcon {
+                anchors.centerIn: parent
+                name: "brand"
+                size: 22
+                color: Theme.textSecondary
+            }
+            MouseArea {
+                id: compactAboutArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.aboutRequested()
+            }
+            AppToolTip {
+                text: "关于信笺"
+                hovered: compactAboutArea.containsMouse
+            }
+        }
 
-        Rectangle {
-            x: 12
-            width: parent.width - 24
+        // 底部与书脊的本人头像同一条水平带：上面是页面入口，下面是退出
+        Item {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 30
+            width: 40
             height: 40
-            anchors.verticalCenter: parent.verticalCenter
-            radius: 8
-            color: logoutArea.containsMouse ? Theme.panelAlt : "transparent"
-        }
-        Text {
-            anchors.centerIn: parent
-            text: "退出登录"
-            color: Theme.danger
-            font.pixelSize: Theme.fontSmall
-            font.weight: Font.Medium
-        }
-        MouseArea {
-            id: logoutArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: if (root.controller) root.controller.askLogout()
+
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.panelRadius
+                color: compactLogoutArea.containsMouse ? Theme.selected : "transparent"
+            }
+            AppIcon {
+                anchors.centerIn: parent
+                name: "logout"
+                size: 18
+                color: Theme.danger
+            }
+            MouseArea {
+                id: compactLogoutArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: if (root.controller) root.controller.askLogout()
+            }
+            AppToolTip {
+                text: "退出登录"
+                hovered: compactLogoutArea.containsMouse
+            }
         }
     }
 
