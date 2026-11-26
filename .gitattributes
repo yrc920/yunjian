@@ -12,3 +12,6 @@ backup/** -linguist-detectable
 *.sh linguist-vendored -linguist-detectable
 Dockerfile linguist-vendored -linguist-detectable
 *.dockerfile linguist-vendored -linguist-detectable
+
+# macOS 窗口装饰是 Objective-C++ 桥接，统计上并入 C++，避免语言条出现 0.1% 的 ObjC++
+*.mm linguist-language=C++
