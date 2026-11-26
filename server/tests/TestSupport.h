@@ -5,8 +5,8 @@
 // 因此每个测试程序自己判断成功与否，全部用例通过时返回 0，否则返回非 0，
 // CTest 据此把结果记为通过或失败，并保留失败输出。
 //
-// 用法：一个 .cpp 里写若干 XIGU_TEST(用例名) { ... }，末尾 XIGU_TEST_MAIN()。
-//   XIGU_TEST(拒绝空请求) {
+// 用法：一个 .cpp 里写若干 YUNJIAN_TEST(用例名) { ... }，末尾 YUNJIAN_TEST_MAIN()。
+//   YUNJIAN_TEST(拒绝空请求) {
 //       CHECK(Validate(...) == Error_Json);
 //   }
 //
@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace xigutest {
+namespace yunjiantest {
 
 struct Case
 {
@@ -159,43 +159,43 @@ inline int RunAll()
 	return failed_cases == 0 ? 0 : 1;
 }
 
-} // namespace xigutest
+} // namespace yunjiantest
 
 //用例名允许带空格与中文，所以不能用它拼函数名：
 //符号由行号生成，名字只作为字符串进注册表
-#define XIGU_CONCAT_INNER(left, right) left##right
-#define XIGU_CONCAT(left, right) XIGU_CONCAT_INNER(left, right)
+#define YUNJIAN_CONCAT_INNER(left, right) left##right
+#define YUNJIAN_CONCAT(left, right) YUNJIAN_CONCAT_INNER(left, right)
 
-#define XIGU_TEST(name) \
-	static void XIGU_CONCAT(xigu_case_, __LINE__)(); \
-	static ::xigutest::Registrar XIGU_CONCAT(xigu_reg_, __LINE__)( \
-		#name, XIGU_CONCAT(xigu_case_, __LINE__)); \
-	static void XIGU_CONCAT(xigu_case_, __LINE__)()
+#define YUNJIAN_TEST(name) \
+	static void YUNJIAN_CONCAT(yunjian_case_, __LINE__)(); \
+	static ::yunjiantest::Registrar YUNJIAN_CONCAT(yunjian_reg_, __LINE__)( \
+		#name, YUNJIAN_CONCAT(yunjian_case_, __LINE__)); \
+	static void YUNJIAN_CONCAT(yunjian_case_, __LINE__)()
 
 #define CHECK(condition) \
-	::xigutest::Record(static_cast<bool>(condition), __FILE__, __LINE__, \
+	::yunjiantest::Record(static_cast<bool>(condition), __FILE__, __LINE__, \
 		"CHECK(" #condition ")")
 
 #define CHECK_EQ(actual, expected) \
-	::xigutest::RecordEq((actual), (expected), __FILE__, __LINE__, #actual, #expected)
+	::yunjiantest::RecordEq((actual), (expected), __FILE__, __LINE__, #actual, #expected)
 
 #define CHECK_THROWS(expression) \
 	do { \
-		bool xigu_threw = false; \
+		bool yunjian_threw = false; \
 		try { (void)(expression); } \
-		catch (...) { xigu_threw = true; } \
-		::xigutest::Record(xigu_threw, __FILE__, __LINE__, \
+		catch (...) { yunjian_threw = true; } \
+		::yunjiantest::Record(yunjian_threw, __FILE__, __LINE__, \
 			"CHECK_THROWS(" #expression ") 没有抛出异常"); \
 	} while (false)
 
 //集成测试用：前置条件不成立时直接结束用例，
 //避免拿着空的 thread_id 继续发请求，把一条失败扩散成一屏失败
 #define REQUIRE(condition) \
-	if (!::xigutest::RecordOrStop(static_cast<bool>(condition), __FILE__, __LINE__, \
+	if (!::yunjiantest::RecordOrStop(static_cast<bool>(condition), __FILE__, __LINE__, \
 		"REQUIRE(" #condition ")")) return 1
 
-#define XIGU_TEST_MAIN() \
-	int main() { return ::xigutest::RunAll(); }
+#define YUNJIAN_TEST_MAIN() \
+	int main() { return ::yunjiantest::RunAll(); }
 
 //顺序流程（集成测试）的收尾：没有失败才算通过
-#define XIGU_TEST_SUMMARY() (::xigutest::Finish())
+#define YUNJIAN_TEST_SUMMARY() (::yunjiantest::Finish())

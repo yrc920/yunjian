@@ -1,10 +1,10 @@
 #!/bin/bash
-# 初始化 MySQL：设置 root 口令、建库 xigu，库为空时导入 backup/xigu.sql
+# 初始化 MySQL：设置 root 口令、建库 yunjian，库为空时导入 backup/yunjian.sql
 set -uo pipefail
 
 MYSQL_DATA=/var/lib/mysql
 ROOT_PWD=123456
-SQL_FILE=/workspace/backup/xigu.sql
+SQL_FILE=/workspace/backup/yunjian.sql
 
 wait_ready() {
     for _ in $(seq 1 90); do
@@ -44,7 +44,7 @@ fi
 mysql -uroot -p"${ROOT_PWD}" <<'SQL'
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED WITH mysql_native_password BY '123456';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-CREATE DATABASE IF NOT EXISTS xigu DEFAULT CHARACTER SET utf8mb4;
+CREATE DATABASE IF NOT EXISTS yunjian DEFAULT CHARACTER SET utf8mb4;
 FLUSH PRIVILEGES;
 SQL
 if ! mysql -uroot -p"${ROOT_PWD}" -e 'SELECT 1' >/dev/null 2>&1; then
@@ -53,10 +53,10 @@ if ! mysql -uroot -p"${ROOT_PWD}" -e 'SELECT 1' >/dev/null 2>&1; then
 fi
 
 TABLES=$(mysql -uroot -p"${ROOT_PWD}" -N -B \
-    -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='xigu'")
+    -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='yunjian'")
 if [ "${TABLES:-0}" = "0" ] && [ -f "${SQL_FILE}" ]; then
     echo "[mysql] 导入初始数据"
-    mysql -uroot -p"${ROOT_PWD}" xigu < "${SQL_FILE}"
+    mysql -uroot -p"${ROOT_PWD}" yunjian < "${SQL_FILE}"
 fi
 
 echo "[mysql] 库已就绪，经典协议端口 3306"

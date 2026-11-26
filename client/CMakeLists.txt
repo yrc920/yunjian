@@ -1,13 +1,13 @@
 # ============================================================
-#  XiguChat Client — 聊天客户端（Qt6 桌面程序）
+#  YunJian Client — 聊天客户端（Qt6 桌面程序）
 #
 #  技术栈: Qt 6.5 (Core / Gui / Network / Quick / QuickControls2 / QuickDialogs2) + C++17
 #
 #  目标划分（库边界由链接器强制，不靠自觉）:
-#    xiguchat_core  静态库：core/ 业务与数据 + network/ HTTP/TCP 传输
+#    yunjian_core  静态库：core/ 业务与数据 + network/ HTTP/TCP 传输
 #                   只链接 Qt Core / Network，
 #                   不依赖界面头与 Gui/Quick，保持无界面测试能力
-#    xiguchat       可执行：main.cpp + bridge/ + qml/ 界面层
+#    yunjian       可执行：main.cpp + bridge/ + qml/ 界面层
 #
 #  界面用 QML 描述：qml/ 放页面与组件，bridge/ 是 QML 与 core 的唯一通道
 #  （Q_PROPERTY / Q_INVOKABLE / QAbstractListModel）。
@@ -41,12 +41,12 @@ endif()
 
 # Windows 的 EXE 图标由同一套 MinGW 工具链的 windres 嵌入。
 if(WIN32 AND NOT CMAKE_RC_COMPILER AND NOT DEFINED ENV{RC})
-    get_filename_component(XIGUCHAT_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(YUNJIAN_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
     find_program(CMAKE_RC_COMPILER NAMES windres.exe windres
-        HINTS "${XIGUCHAT_MINGW_BIN}" "$ENV{QT_MINGW_ROOT}/bin")
+        HINTS "${YUNJIAN_MINGW_BIN}" "$ENV{QT_MINGW_ROOT}/bin")
 endif()
 
-project(xiguchat VERSION 1.2.0 LANGUAGES CXX)
+project(yunjian VERSION 1.2.0 LANGUAGES CXX)
 
 # macOS 的窗口装饰要调用 AppKit，单独开 Objective-C++；Windows 侧只有空实现
 if(APPLE)
@@ -61,7 +61,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------- Qt 自动工具 ----------
 # moc（元对象编译）与 rcc（资源编译）由 CMake 自动处理：
 # 源码中出现的 Q_OBJECT 类、.qrc 文件都不用手写额外步骤。
-# 静态库与可执行目标共用这些开关，xiguchat_core 中的 Q_OBJECT 类同样会被 moc。
+# 静态库与可执行目标共用这些开关，yunjian_core 中的 Q_OBJECT 类同样会被 moc。
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 # 让编译器默认在当前目录找头文件（配合下方 include 目录使用）
@@ -95,7 +95,7 @@ if(NOT Qt6_FOUND)
 endif()
 
 # ------------------------------------------------------------
-#  xiguchat_core — 业务与传输层静态库
+#  yunjian_core — 业务与传输层静态库
 #
 #  只链接 Qt Core / Network：这里没有一行界面代码，
 #  界面层的一切（QML / 窗口 / 绘图）都在这个库之外。
@@ -152,7 +152,7 @@ set(NETWORK_HEADERS
     network/filetcpthread.h
 )
 
-add_library(xiguchat_core STATIC
+add_library(yunjian_core STATIC
     ${CORE_SOURCES} ${CORE_HEADERS}
     ${NETWORK_SOURCES} ${NETWORK_HEADERS}
 )
@@ -162,9 +162,9 @@ add_library(xiguchat_core STATIC
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}"
     FILES ${CORE_SOURCES} ${CORE_HEADERS} ${NETWORK_SOURCES} ${NETWORK_HEADERS})
 
-# PUBLIC：链接 xiguchat_core 的目标自动获得这三个头文件搜索路径，
+# PUBLIC：链接 yunjian_core 的目标自动获得这三个头文件搜索路径，
 # 源码里 #include "usermgr.h" / "httpmgr.h" 保持原样
-target_include_directories(xiguchat_core PUBLIC
+target_include_directories(yunjian_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/core/store
     ${CMAKE_CURRENT_SOURCE_DIR}/core/service
@@ -173,7 +173,7 @@ target_include_directories(xiguchat_core PUBLIC
 
 # 图片缩略图在 core/service 里用 QImage 生成，视频首帧由 QMediaPlayer 解码；
 # 核心库因此需要 Gui 与 Multimedia，客户端本来就链接 Quick，不额外引入界面依赖
-target_link_libraries(xiguchat_core PUBLIC
+target_link_libraries(yunjian_core PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Network
@@ -234,13 +234,13 @@ set(BRIDGE_HEADERS
 #  WIN32 标志：仅 Windows 生效——生成 GUI 子系统程序（无控制台黑窗），
 #  入口仍为 main()；macOS/Linux 下该标志被忽略，Qt 自动处理 GUI 程序
 # ------------------------------------------------------------
-add_executable(xiguchat WIN32
+add_executable(yunjian WIN32
     main.cpp
     ${BRIDGE_SOURCES} ${BRIDGE_HEADERS}
     resources/rc.qrc
 )
 
-target_include_directories(xiguchat PRIVATE
+target_include_directories(yunjian PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/bridge
 )
 
@@ -317,8 +317,8 @@ set(QML_FILES
     qml/SpineRibbon.qml
 )
 
-qt_add_qml_module(xiguchat
-    URI XiguChat
+qt_add_qml_module(yunjian
+    URI YunJian
     VERSION 1.0
     RESOURCE_PREFIX /qt/qml
     QML_FILES ${QML_FILES}
@@ -326,8 +326,8 @@ qt_add_qml_module(xiguchat
 )
 
 # 链接关系即分层关系：可执行依赖业务库与 Quick，业务库不认识它们
-target_link_libraries(xiguchat PRIVATE
-    xiguchat_core
+target_link_libraries(yunjian PRIVATE
+    yunjian_core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Quick
@@ -336,30 +336,30 @@ target_link_libraries(xiguchat PRIVATE
 )
 
 # 输出目录：构建目录下的 bin/（三平台产物统一在 build/<preset>/bin/ 下）
-set_target_properties(xiguchat PROPERTIES
+set_target_properties(yunjian PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
 # SVG 是图标源文件；PNG 用于页面与窗口，ICO/ICNS 用于系统应用图标。
 # Windows 需将图标嵌入 EXE，macOS 需随 bundle 放入 Resources。
 if(WIN32)
-    target_sources(xiguchat PRIVATE resources/xiguchat.rc)
-    target_include_directories(xiguchat PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+    target_sources(yunjian PRIVATE resources/yunjian.rc)
+    target_include_directories(yunjian PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources")
 endif()
 if(APPLE)
     # macOS 原生文件对话框以 bundle identifier 作为偏好域，必须使用稳定的非空标识。
     # Windows/Linux 由各自的平台文件选择器处理，不使用 macOS bundle 元数据。
-    set_target_properties(xiguchat PROPERTIES
+    set_target_properties(yunjian PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_BUNDLE_NAME "xiguchat"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.xiguchat.client"
-        MACOSX_BUNDLE_ICON_FILE "xiguchat.icns"
+        MACOSX_BUNDLE_BUNDLE_NAME "云笺"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.yunjian.client"
+        MACOSX_BUNDLE_ICON_FILE "yunjian.icns"
         # 版本号与 project(VERSION) 同源：Finder「显示简介」和崩溃报告都要读它
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
-    target_sources(xiguchat PRIVATE resources/xiguchat.icns)
-    set_source_files_properties(resources/xiguchat.icns PROPERTIES
+    target_sources(yunjian PRIVATE resources/yunjian.icns)
+    set_source_files_properties(resources/yunjian.icns PROPERTIES
         MACOSX_PACKAGE_LOCATION "Resources"
     )
 endif()
@@ -370,15 +370,15 @@ endif()
 #  保证程序可直接运行
 # ------------------------------------------------------------
 # config.ini 含服务器地址与密钥，仓库只有 config.ini.example，缺失时用它代替
-set(XIGUCHAT_CLIENT_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/config.ini")
-if(NOT EXISTS "${XIGUCHAT_CLIENT_CONFIG}")
-    set(XIGUCHAT_CLIENT_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example")
+set(YUNJIAN_CLIENT_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/config.ini")
+if(NOT EXISTS "${YUNJIAN_CLIENT_CONFIG}")
+    set(YUNJIAN_CLIENT_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example")
 endif()
 
-add_custom_command(TARGET xiguchat POST_BUILD
+add_custom_command(TARGET yunjian POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${XIGUCHAT_CLIENT_CONFIG}"
-        "$<TARGET_FILE_DIR:xiguchat>/config.ini"
+        "${YUNJIAN_CLIENT_CONFIG}"
+        "$<TARGET_FILE_DIR:yunjian>/config.ini"
     COMMENT "Copy config.ini to output"
 )
 
@@ -394,11 +394,11 @@ if(WIN32)
     find_program(WINDEPLOYQT_EXECUTABLE windeployqt
         HINTS "$ENV{QT_ROOT}/bin" "${CMAKE_PREFIX_PATH}/bin")
     if(WINDEPLOYQT_EXECUTABLE)
-        add_custom_command(TARGET xiguchat POST_BUILD
+        add_custom_command(TARGET yunjian POST_BUILD
             COMMAND "${WINDEPLOYQT_EXECUTABLE}"
                     --compiler-runtime --no-translations
                     --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
-                    "$<TARGET_FILE:xiguchat>"
+                    "$<TARGET_FILE:yunjian>"
             COMMENT "Deploy Qt runtime libraries via windeployqt")
     endif()
 endif()

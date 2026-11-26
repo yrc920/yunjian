@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
-import XiguChat
+import YunJian
 
 // 登录表单通过 bridge 提交，角色只跟随焦点和请求状态。
 // 表单按「角色 → 标题 → 邮箱 → 密码 → 记住行 → 按钮 → 入口行」排列。

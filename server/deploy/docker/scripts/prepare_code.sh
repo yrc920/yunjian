@@ -1,9 +1,9 @@
 #!/bin/bash
-# 准备源码：/workspace 为空则从 XIGU_REPO 克隆，已有仓库则拉取 XIGU_BRANCH 的最新代码
+# 准备源码：/workspace 为空则从 YUNJIAN_REPO 克隆，已有仓库则拉取 YUNJIAN_BRANCH 的最新代码
 set -uo pipefail
 
-REPO="${XIGU_REPO:-https://gitee.com/shishangyiwugu/xiguchat.git}"
-BRANCH="${XIGU_BRANCH:-main}"
+REPO="${YUNJIAN_REPO:-https://gitee.com/shishangyiwugu/yunjian.git}"
+BRANCH="${YUNJIAN_BRANCH:-main}"
 AUTO_PULL="${AUTO_PULL:-1}"
 WORK=/workspace
 

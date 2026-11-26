@@ -45,7 +45,7 @@ cmake --build --preset macos-clang
 | `windows-msvc`（构建用 `windows-msvc-debug` / `windows-msvc-release`） | Windows | 多配置生成器，产物在 `bin/<服务>/<Config>/` |
 | `macos-clang` / `macos-clang-release` | macOS | Ninja 单配置 |
 | `linux-gcc` / `linux-gcc-release` | Linux | Ninja 单配置 |
-| `linux-docker` | Linux 容器 | 依赖预装到 `/opt/xiguchat/vcpkg_installed`，带 ccache |
+| `linux-docker` | Linux 容器 | 依赖预装到 `/opt/yunjian/vcpkg_installed`，带 ccache |
 
 如果依赖已经装在固定目录，可复用而不触发重新安装：
 
@@ -57,7 +57,7 @@ cmake --preset macos-clang \
 
 ### proto 代码生成
 
-`server/proto/message.proto` 是全仓唯一来源，构建期生成 C++ 代码并打包为静态库 `xiguchat_proto`。改协议字段只需改这一份，然后重新构建；生成物不进入仓库。
+`server/proto/message.proto` 是全仓唯一来源，构建期生成 C++ 代码并打包为静态库 `yunjian_proto`。改协议字段只需改这一份，然后重新构建；生成物不进入仓库。
 
 ## 2.4 ChatServer 多实例
 
@@ -101,9 +101,9 @@ Qt Creator 用户直接打开 `client/CMakeLists.txt`，选择 Qt 6.5 Kit 即可
 
 | 平台 | 后端 | 客户端 |
 | --- | --- | --- |
-| macOS | `server/build/<preset>/bin/<服务或实例>/` | `client/build/<preset>/bin/xiguchat.app` |
+| macOS | `server/build/<preset>/bin/<服务或实例>/` | `client/build/<preset>/bin/yunjian.app` |
 | Linux | `server/build/<preset>/bin/<服务或实例>/` | 不发布 |
-| Windows | `server/build/<preset>/bin/<服务或实例>/<Config>/` | `client/build/<preset>/bin/xiguchat.exe` |
+| Windows | `server/build/<preset>/bin/<服务或实例>/<Config>/` | `client/build/<preset>/bin/yunjian.exe` |
 
 每个服务目录都包含可执行文件与 `config.ini`。服务按**当前工作目录**读取配置，因此必须进入自身目录启动。
 
@@ -128,8 +128,8 @@ ctest --preset macos-clang
 
 | 平台 | 命令 |
 | --- | --- |
-| Windows | `windeployqt --qmldir client/qml bin/xiguchat.exe`，随后整目录压缩 |
-| macOS | `macdeployqt bin/xiguchat.app -qmldir=client/qml -dmg`（可选签名/公证） |
+| Windows | `windeployqt --qmldir client/qml bin/yunjian.exe`，随后整目录压缩 |
+| macOS | `macdeployqt bin/yunjian.app -qmldir=client/qml -dmg`（可选签名/公证） |
 
 Qt 6.5 自带 QtQuick Controls 与虚拟键盘之外的最小依赖；`--qmldir` 必须指向 `client/qml`，否则运行时找不到自定义模块。
 
@@ -139,7 +139,7 @@ Qt 6.5 自带 QtQuick Controls 与虚拟键盘之外的最小依赖；`--qmldir`
 
 ```bash
 cd server
-docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 ```
 
 镜像内已包含编译工具链、MySQL 8、Redis 与部署脚本；业务代码在容器启动时从仓库拉取并编译。详见 [12 部署与运维](12-deployment.md)。
@@ -152,7 +152,7 @@ docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t xiguchat-serv
 | 后端 triplet | `x64-windows`（动态） | `arm64-osx`（静态为主） | `x64-linux`（静态为主） |
 | 运行时库 | 依赖 DLL 拷到可执行文件目录 | rpath / 系统路径 | rpath / 系统路径 |
 | 客户端编译器 | MinGW 11.2 | AppleClang | 不发布 |
-| 客户端产物 | `xiguchat.exe` | `xiguchat.app` | — |
+| 客户端产物 | `yunjian.exe` | `yunjian.app` | — |
 | CA 证书 | 无系统 PEM，依赖 OpenSSL 默认目录 | `/etc/ssl/cert.pem` | `/etc/ssl/certs/ca-certificates.crt` |
 
 ## 2.10 常见问题

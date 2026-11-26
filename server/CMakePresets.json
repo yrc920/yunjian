@@ -64,7 +64,7 @@
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-linux",
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_INSTALLED_DIR": "/opt/xiguchat/vcpkg_installed",
+        "VCPKG_INSTALLED_DIR": "/opt/yunjian/vcpkg_installed",
         "CMAKE_C_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
       }

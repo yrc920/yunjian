@@ -169,7 +169,7 @@ flowchart LR
 
 | 项 | 说明 |
 | --- | --- |
-| 缓存目录 | `<AppData>/XiguChat/xiguchat/users/<uid>/` |
+| 缓存目录 | `<AppData>/YunJian/yunjian/users/<uid>/` |
 | 权限 | 目录 0700，数据库与 WAL 0600 |
 | 删除 | `secure_delete=ON`；清空全部记录后 `VACUUM` |
 | 可关闭 | `[Storage] localCache=false` 时不落盘 |
@@ -183,7 +183,7 @@ flowchart LR
 | 平台 | 构建 | 打包 |
 | --- | --- | --- |
 | Windows | `cmake --preset windows-mingw` | `windeployqt --qmldir client/qml` |
-| macOS | `cmake --preset macos-clang` | `macdeployqt xiguchat.app -qmldir=client/qml` |
+| macOS | `cmake --preset macos-clang` | `macdeployqt yunjian.app -qmldir=client/qml` |
 
 macOS 的标题栏文字与深浅色由 `bridge/windowchrome_mac.mm` 处理；Windows 保持系统标题栏。托盘与通知使用 `QSystemTrayIcon`，不引入 QWidget 页面。
 

@@ -1,7 +1,7 @@
 import QtQuick
 import QtCore
 import QtQuick.Controls
-import XiguChat
+import YunJian
 
 // 聊天工作区：一级导航、索引列表和右侧内容共用一套桌面节奏。
 // 这里只负责布局与焦点，导航状态和业务动作都交给 ChatBridge。
@@ -346,7 +346,7 @@ Item {
         if (!hostWindow)
             return
         const count = bridge.unreadTotal
-        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") 信笺" : "信笺"
+        hostWindow.title = count > 0 ? "(" + (count > 99 ? "99+" : count) + ") 云笺" : "云笺"
     }
     onUnreadTotalChanged: refreshWindowTitle()
     onHostWindowChanged: if (hostWindow) bridge.setWindowActive(hostWindow.active)
@@ -358,7 +358,7 @@ Item {
         root.indexWidth = Math.max(root.minIndexWidth, Math.min(420, layoutPrefs.indexWidth || Theme.indexWidth))
         root.rebuildGroupRows()
     }
-    Component.onDestruction: if (hostWindow) hostWindow.title = "信笺"
+    Component.onDestruction: if (hostWindow) hostWindow.title = "云笺"
     Connections {
         target: root.hostWindow
         function onActiveChanged() {
@@ -614,7 +614,7 @@ Item {
             height: parent.height
             color: Theme.spine
 
-            // 书脊顶端垂下一小段书签：占住左上角，和信笺的气质一致，又不写任何文字
+            // 书脊顶端垂下一小段书签：占住左上角，和云笺的气质一致，又不写任何文字
             SpineRibbon {
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: 0

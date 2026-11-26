@@ -15,7 +15,7 @@
 
 namespace {
 constexpr int kSchemaVersion = 4;
-const char *kConnectionName = "xiguchat_local";
+const char *kConnectionName = "yunjian_local";
 
 //所有消息查询共用一份列清单，保证字段顺序与 readMessage 一一对应
 const char *kMessageColumns =

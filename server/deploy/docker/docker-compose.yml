@@ -1,4 +1,4 @@
-# XiguChat 后端容器编排。以下变量都取自同目录的 .env：
+# YunJian 后端容器编排。以下变量都取自同目录的 .env：
 #   PUBLIC_HOST  客户端实际访问的地址（必填）
 #   EMAIL_*      验证码邮件的发送账号
 #   GATE_PORT    GateServer 端口，启用 HTTPS 时改成 8443
@@ -7,9 +7,9 @@
 #   docker compose logs -f    查看日志
 #   docker compose down       停止（数据卷保留）
 services:
-  xiguchat:
-    image: xiguchat-server:amd64
-    container_name: xiguchat
+  yunjian:
+    image: yunjian-server:amd64
+    container_name: yunjian
     ports:
       # 同一端口既作 HTTP 也作 HTTPS：是否加密取决于 ./certs 里有没有证书
       - "${GATE_PORT:-8080}:${GATE_PORT:-8080}"
@@ -32,9 +32,9 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - workspace:/workspace
-      - resource-data:/var/lib/xiguchat/storage
+      - resource-data:/var/lib/yunjian/storage
       # 证书目录：放 fullchain.pem 与 privkey.pem，网关自动切到 HTTPS
-      - ./certs:/etc/xiguchat/certs:ro
+      - ./certs:/etc/yunjian/certs:ro
     restart: unless-stopped
 
 volumes:

@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
-import XiguChat
+import YunJian
 
 // 注册信息和请求状态归 bridge，表单负责焦点顺序与密码显示。
 // 字段全部单列：标签浮在框上，不再单独占一行，也不把两个密码框挤成半宽。

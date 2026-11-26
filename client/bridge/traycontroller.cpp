@@ -12,15 +12,15 @@ TrayController::TrayController(QObject *parent) : QObject(parent)
         return;
 
     _tray = new QSystemTrayIcon(this);
-    QIcon icon = QIcon(QStringLiteral(":/res/xiguchat.png"));
+    QIcon icon = QIcon(QStringLiteral(":/res/yunjian.png"));
     if (icon.isNull())
         icon = QApplication::windowIcon();
     _tray->setIcon(icon);
-    _tooltip = QStringLiteral("xiguchat");
+    _tooltip = QStringLiteral("yunjian");
     _tray->setToolTip(_tooltip);
 
     _menu = new QMenu();
-    QAction *open = _menu->addAction(tr("打开 xiguchat"));
+    QAction *open = _menu->addAction(tr("打开 yunjian"));
     connect(open, &QAction::triggered, this, &TrayController::openRequested);
     _menu->addSeparator();
     QAction *quit = _menu->addAction(tr("退出"));
@@ -51,7 +51,7 @@ TrayController::~TrayController()
 
 void TrayController::setTooltip(const QString &tooltip)
 {
-    const QString next = tooltip.isEmpty() ? QStringLiteral("xiguchat") : tooltip;
+    const QString next = tooltip.isEmpty() ? QStringLiteral("yunjian") : tooltip;
     if (_tooltip == next)
         return;
     _tooltip = next;

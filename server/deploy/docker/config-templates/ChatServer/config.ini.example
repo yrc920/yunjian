@@ -19,7 +19,7 @@ AdvertiseRpcHost = 127.0.0.1
 Capacity = 1000
 Port = 8090
 RPCPort = 50055
-# TLS：容器内 /etc/xiguchat/certs 下有证书时由 start_stack.sh 填入，留空按明文 TCP
+# TLS：容器内 /etc/yunjian/certs 下有证书时由 start_stack.sh 填入，留空按明文 TCP
 SslCert = __TLS_CERT__
 SslKey = __TLS_KEY__
 SslReloadSeconds = 60
@@ -30,7 +30,7 @@ Host = 127.0.0.1
 Port = 3306
 User = root
 Passwd = 123456
-Schema = xigu
+Schema = yunjian
 
 [Redis]
 Host = 127.0.0.1

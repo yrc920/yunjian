@@ -231,7 +231,7 @@ LIMIT ?
 
 ## 4.5 客户端本地库
 
-路径 `<AppData>/XiguChat/xiguchat/users/<uid>/chat.db`，SQLite schema v4，WAL 模式。
+路径 `<AppData>/YunJian/yunjian/users/<uid>/chat.db`，SQLite schema v4，WAL 模式。
 
 | 表 | 内容 |
 | --- | --- |

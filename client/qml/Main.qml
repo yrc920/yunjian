@@ -1,14 +1,14 @@
 import QtQuick
 import QtCore
 import QtQuick.Window
-import XiguChat
+import YunJian
 
 // 窗口负责页面装载、窗口尺寸和会话中断提示。
 // 认证页固定窄窗，聊天页给最小尺寸并尽量保留用户已拉大的窗口。
 Window {
     id: window
     visible: true
-    title: "信笺"
+    title: "云笺"
     color: Theme.desk
 
     //通知点击后要回到哪条会话；关闭到托盘时用 quitting 区分"隐藏"和"真退出"
@@ -62,7 +62,7 @@ Window {
     TrayController {
         id: tray
         tooltip: shell.unreadTotal > 0
-            ? "信笺 · " + shell.unreadTotal + " 条未读" : "信笺"
+            ? "云笺 · " + shell.unreadTotal + " 条未读" : "云笺"
 
         onOpenRequested: {
             window.show()

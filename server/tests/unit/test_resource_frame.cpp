@@ -57,7 +57,7 @@ Json::Value Header(const std::string& name, int seq, bool last)
 
 } // namespace
 
-XIGU_TEST(组帧拆帧往返一致)
+YUNJIAN_TEST(组帧拆帧往返一致)
 {
 	//含 NUL 与高位字节：分片是原始字节，任何一次按字符串处理都会截断
 	const std::string payload = Bytes({ 0x00, 0x01, 0xFF, 0xFE }) + " binary " + Bytes({ 0x7F });
@@ -79,7 +79,7 @@ XIGU_TEST(组帧拆帧往返一致)
 	CHECK_EQ(ReadHeaderLen(frame), static_cast<std::uint32_t>(frame.size() - payload.size() - 4));
 }
 
-XIGU_TEST(空载荷的帧)
+YUNJIAN_TEST(空载荷的帧)
 {
 	const auto frame = BuildFrame(Header("empty.bin", 1, true), nullptr, 0);
 	Json::Value header;
@@ -90,7 +90,7 @@ XIGU_TEST(空载荷的帧)
 	CHECK_EQ(header["name"].asString(), std::string("empty.bin"));
 }
 
-XIGU_TEST(头部含中文时的字节长度)
+YUNJIAN_TEST(头部含中文时的字节长度)
 {
 	//头长按字节算：中文文件名是 3 字节一个字，误用字符数会让分片错位
 	const auto frame = BuildFrame(Header("测试文件.bin", 2, false), "xy", 2);
@@ -103,7 +103,7 @@ XIGU_TEST(头部含中文时的字节长度)
 	CHECK(std::string(payload, payload_len) == "xy");
 }
 
-XIGU_TEST(包体不足四字节直接拒绝)
+YUNJIAN_TEST(包体不足四字节直接拒绝)
 {
 	Json::Value header;
 	const char* payload = nullptr;
@@ -113,7 +113,7 @@ XIGU_TEST(包体不足四字节直接拒绝)
 	CHECK(!SplitFrame(std::string("\x00\x00\x00", 3), header, payload, payload_len));
 }
 
-XIGU_TEST(头长为零或超上限被拒)
+YUNJIAN_TEST(头长为零或超上限被拒)
 {
 	Json::Value header;
 	const char* payload = nullptr;
@@ -130,7 +130,7 @@ XIGU_TEST(头长为零或超上限被拒)
 	CHECK_EQ(payload_len, static_cast<std::size_t>(0));
 }
 
-XIGU_TEST(头长超过包体长度被拒)
+YUNJIAN_TEST(头长超过包体长度被拒)
 {
 	Json::Value header;
 	const char* payload = nullptr;
@@ -149,7 +149,7 @@ XIGU_TEST(头长超过包体长度被拒)
 	CHECK(!SplitFrame(Frame(10, R"({"seq":1})"), header, payload, payload_len));
 }
 
-XIGU_TEST(头长接近UINT32_MAX时不溢出)
+YUNJIAN_TEST(头长接近UINT32_MAX时不溢出)
 {
 	//回归用例：早期写法是 4 + header_len > body.size()，
 	//header_len = 0xFFFFFFF0 时相加回绕，检查被绕过，随后 substr 抛 out_of_range
@@ -160,7 +160,7 @@ XIGU_TEST(头长接近UINT32_MAX时不溢出)
 	CHECK(!SplitFrame(Frame(0xFFFFFFFFu, std::string(32, 'y')), header, payload, payload_len));
 }
 
-XIGU_TEST(头部必须是JSON对象)
+YUNJIAN_TEST(头部必须是JSON对象)
 {
 	Json::Value header;
 	const char* payload = nullptr;
@@ -174,7 +174,7 @@ XIGU_TEST(头部必须是JSON对象)
 	CHECK(SplitFrame(Frame(2, "{}"), header, payload, payload_len));
 }
 
-XIGU_TEST(md5只接受三十二位十六进制)
+YUNJIAN_TEST(md5只接受三十二位十六进制)
 {
 	const std::string upper = "0123456789ABCDEF0123456789ABCDEF";
 	const std::string lower = "0123456789abcdef0123456789abcdef";
@@ -191,7 +191,7 @@ XIGU_TEST(md5只接受三十二位十六进制)
 	CHECK(!IsMd5(std::string(29, 'a') + "\xE4\xB8\xAD")); //29 + 3 字节的「中」
 }
 
-XIGU_TEST(文件名不允许逃出存储目录)
+YUNJIAN_TEST(文件名不允许逃出存储目录)
 {
 	//正常资源名
 	CHECK(IsSafeName("a.png"));
@@ -215,4 +215,4 @@ XIGU_TEST(文件名不允许逃出存储目录)
 	CHECK(!IsSafeName(std::string(MAX_NAME_LEN + 1, 'a')));
 }
 
-XIGU_TEST_MAIN()
+YUNJIAN_TEST_MAIN()

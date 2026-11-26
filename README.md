@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="client/resources/xiguchat.png" width="112" alt="XiguChat">
+  <img src="client/resources/yunjian.png" width="112" alt="云笺 YunJian">
 </p>
 
-<h1 align="center">XiguChat</h1>
+<h1 align="center">云笺 YunJian</h1>
 
 <p align="center"><strong>全 C++ 的即时通讯系统</strong>：Qt 6 桌面客户端 + gRPC 微服务后端</p>
 
@@ -15,7 +15,7 @@
 <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
-XiguChat 是一套可以直接部署、也可以用来学习分布式 IM 设计的完整系统。客户端负责登录、好友、单聊、群聊与文件传输；后端由五个服务、六个进程组成（ChatServer 两个实例），分别处理 HTTP 网关、会话路由、长连接消息、验证码与资源传输。服务之间通过 gRPC 通信，在线状态放在 Redis，持久化数据放在 MySQL。
+YunJian 是一套可以直接部署、也可以用来学习分布式 IM 设计的完整系统。客户端负责登录、好友、单聊、群聊与文件传输；后端由五个服务、六个进程组成（ChatServer 两个实例），分别处理 HTTP 网关、会话路由、长连接消息、验证码与资源传输。服务之间通过 gRPC 通信，在线状态放在 Redis，持久化数据放在 MySQL。
 
 客户端面向 **Windows / macOS**，后端支持 **Windows / macOS / Linux** 三平台构建。仓库同时提供单容器 Docker 部署，服务器只需要安装 Docker。
 
@@ -111,7 +111,7 @@ flowchart TB
 
 ```bash
 cd server
-docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 
 cd deploy/docker
 cp .env.example .env          # 至少填写 PUBLIC_HOST
@@ -119,7 +119,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-首次启动会依次完成：拉取代码 → 初始化 MySQL 并导入 `backup/xigu.sql` → 编译 → 启动六个服务进程（两个 ChatServer 实例）。健康检查：
+首次启动会依次完成：拉取代码 → 初始化 MySQL 并导入 `backup/yunjian.sql` → 编译 → 启动六个服务进程（两个 ChatServer 实例）。健康检查：
 
 ```bash
 curl http://<PUBLIC_HOST>:8080/healthz
@@ -137,8 +137,8 @@ docker run -d --name chat-mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=123456 mysql
 docker run -d --name chat-redis -p 6380:6379 redis:latest redis-server --requirepass 123456
 
 docker exec -i chat-mysql mysql -uroot -p123456 -e \
-  "CREATE DATABASE IF NOT EXISTS xigu DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-docker exec -i chat-mysql mysql -uroot -p123456 xigu < backup/xigu.sql
+  "CREATE DATABASE IF NOT EXISTS yunjian DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+docker exec -i chat-mysql mysql -uroot -p123456 yunjian < backup/yunjian.sql
 
 # 后端
 cd server
@@ -187,7 +187,7 @@ cd server/build/macos-clang/bin
 | 目录 | 内容 |
 | --- | --- |
 | `client/` | Qt 6 客户端：`core/` 业务与状态、`network/` 通信、`bridge/` QML 边界、`qml/` 界面、`resources/` 资源 |
-| `server/common/` | 公共库 `xiguchat_common`：配置、日志、Redis、MySQL、TLS、线程池 |
+| `server/common/` | 公共库 `yunjian_common`：配置、日志、Redis、MySQL、TLS、线程池 |
 | `server/proto/` | 全仓唯一的 proto 定义 |
 | `server/services/` | 五个服务：Gate / Status / Chat / Verify / Resource |
 | `server/tests/` | CTest 单元与集成测试 |

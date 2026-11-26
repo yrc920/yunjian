@@ -106,7 +106,7 @@ sequenceDiagram
 | 想改什么 | 从哪里开始 |
 | --- | --- |
 | 新增长连接消息 | 两端 `const.h` / `global.h` 加号 → `RegisterCallBacks()` → 客户端 `TcpMgr` 注册处理 |
-| 改表结构字段 | `backup/xigu.sql` → 对应 DAO → 协议 JSON → 客户端模型 |
+| 改表结构字段 | `backup/yunjian.sql` → 对应 DAO → 协议 JSON → 客户端模型 |
 | 改登录流程 | `LogicSystemSession.cpp` + `sessionservice.cpp` |
 | 改消息投递 | `LogicSystemChat.cpp` + `SessionRouter` + `ChatServiceImpl` |
 | 改资源上传 | `ResourceHandler.cpp` + `FileWorker.cpp` + 客户端 `fileservice.cpp` |
@@ -118,7 +118,7 @@ sequenceDiagram
 | 进程 | 控制台 | 文件 |
 | --- | --- | --- |
 | 服务端全部 | stdout | `<服务目录>/logs/<服务名>.log`，32 MB × 5 |
-| 客户端 | Debug 构建默认开 | `<AppData>/XiguChat/xiguchat/logs/client.log`，8 MB × 4 |
+| 客户端 | Debug 构建默认开 | `<AppData>/YunJian/yunjian/logs/client.log`，8 MB × 4 |
 
 服务端日志级别在各自 `config.ini` 的 `[Log]` 调整；客户端在 `client/config.ini` 的 `[Log]` 调整。排障时先调到 `debug`，复现后改回 `info`。
 
@@ -129,8 +129,8 @@ sequenceDiagram
 docker run -d --name chat-mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=123456 mysql:8
 docker run -d --name chat-redis -p 6380:6379 redis:latest redis-server --requirepass 123456
 docker exec -i chat-mysql mysql -uroot -p123456 -e \
-  "CREATE DATABASE xigu DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-docker exec -i chat-mysql mysql -uroot -p123456 xigu < backup/xigu.sql
+  "CREATE DATABASE yunjian DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+docker exec -i chat-mysql mysql -uroot -p123456 yunjian < backup/yunjian.sql
 
 # 2. 构建
 cd server && cmake --preset macos-clang && cmake --build --preset macos-clang
@@ -149,7 +149,7 @@ curl http://127.0.0.1:8080/healthz
 cd ../../.. && ctest --preset macos-clang
 ```
 
-客户端使用 `backup/xigu.sql` 的演示账号登录（密码均为 `123456`）：
+客户端使用 `backup/yunjian.sql` 的演示账号登录（密码均为 `123456`）：
 
 | 账号 | 邮箱 |
 | --- | --- |

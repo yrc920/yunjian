@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 好友标签编辑器：已选标签可点 × 移除，回车或点预设标签增删。
 // 申请好友与编辑好友资料共用同一套交互，避免两处行为不一致。

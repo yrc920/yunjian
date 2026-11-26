@@ -1,6 +1,6 @@
--- XiguChat 数据库快照（干净库：仅 5 个演示账号，无好友/会话/消息）
+-- YunJian 数据库快照：仅 5 个演示账号，无好友/申请/会话/消息
 -- 适用：MySQL 8.0+ / 9.x，字符集 utf8mb4
--- 导入：mysql -uroot -p xigu < backup/xigu.sql
+-- 导入：mysql -uroot -p yunjian < backup/yunjian.sql
 --
 -- 表关系：
 --   user                账号与公开资料
@@ -159,8 +159,8 @@ CREATE TABLE `chat_message_archive` (
 -- 演示账号（密码均为 123456，客户端 xor 后发送 745230）
 -- ---------------------------------------------------------------------------
 INSERT INTO `user` (`uid`,`name`,`email`,`pwd`,`nick`,`desc`,`sex`,`icon`) VALUES
-(1001,'西故','3099154616@qq.com','$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8','xigu','',0,''),
-(1002,'霄宫','xigu920@163.com','$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870','烟花','',1,''),
+(1001,'西故','3099154616@qq.com','$argon2id$v=19$m=262144,t=3,p=1$bD899q54K8vMwy+5fc7JKA$/jVJP8RyQj0mFzJqY/56T2F9f3SB74NSBm9Lxc0XoZ8','yunjian','',0,''),
+(1002,'霄宫','yunjian920@163.com','$argon2id$v=19$m=262144,t=3,p=1$o/CzQVrUYHFP1kQbYhSztw$7KdjCxJlu0I7uDrmqqIivmuBUfII15hYy66h3Q6H870','烟花','',1,''),
 (1003,'test1','123@123.com','$argon2id$v=19$m=65536,t=2,p=1$tXdYqduAQZKxtsyo3ac+rQ$voCSwFb/G2QfrcmexfKS8KLxyTaDS3TWC3bmVmzy6WU','','',0,''),
 (1004,'test2','456@456.com','$argon2id$v=19$m=65536,t=2,p=1$gNlpRDd7H5TFIwsvI/uZVQ$sh+mt+qXh0xQ0fA5Ij1E75KRnWrUVl4MMlFihDbccUs','','',0,''),
 (1005,'test3','789@789.com','$argon2id$v=19$m=65536,t=2,p=1$8B35hu43rJDUBr0yoqwExA$5HzrZBveaYnAXzXgcKc1d+lixv6vkbvVcWmxOi2F65Q','','',0,'');

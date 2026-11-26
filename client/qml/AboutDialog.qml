@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import XiguChat
+import YunJian
 
 // 关于：一封写给用户的短信。品牌、版本、作者的话都在这里，边栏不再挂版本号。
 Popup {
@@ -44,7 +44,7 @@ Popup {
                 }
                 Text {
                     id: appTitle
-                    text: "信笺"
+                    text: "云笺"
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontDisplay
                     font.weight: Font.DemiBold
@@ -74,7 +74,7 @@ Popup {
 
             Text {
                 width: parent.width
-                text: "写给打开信笺的你："
+                text: "写给打开云笺的你："
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontBody
                 font.weight: Font.Medium

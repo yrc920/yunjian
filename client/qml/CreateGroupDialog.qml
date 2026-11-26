@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import XiguChat
+import YunJian
 
 // 发起群聊：勾选好友 + 群名，创建成功后由 ChatBridge 直接进入新群。
 // 至少选一位好友；群名留空时服务端回落到"群聊"。

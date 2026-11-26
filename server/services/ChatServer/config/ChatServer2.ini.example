@@ -31,7 +31,7 @@ Host = 127.0.0.1
 Port = 3306
 User = root
 Passwd = 123456
-Schema = xigu
+Schema = yunjian
 
 [Redis]
 Host = 127.0.0.1

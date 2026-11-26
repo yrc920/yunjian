@@ -10,7 +10,7 @@
 ```mermaid
 flowchart TB
     subgraph Host["服务器"]
-        subgraph Container["xiguchat 容器"]
+        subgraph Container["yunjian 容器"]
             My[("MySQL 3306")]
             Re[("Redis 6380")]
             G["GateServer 8080"]
@@ -39,21 +39,21 @@ flowchart TB
 
 ```bash
 cd server
-docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 ```
 
 | 镜像内容 | 说明 |
 | --- | --- |
 | 工具链 | GCC 11、CMake 3.31、Ninja、vcpkg（baseline 与 `vcpkg.json` 一致） |
-| 依赖 | 预编译到 `/opt/xiguchat/vcpkg_installed`，运行机无需联网拉依赖 |
+| 依赖 | 预编译到 `/opt/yunjian/vcpkg_installed`，运行机无需联网拉依赖 |
 | 数据库 | MySQL 8（经典协议 3306）+ Redis（6380） |
-| 脚本与模板 | `/opt/xiguchat/scripts`、`/opt/xiguchat/config-templates` |
+| 脚本与模板 | `/opt/yunjian/scripts`、`/opt/yunjian/config-templates` |
 
 首次构建约 1 小时，主要是 vcpkg 编译依赖；之后命中缓存会快很多。网络受限时传代理：
 
 ```bash
 docker build --platform linux/amd64 --build-arg PROXY=http://host.docker.internal:7890 \
-  -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+  -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 ```
 
 > **镜像与代码必须同一提交**：镜像自带脚本与配置模板，业务代码在容器启动时从仓库拉取。只更新代码不重建镜像，会继续使用旧模板；只重建镜像不推代码，拉到的仍是旧代码。
@@ -70,7 +70,7 @@ cp .env.example .env
 | `PUBLIC_HOST` | 是 | 客户端访问地址；聊天与资源地址由它下发 |
 | `GATE_PORT` | 是 | 8080 明文 / 8443 HTTPS |
 | `EMAIL_*` | 注册需要 | SMTP 账号与授权码 |
-| `XIGU_REPO` / `XIGU_BRANCH` | 否 | 容器拉取的仓库与分支 |
+| `YUNJIAN_REPO` / `YUNJIAN_BRANCH` | 否 | 容器拉取的仓库与分支 |
 | `AUTO_PULL` | 否 | 启动时是否拉最新代码 |
 | `SKIP_BUILD` | 否 | 1 表示跳过编译 |
 
@@ -85,7 +85,7 @@ curl http://<PUBLIC_HOST>:8080/healthz
 ```mermaid
 flowchart LR
     A["启动 Redis"] --> B["准备代码<br/>克隆或拉取"]
-    B --> C["初始化 MySQL<br/>建库 + 导入 xigu.sql"]
+    B --> C["初始化 MySQL<br/>建库 + 导入 yunjian.sql"]
     C --> D["编译服务端"]
     D --> E["渲染配置模板"]
     E --> F["启动六个进程"]
@@ -98,7 +98,7 @@ flowchart LR
 把域名 A 记录指向服务器公网 IP，确认生效：
 
 ```bash
-dig +short xiguchat.example.com
+dig +short yunjian.example.com
 ```
 
 境内服务器需要完成 ICP 备案，否则 80/443 会被拦截。
@@ -119,7 +119,7 @@ chmod 600 certs/privkey.pem
 `.env` 修改：
 
 ```ini
-PUBLIC_HOST=xiguchat.example.com
+PUBLIC_HOST=yunjian.example.com
 GATE_PORT=8443
 ```
 
@@ -135,10 +135,10 @@ tcp listening on :8090 (tls)
 
 ```bash
 # 证书链 + 应用健康
-curl -v https://xiguchat.example.com:8443/healthz
+curl -v https://yunjian.example.com:8443/healthz
 
 # 只看证书
-openssl s_client -connect xiguchat.example.com:8443 -servername xiguchat.example.com
+openssl s_client -connect yunjian.example.com:8443 -servername yunjian.example.com
 ```
 
 客户端同步修改：
@@ -146,7 +146,7 @@ openssl s_client -connect xiguchat.example.com:8443 -servername xiguchat.example
 ```ini
 [GateServer]
 scheme=https
-host=xiguchat.example.com
+host=yunjian.example.com
 port=8443
 
 [Network]
@@ -161,32 +161,32 @@ tls=true
 
 | 文件 | 内容 |
 | --- | --- |
-| `backup/xigu.sql` | 5 个演示账号、一条会话与若干消息 |
-| `backup/xigu_clean.sql` | 账号、好友关系与一个空会话，适合正式环境 |
+| `backup/yunjian.sql` | 5 个演示账号、一条会话与若干消息 |
+| `backup/yunjian_clean.sql` | 账号、好友关系与一个空会话，适合正式环境 |
 
 ### 全新环境
 
 ```bash
 docker compose down -v     # 清空 MySQL 与资源卷
-docker compose up -d       # 自动导入 xigu.sql
+docker compose up -d       # 自动导入 yunjian.sql
 ```
 
 ### 只洗数据库
 
 ```bash
-docker exec -i xiguchat bash -c "
-  mysql -uroot -p123456 -e 'DROP DATABASE xigu;
-    CREATE DATABASE xigu DEFAULT CHARACTER SET utf8mb4;' &&
-  mysql -uroot -p123456 xigu < /workspace/backup/xigu.sql"
+docker exec -i yunjian bash -c "
+  mysql -uroot -p123456 -e 'DROP DATABASE yunjian;
+    CREATE DATABASE yunjian DEFAULT CHARACTER SET utf8mb4;' &&
+  mysql -uroot -p123456 yunjian < /workspace/backup/yunjian.sql"
 docker compose restart
 ```
 
-换 `xigu_clean.sql` 即得到不含演示数据的库。
+换 `yunjian_clean.sql` 即得到不含演示数据的库。
 
 ### 备份
 
 ```bash
-docker exec xiguchat mysqldump -uroot -p123456 --single-transaction xigu > xigu-$(date +%F).sql
+docker exec yunjian mysqldump -uroot -p123456 --single-transaction yunjian > yunjian-$(date +%F).sql
 # 卷名带 compose 项目前缀，先确认实际名称
 docker volume ls | grep resource-data
 docker run --rm -v docker_resource-data:/data -v $PWD:/backup alpine \
@@ -199,21 +199,21 @@ docker run --rm -v docker_resource-data:/data -v $PWD:/backup alpine \
 
 ```bash
 # 服务器上
-docker exec xiguchat /opt/xiguchat/scripts/update.sh
+docker exec yunjian /opt/yunjian/scripts/update.sh
 ```
 
 脚本依次：拉取代码 → 编译 → 停旧服务 → 启动新服务。编译失败会中止，旧服务继续运行。
 
-如果镜像内的模板或脚本有变化（例如新增配置段），必须重新构建镜像；只跑 `update.sh` 不会更新 `/opt/xiguchat` 下的模板。
+如果镜像内的模板或脚本有变化（例如新增配置段），必须重新构建镜像；只跑 `update.sh` 不会更新 `/opt/yunjian` 下的模板。
 
 ## 12.7 健康检查与日志
 
 | 项 | 位置 |
 | --- | --- |
 | 健康检查 | `GET /healthz` 返回 Redis/MySQL 状态与运行时长 |
-| 服务 stdout | `/var/log/xigu/<服务>.log`（容器内） |
+| 服务 stdout | `/var/log/yunjian/<服务>.log`（容器内） |
 | 服务文件日志 | `<服务目录>/logs/<服务>.log` |
-| 客户端日志 | `<AppData>/XiguChat/xiguchat/logs/client.log` |
+| 客户端日志 | `<AppData>/YunJian/yunjian/logs/client.log` |
 
 建议监控：
 
@@ -269,4 +269,4 @@ cd build/linux-gcc-release/bin
 | 注册收不到验证码 | SMTP 授权码错误 | 检查 `EMAIL_PASS` 与 VerifyServer 日志 |
 | HTTPS 起不来 | 证书只放了一个文件 | `fullchain.pem` 与 `privkey.pem` 必须同时存在 |
 | 换端口后客户端连不上 | `GATE_PORT` 与客户端 `port` 不一致 | 两处同步修改 |
-| 洗库后登录提示账号不存在 | 导入的是 `xigu_clean.sql` | 用演示库或自行注册 |
+| 洗库后登录提示账号不存在 | 导入的是 `yunjian_clean.sql` | 用演示库或自行注册 |

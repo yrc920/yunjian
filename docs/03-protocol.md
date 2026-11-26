@@ -172,7 +172,7 @@
 "group": {"thread_id":3,"name":"项目群","notice":"","icon":"<md5>.png",
           "icon_owner":1003,"owner":1003,"member_count":3,
           "my_role":2,"muted":false,"my_nick":"","created_at":1795148478}
-"members": [{"uid":1001,"name":"西故","nick":"xigu","icon":"","sex":0,
+"members": [{"uid":1001,"name":"西故","nick":"yunjian","icon":"","sex":0,
              "role":2,"group_nick":""}]
 ```
 

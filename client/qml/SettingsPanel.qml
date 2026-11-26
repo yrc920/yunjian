@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 设置索引：文字分组标签 + 单行条目 + 底部固定退出。
 // 不再堆小字：每行只留标题和右箭头，账号 ID、外观值、版本号都收进各自的页面。
@@ -135,7 +135,7 @@ Rectangle {
         SettingsRailRow {
             width: parent.width
             icon: "brand"
-            title: "关于信笺"
+            title: "关于云笺"
             caption: "版本与作者的话"
             onClicked: {
                 root.forceActiveFocus()
@@ -307,7 +307,7 @@ Rectangle {
                 onClicked: root.aboutRequested()
             }
             AppToolTip {
-                text: "关于信笺"
+                text: "关于云笺"
                 hovered: compactAboutArea.containsMouse
             }
         }

@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
-import XiguChat
+import YunJian
 
 // 找回密码通过用户名、邮箱与验证码验证，状态由 ResetBridge 提供。
 // 与注册页同一套字段节奏：单列、浮动标签、行内验证码按钮、两次密码。

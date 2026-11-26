@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import XiguChat
+import YunJian
 
 // 消息搜索：检索本机已同步的文本消息，点结果回到原会话并定位到那一条。
 // 面板只负责输入与展示，查询、会话切换、上下文装载都在 ChatBridge 里。

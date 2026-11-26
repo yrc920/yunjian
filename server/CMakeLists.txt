@@ -1,5 +1,5 @@
 # ============================================================
-#  XiguChat Server — 后端微服务（CMake 构建）
+#  YunJian Server — 后端微服务（CMake 构建）
 #
 #  技术栈: C++20 + gRPC + protobuf + boost::asio/beast + hiredis
 #          + jsoncpp + Boost.MySQL
@@ -31,7 +31,7 @@ endif()
 set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
     CACHE FILEPATH "vcpkg toolchain file")
 
-project(xiguchat-server VERSION 1.0.0 LANGUAGES CXX)
+project(yunjian-server VERSION 1.0.0 LANGUAGES CXX)
 
 # ---------- C++ 标准 ----------
 # 统一使用 C++20；REQUIRED 表示编译器不支持时直接配置失败，
@@ -41,7 +41,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # 把项目自带的 cmake/ 目录加入模块搜索路径，
-# 这样下面 include(XiguChatCommon) 才能找到 cmake/XiguChatCommon.cmake
+# 这样下面 include(YunJianCommon) 才能找到 cmake/YunJianCommon.cmake
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # ---------- 查找依赖（vcpkg 提供） ----------
@@ -83,12 +83,12 @@ else()
 endif()
 
 # ---------- 公共部署函数 ----------
-# XiguChatCommon.cmake 提供 xiguchat_deploy()：
+# YunJianCommon.cmake 提供 yunjian_deploy()：
 # 每个服务构建后自动拷贝 config.ini（三平台）与运行时 DLL（仅 Windows）到输出目录
-include(XiguChatCommon)
+include(YunJianCommon)
 
 # ---------- proto 共享库 ----------
-# proto/CMakeLists.txt 定义 xiguchat_proto 静态库：
+# proto/CMakeLists.txt 定义 yunjian_proto 静态库：
 # 构建期用 protoc 从 proto/message.proto 生成 C++ 代码，
 # 各服务共用同一份生成代码，避免各服务重复维护 proto
 add_subdirectory(proto)

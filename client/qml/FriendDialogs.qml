@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 好友表单共用一个弹层；标题和操作始终可见，内容按需滚动。
 // overlay 只有两种形态：apply 填写申请、auth 通过申请。

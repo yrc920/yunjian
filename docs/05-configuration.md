@@ -22,7 +22,7 @@
 | `StatusServer` | `Host` / `Port` | 127.0.0.1:50052 | 状态服务地址 |
 | `Mysql` | `Host` / `Port` | 127.0.0.1:3306 | 经典协议 |
 | | `QueryTimeoutMs` | 5000 | 单条查询 deadline |
-| | `User` / `Passwd` / `Schema` | root / 123456 / xigu | 数据库账号 |
+| | `User` / `Passwd` / `Schema` | root / 123456 / yunjian | 数据库账号 |
 | `Redis` | `Host` / `Port` / `Passwd` | 127.0.0.1:6380 / 123456 | 缓存 |
 | `Log` | `Level` | info | trace/debug/info/warn/error/critical/off |
 | | `Dir` | logs | 相对当前工作目录 |
@@ -133,7 +133,7 @@
 | `EMAIL_HOST` / `EMAIL_PORT` | smtp.qq.com / 465 | SMTP |
 | `EMAIL_USER` / `EMAIL_PASS` | 空 | 授权码 |
 | `EMAIL_FROM` | `EMAIL_USER` | 发件人 |
-| `XIGU_REPO` / `XIGU_BRANCH` | Gitee 仓库 / main | 容器启动时拉取的代码 |
+| `YUNJIAN_REPO` / `YUNJIAN_BRANCH` | Gitee 仓库 / main | 容器启动时拉取的代码 |
 | `AUTO_PULL` | 1 | 启动时是否拉最新代码 |
 | `SKIP_BUILD` | 0 | 1 表示跳过编译，直接使用上次产物 |
 

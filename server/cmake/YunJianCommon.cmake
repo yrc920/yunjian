@@ -1,7 +1,7 @@
 # ============================================================
-#  XiguChatCommon.cmake — 后端公共部署规则
+#  YunJianCommon.cmake — 后端公共部署规则
 #
-#  xiguchat_deploy(<target>) 在目标构建完成后执行：
+#  yunjian_deploy(<target>) 在目标构建完成后执行：
 #    1. 拷贝本服务目录的 config.ini 到可执行文件目录（三平台通用）
 #    2. 拷贝运行时 DLL 到可执行文件目录（仅 Windows）
 #
@@ -17,7 +17,7 @@
 #  这些规则用于本机构建部署，不会生成独立的跨机器安装包。
 # ============================================================
 
-function(xiguchat_deploy TARGET)
+function(yunjian_deploy TARGET)
     # ---- 1. config.ini（三平台都需要：服务按当前工作目录读取配置） ----
     # config.ini 含本机地址与密钥，仓库只有 config.ini.example；
     # 缺失时用示例生成一份以完成构建，运行前仍需按实际环境填写服务地址与密钥

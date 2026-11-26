@@ -12,7 +12,7 @@
  * 三端统一用 Qt 的日志类别，业务代码只写 qCDebug(lcNet) << "..."，
  * 不直接碰文件、不加时间戳前缀。输出格式、级别与落盘位置由 Log::Init 决定。
  *
- * 日志目录：<AppData>/XiguChat/logs/client.log，单文件 8 MiB，保留 3 个历史文件；
+ * 日志目录：<AppData>/YunJian/logs/client.log，单文件 8 MiB，保留 3 个历史文件；
  * 控制台输出只在 [Log] console=true 或 Debug 构建时打开。
  *
  *****************************************************************************/

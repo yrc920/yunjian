@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import XiguChat
+import YunJian
 
 //转发先选择收件人，确认后再发送，避免列表误点直接投递。
 // 过滤只在前端做，不触发服务端搜索。

@@ -10,7 +10,7 @@ port=8080
 [Network]
 tls=false
 
-# 客户端日志：文件写在 <AppData>/XiguChat/logs/client.log，8 MiB 滚动，保留 3 份
+# 客户端日志：文件写在 <AppData>/YunJian/logs/client.log，8 MiB 滚动，保留 3 份
 # level 可选 debug / info / warn / error / off；Debug 构建默认 debug 且开控制台，
 # Release 构建默认 info、只写文件
 # rules 透传给 Qt 的 QT_LOGGING_RULES 语法，例如 "xc.net.debug=false"
@@ -20,7 +20,7 @@ console=false
 file=true
 rules=
 
-# 本地聊天缓存（<AppData>/XiguChat/xiguchat/users/<uid>/chat.db）
+# 本地聊天缓存（<AppData>/YunJian/yunjian/users/<uid>/chat.db）
 # 共享电脑或要求"退出后不留痕"时可设为 false：不再落盘，历史只从服务端拉取
 [Storage]
 localCache=true

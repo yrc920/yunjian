@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
-import XiguChat
+import YunJian
 
 // 群资料：信头式布局，内容列限宽 680 并居中，左右各留 48px 起。
 // 群名、群公告、我在本群的昵称都能就地改；"编辑群资料"保留批量入口。

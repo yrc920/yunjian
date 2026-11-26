@@ -26,8 +26,8 @@
 # ============================================================
 
 # 断言与用例注册头，单元测试和集成测试共用
-add_library(xigu_test_support INTERFACE)
-target_include_directories(xigu_test_support INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_library(yunjian_test_support INTERFACE)
+target_include_directories(yunjian_test_support INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_subdirectory(unit)
 add_subdirectory(integration)

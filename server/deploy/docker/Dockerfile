@@ -1,9 +1,9 @@
-# XiguChat 后端镜像：编译环境与运行环境合一
+# YunJian 后端镜像：编译环境与运行环境合一
 #
 # 镜像内容：
 #   · 工具链  GCC 11 + CMake 3.31 + Ninja + vcpkg（依赖版本由 vcpkg.json 的
 #     builtin-baseline 锁定）
-#   · 依赖    vcpkg 第三方库已预编译到 /opt/xiguchat/vcpkg_installed
+#   · 依赖    vcpkg 第三方库已预编译到 /opt/yunjian/vcpkg_installed
 #   · 存储    MySQL 8（经典协议 3306）+ Redis
 #   · 脚本    取代码 / 建库 / 编译 / 启动，见 deploy/docker/scripts
 #
@@ -11,7 +11,7 @@
 # 且要求构建机能直连 GitHub。预编译后，运行镜像的机器不必再联网下载。
 #
 # 构建（构建上下文为 server 目录）：
-#   docker build -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+#   docker build -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 FROM --platform=linux/amd64 ubuntu:22.04
 
 ARG VCPKG_COMMIT=b8b8df2201ad8509b81a830fe0957bcb98e06c27
@@ -26,7 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     VCPKG_ROOT=/opt/vcpkg \
     VCPKG_FORCE_SYSTEM_BINARIES=1 \
-    CCACHE_DIR=/opt/xiguchat/ccache \
+    CCACHE_DIR=/opt/yunjian/ccache \
     PATH="/opt/cmake/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ---------- 1. 编译工具链 ----------
@@ -69,17 +69,17 @@ RUN export http_proxy="${PROXY}" https_proxy="${PROXY}" \
 # 本层只依赖 vcpkg.json，与项目源码无关：改代码重建镜像时命中缓存，不会重跑。
 # overlay triplet 把依赖限制为 release 变体（项目以 Release 构建，Debug 用不到），
 # 可省掉近一半编译时间。
-ENV VCPKG_OVERLAY_TRIPLETS=/opt/xiguchat/triplets
-COPY deploy/docker/triplets /opt/xiguchat/triplets
-COPY vcpkg.json /opt/xiguchat/deps/vcpkg.json
+ENV VCPKG_OVERLAY_TRIPLETS=/opt/yunjian/triplets
+COPY deploy/docker/triplets /opt/yunjian/triplets
+COPY vcpkg.json /opt/yunjian/deps/vcpkg.json
 RUN --mount=type=cache,target=/opt/vcpkg/downloads \
     --mount=type=cache,target=/opt/vcpkg/buildtrees \
-    --mount=type=cache,target=/opt/xiguchat/bincache \
+    --mount=type=cache,target=/opt/yunjian/bincache \
     export http_proxy="${PROXY}" https_proxy="${PROXY}" \
-       VCPKG_DEFAULT_BINARY_CACHE=/opt/xiguchat/bincache \
- && cd /opt/xiguchat/deps \
+       VCPKG_DEFAULT_BINARY_CACHE=/opt/yunjian/bincache \
+ && cd /opt/yunjian/deps \
  && /opt/vcpkg/vcpkg install \
-        --x-install-root=/opt/xiguchat/vcpkg_installed \
+        --x-install-root=/opt/yunjian/vcpkg_installed \
         --triplet=x64-linux \
  && rm -rf /opt/vcpkg/packages
 
@@ -87,7 +87,7 @@ RUN --mount=type=cache,target=/opt/vcpkg/downloads \
 # 从 MySQL 官方 APT 源安装（X 插件随之编入但已在 mysql.cnf 里关闭，只监听 3306）。
 # 用官方源是为了固定小版本行为，Ubuntu 仓库的 mysql-server 也可替换，但需重新验证初始化。
 # 安装后清空数据目录：首次启动由 init_db.sh 以空口令初始化，避免包初始化时的随机口令。
-COPY deploy/docker/mysql.cnf /etc/mysql/conf.d/xigu.cnf
+COPY deploy/docker/mysql.cnf /etc/mysql/conf.d/yunjian.cnf
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
  && chmod +x /usr/sbin/policy-rc.d \
  && export http_proxy="${PROXY}" https_proxy="${PROXY}" \
@@ -113,23 +113,23 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
  && rm -f /usr/sbin/policy-rc.d
 
 # ---------- 7. 脚本与配置模板 ----------
-COPY deploy/docker/scripts /opt/xiguchat/scripts
-COPY deploy/docker/config-templates /opt/xiguchat/config-templates
-RUN chmod +x /opt/xiguchat/scripts/*.sh \
- && mkdir -p /var/log/xigu /workspace /var/run/mysqld /var/lib/redis /var/lib/xiguchat/storage \
-              /etc/xiguchat/certs \
+COPY deploy/docker/scripts /opt/yunjian/scripts
+COPY deploy/docker/config-templates /opt/yunjian/config-templates
+RUN chmod +x /opt/yunjian/scripts/*.sh \
+ && mkdir -p /var/log/yunjian /workspace /var/run/mysqld /var/lib/redis /var/lib/yunjian/storage \
+              /etc/yunjian/certs \
  && ccache -M 2G
 
 # ---------- 8. 编译校验 + 预热 ccache ----------
 # 验证镜像内的工具链能编译本项目；同时填充 ccache，让容器里首次编译更快。
 # 源码不留在镜像中，运行时的代码来自仓库拉取或外部挂载。
-COPY . /opt/xiguchat/src
-WORKDIR /opt/xiguchat/src
+COPY . /opt/yunjian/src
+WORKDIR /opt/yunjian/src
 RUN cmake --preset linux-docker \
  && cmake --build --preset linux-docker --parallel 8 \
- && rm -rf /opt/xiguchat/src
+ && rm -rf /opt/yunjian/src
 
 WORKDIR /workspace
-VOLUME ["/var/lib/mysql", "/workspace", "/var/lib/xiguchat/storage"]
+VOLUME ["/var/lib/mysql", "/workspace", "/var/lib/yunjian/storage"]
 EXPOSE 8080 8090 8091 9090
-CMD ["/opt/xiguchat/scripts/entrypoint.sh"]
+CMD ["/opt/yunjian/scripts/entrypoint.sh"]

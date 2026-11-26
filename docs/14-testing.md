@@ -53,7 +53,7 @@ ctest --preset macos-clang
 | GateServer | `127.0.0.1:8080` |
 | ChatServer | `127.0.0.1:8090` |
 | ResourceServer | `127.0.0.1:9090` |
-| MySQL | `127.0.0.1:3306`，schema `xigu` |
+| MySQL | `127.0.0.1:3306`，schema `yunjian` |
 | Redis | `127.0.0.1:6380` |
 
 端口不通时测试进程返回 **77**，CTest 记为 `Skipped`，不会把"忘记起服务"误报成失败。
@@ -62,10 +62,10 @@ ctest --preset macos-clang
 
 ```bash
 cmake --preset macos-clang \
-  -DXIGU_TEST_EMAIL=456@456.com \
-  -DXIGU_TEST_PASSWD=745230 \
-  -DXIGU_TEST_GATE=127.0.0.1:8080 \
-  -DXIGU_TEST_RESOURCE=127.0.0.1:9090
+  -DYUNJIAN_TEST_EMAIL=456@456.com \
+  -DYUNJIAN_TEST_PASSWD=745230 \
+  -DYUNJIAN_TEST_GATE=127.0.0.1:8080 \
+  -DYUNJIAN_TEST_RESOURCE=127.0.0.1:9090
 ```
 
 `passwd` 是 XOR 之后的形态（`123456` → `745230`），不是界面输入的明文。
@@ -76,10 +76,10 @@ cmake --preset macos-clang \
 
 | 宏 | 作用 |
 | --- | --- |
-| `XIGU_TEST(名字)` | 注册一个用例，名字可以含空格 |
+| `YUNJIAN_TEST(名字)` | 注册一个用例，名字可以含空格 |
 | `CHECK(expr)` / `CHECK_EQ(a,b)` | 失败后继续执行，汇总报告 |
 | `REQUIRE(expr)` | 失败立即结束当前用例 |
-| `XIGU_TEST_SUMMARY()` | 打印汇总并返回退出码 |
+| `YUNJIAN_TEST_SUMMARY()` | 打印汇总并返回退出码 |
 
 集成测试用 `TestClient` 封装同步 socket：连接、发送帧、等待指定响应号、跳过无关通知。
 
@@ -91,7 +91,7 @@ cmake --preset macos-clang \
 #include "TestSupport.h"
 #include "RequestValidation.h"
 
-XIGU_TEST(拒绝越权撤回)
+YUNJIAN_TEST(拒绝越权撤回)
 {
     Json::Value root;
     root["thread_id"] = Json::Int64(1);
@@ -100,7 +100,7 @@ XIGU_TEST(拒绝越权撤回)
 }
 ```
 
-集成测试放进 `tests/integration/`，在 `CMakeLists.txt` 里用 `xigu_integration_test()` 注册；新用例会自动获得 `RESOURCE_LOCK`，避免并发登录互踢。
+集成测试放进 `tests/integration/`，在 `CMakeLists.txt` 里用 `yunjian_integration_test()` 注册；新用例会自动获得 `RESOURCE_LOCK`，避免并发登录互踢。
 
 ## 14.6 手工回归清单
 

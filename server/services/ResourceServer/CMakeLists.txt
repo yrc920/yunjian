@@ -6,7 +6,7 @@
 #    · 逻辑线程按会话分派，落盘线程按文件名分派
 #    · 连接先校验 uid + token，再绑定到本次传输
 #
-#  依赖: Boost + hiredis + jsoncpp + xiguchat_proto(gRPC) + Threads（MySQL 走 xiguchat_common）
+#  依赖: Boost + hiredis + jsoncpp + yunjian_proto(gRPC) + Threads（MySQL 走 yunjian_common）
 #  产物: 单配置为 bin/ResourceServer/，多配置为 bin/ResourceServer/<配置名>/
 # ============================================================
 
@@ -58,9 +58,9 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 
 target_link_libraries(${SERVER_NAME} PRIVATE
     # 公共基础设施（配置、事件循环线程池、Redis 连接池）
-    xiguchat_common
-    # 图片上传完成通知 ChatServer；xiguchat_proto 已 PUBLIC 链接 gRPC/protobuf
-    xiguchat_proto
+    yunjian_common
+    # 图片上传完成通知 ChatServer；yunjian_proto 已 PUBLIC 链接 gRPC/protobuf
+    yunjian_proto
     Boost::filesystem
     Boost::headers
     hiredis::hiredis
@@ -77,4 +77,4 @@ endif()
 set_target_properties(${SERVER_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${SERVER_NAME}")
 
-xiguchat_deploy(${SERVER_NAME})
+yunjian_deploy(${SERVER_NAME})

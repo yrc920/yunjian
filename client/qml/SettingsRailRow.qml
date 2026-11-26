@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 设置栏的一行：40 前置块 + 标题/说明 + 右箭头。
 // 选中铺纸卡 + 左侧 2px 墨线，悬停叠一层 selected；不画焦点边框。

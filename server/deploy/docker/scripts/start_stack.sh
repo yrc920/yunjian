@@ -14,7 +14,7 @@ export EMAIL_PASS="${EMAIL_PASS:-}"
 export EMAIL_FROM="${EMAIL_FROM:-${EMAIL_USER}}"
 
 # 证书两个文件都挂进来才启用 HTTPS；只挂了一个就当没配，免得网关直接起不来
-CERT_DIR=/etc/xiguchat/certs
+CERT_DIR=/etc/yunjian/certs
 if [ -f "${CERT_DIR}/fullchain.pem" ] && [ -f "${CERT_DIR}/privkey.pem" ]; then
     export TLS_CERT="${CERT_DIR}/fullchain.pem"
     export TLS_KEY="${CERT_DIR}/privkey.pem"
@@ -24,8 +24,8 @@ else
 fi
 
 BIN=/workspace/server/build/linux-docker/bin
-TPL=/opt/xiguchat/config-templates
-LOG=/var/log/xigu
+TPL=/opt/yunjian/config-templates
+LOG=/var/log/yunjian
 
 render() {
     local tpl="$1" out="$2" var val key

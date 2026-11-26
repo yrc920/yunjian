@@ -22,7 +22,7 @@ tail -n 50 server/build/macos-clang/bin/ChatServer/logs/ChatServer.log
 | 现象 | 先看 | 常见原因 |
 | --- | --- | --- |
 | 连接被拒绝 | 网关是否监听、地址端口 | 服务没起；`PUBLIC_HOST`/端口填错；防火墙 |
-| `1009` 密码错误 | 账号是否来自当前库 | 导入的是 `xigu_clean.sql`；密码不是 `123456`；客户端 XOR 未生效 |
+| `1009` 密码错误 | 账号是否来自当前库 | 导入的是 `yunjian_clean.sql`；密码不是 `123456`；客户端 XOR 未生效 |
 | `1010` 令牌失效 | 是否刚登出/改密/被顶号 | 自动登录令牌过期；重置密码后旧令牌被吊销 |
 | `1105` 登录过于频繁 | StatusServer 日志 | 10 秒内同一 uid 超过 5 次；客户端重连风暴 |
 | `1022` 验证码频繁 | Redis `code_cd_*` | 60 秒冷却或小时配额 |
@@ -120,7 +120,7 @@ openssl s_client -connect <域名>:8443 -servername <域名> </dev/null 2>/dev/n
 | --- | --- | --- |
 | 容器反复重启 | 首次编译失败 | `docker compose logs` 看 CMake/vcpkg |
 | 改了配置不生效 | 模板在镜像里 | 重建镜像，或直接改容器内 `config.ini` 仅用于临时验证 |
-| 代码不是最新 | `AUTO_PULL=0` 或分支不对 | `docker exec xiguchat /opt/xiguchat/scripts/update.sh` |
+| 代码不是最新 | `AUTO_PULL=0` 或分支不对 | `docker exec yunjian /opt/yunjian/scripts/update.sh` |
 | 洗库后数据还在 | 没删卷 | `docker compose down -v` 再 `up -d` |
 | 登录成功但客户端连不上 | `PUBLIC_HOST` 是容器地址 | 改成公网域名/IP |
 
@@ -138,8 +138,8 @@ openssl s_client -connect <域名>:8443 -servername <域名> </dev/null 2>/dev/n
 
 | 平台 | 路径 |
 | --- | --- |
-| macOS | `~/Library/Application Support/XiguChat/xiguchat/logs/client.log` |
-| Windows | `%APPDATA%\XiguChat\xiguchat\logs\client.log` |
+| macOS | `~/Library/Application Support/YunJian/yunjian/logs/client.log` |
+| Windows | `%APPDATA%\YunJian\yunjian\logs\client.log` |
 
 ## 15.10 日志级别
 

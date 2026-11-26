@@ -1,13 +1,13 @@
 [SelfServer]
 Port = 9090
-# TLS：容器内 /etc/xiguchat/certs 下有证书时由 start_stack.sh 填入，留空按明文 TCP
+# TLS：容器内 /etc/yunjian/certs 下有证书时由 start_stack.sh 填入，留空按明文 TCP
 SslCert = __TLS_CERT__
 SslKey = __TLS_KEY__
 SslReloadSeconds = 60
 
 # 头像与文件落盘目录，docker-compose 将 resource-data 卷挂到这里
 [Storage]
-Path = /var/lib/xiguchat/storage
+Path = /var/lib/yunjian/storage
 # 每用户存储上限（MB），0 表示不限制
 QuotaMB = 1024
 # 中断上传的 .part 保留多久（小时）
@@ -21,7 +21,7 @@ Host = 127.0.0.1
 Port = 3306
 User = root
 Passwd = 123456
-Schema = xigu
+Schema = yunjian
 
 [Redis]
 Host = 127.0.0.1

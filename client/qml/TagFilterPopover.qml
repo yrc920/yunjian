@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 标签筛选浮层：标签条放不下时从「更多」展开，避免把一行挤成横向滚动。
 // 选中即生效并关闭；点浮层空白或按 Esc 收起。

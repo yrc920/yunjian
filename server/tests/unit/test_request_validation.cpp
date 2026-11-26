@@ -30,27 +30,27 @@ Json::Value Parse(const std::string& text)
 
 } // namespace
 
-XIGU_TEST(请求体必须是对象)
+YUNJIAN_TEST(请求体必须是对象)
 {
 	CHECK_EQ(ValidateChatRequest(ID_HEART_BEAT_REQ, Json::Value(42), kUid), Error_Json);
 	CHECK_EQ(ValidateChatRequest(ID_HEART_BEAT_REQ, Json::Value(), kUid), Error_Json);
 }
 
-XIGU_TEST(未认证连接不能发业务请求)
+YUNJIAN_TEST(未认证连接不能发业务请求)
 {
 	const auto request = Parse(R"({"fromuid":1004,"touid":1001})");
 	CHECK_EQ(ValidateChatRequest(ID_TEXT_CHAT_MSG_REQ, request, 0), TokenInvalid);
 	CHECK_EQ(ValidateChatRequest(ID_LOGOUT_REQ, Parse("{}"), 0), TokenInvalid);
 }
 
-XIGU_TEST(已认证连接不能重复登录)
+YUNJIAN_TEST(已认证连接不能重复登录)
 {
 	//一条连接只绑定一个用户，重复登录会让原用户的映射失去清理时机
 	const auto request = Parse(R"({"uid":1004,"token":"abc"})");
 	CHECK_EQ(ValidateChatRequest(MSG_CHAT_LOGIN, request, kUid), TokenInvalid);
 }
 
-XIGU_TEST(登录请求的字段约束)
+YUNJIAN_TEST(登录请求的字段约束)
 {
 	CHECK_EQ(ValidateChatRequest(MSG_CHAT_LOGIN,
 		Parse(R"({"uid":1004,"token":"utoken_1004"})"), 0), Success);
@@ -61,7 +61,7 @@ XIGU_TEST(登录请求的字段约束)
 	CHECK_EQ(ValidateChatRequest(MSG_CHAT_LOGIN, Parse(R"({"uid":1004})"), 0), Error_Json);
 }
 
-XIGU_TEST(心跳只校验操作者本人)
+YUNJIAN_TEST(心跳只校验操作者本人)
 {
 	CHECK_EQ(ValidateChatRequest(ID_HEART_BEAT_REQ, Parse(R"({"fromuid":1004})"), kUid), Success);
 	//冒用他人身份：请求里的 fromuid 与服务端绑定的 uid 不一致
@@ -69,7 +69,7 @@ XIGU_TEST(心跳只校验操作者本人)
 		UidInvalid);
 }
 
-XIGU_TEST(单聊消息不能发给自己)
+YUNJIAN_TEST(单聊消息不能发给自己)
 {
 	const auto to_self = Parse(R"({"fromuid":1004,"touid":1004,)"
 		R"("text_array":[{"msgid":"m1","content":"hi"}]})");
@@ -80,7 +80,7 @@ XIGU_TEST(单聊消息不能发给自己)
 	CHECK_EQ(ValidateChatRequest(ID_TEXT_CHAT_MSG_REQ, missing_target, kUid), UidInvalid);
 }
 
-XIGU_TEST(文本消息的数组约束)
+YUNJIAN_TEST(文本消息的数组约束)
 {
 	const auto empty_array = Parse(R"({"fromuid":1004,"touid":1001,"text_array":[]})");
 	CHECK_EQ(ValidateChatRequest(ID_TEXT_CHAT_MSG_REQ, empty_array, kUid), Error_Json);
@@ -97,7 +97,7 @@ XIGU_TEST(文本消息的数组约束)
 	CHECK_EQ(ValidateChatRequest(ID_TEXT_CHAT_MSG_REQ, not_object, kUid), Error_Json);
 }
 
-XIGU_TEST(群消息的 touid 固定为 0)
+YUNJIAN_TEST(群消息的 touid 固定为 0)
 {
 	//群聊的目标是 thread_id：touid=0 不能被「不能发给自己」的规则误杀
 	const auto group = Parse(R"({"fromuid":1004,"touid":0,"thread_id":77,)"
@@ -110,7 +110,7 @@ XIGU_TEST(群消息的 touid 固定为 0)
 	CHECK_EQ(ValidateChatRequest(ID_TEXT_CHAT_MSG_REQ, negative, kUid), Error_Json);
 }
 
-XIGU_TEST(建群成员的数量与类型)
+YUNJIAN_TEST(建群成员的数量与类型)
 {
 	std::string too_many = R"({"fromuid":1004,"name":"群","members":[)";
 	for (int i = 0; i < MAX_CREATE_GROUP_MEMBER + 1; ++i)
@@ -129,7 +129,7 @@ XIGU_TEST(建群成员的数量与类型)
 		Parse(R"({"fromuid":1004,"name":"群","members":[1001,1002]})"), kUid), Success);
 }
 
-XIGU_TEST(群操作的 action 白名单)
+YUNJIAN_TEST(群操作的 action 白名单)
 {
 	const std::string prefix = R"({"fromuid":1004,"thread_id":77,)";
 
@@ -156,7 +156,7 @@ XIGU_TEST(群操作的 action 白名单)
 		Parse(prefix + R"("action":"set_admin","target":1001})"), kUid), Success);
 }
 
-XIGU_TEST(好友标签的数量与字符长度)
+YUNJIAN_TEST(好友标签的数量与字符长度)
 {
 	const auto no_tags = Parse(R"({"uid":1004,"touid":1001,)"
 		R"("applyname":"你好","bakname":""})");
@@ -180,7 +180,7 @@ XIGU_TEST(好友标签的数量与字符长度)
 		Error_Json);
 }
 
-XIGU_TEST(资料更新的性别取值)
+YUNJIAN_TEST(资料更新的性别取值)
 {
 	const auto make = [](int sex) {
 		return Parse(R"({"nick":"昵称","desc":"签名","sex":)" + std::to_string(sex) + "}");
@@ -192,7 +192,7 @@ XIGU_TEST(资料更新的性别取值)
 	CHECK_EQ(ValidateChatRequest(ID_UPDATE_PROFILE_REQ, make(-1), kUid), Error_Json);
 }
 
-XIGU_TEST(图片消息的文件名与md5)
+YUNJIAN_TEST(图片消息的文件名与md5)
 {
 	const std::string md5 = "0123456789abcdef0123456789abcdef";
 	const auto make = [&](const std::string& name, const std::string& hash) {
@@ -213,7 +213,7 @@ XIGU_TEST(图片消息的文件名与md5)
 		Error_Json);
 }
 
-XIGU_TEST(文件消息的大小与原始文件名)
+YUNJIAN_TEST(文件消息的大小与原始文件名)
 {
 	const auto base = std::string(R"({"fromuid":1004,"touid":1001,"msg_type":3,)"
 		R"("md5":"0123456789abcdef0123456789abcdef","name":"res.bin",)"
@@ -233,7 +233,7 @@ XIGU_TEST(文件消息的大小与原始文件名)
 	CHECK_EQ(ValidateChatRequest(ID_RESOURCE_CHAT_MSG_REQ, wrong_type, kUid), Error_Json);
 }
 
-XIGU_TEST(已读与撤回的标识必须为正)
+YUNJIAN_TEST(已读与撤回的标识必须为正)
 {
 	CHECK_EQ(ValidateChatRequest(ID_MARK_READ_REQ,
 		Parse(R"({"thread_id":77,"message_id":9})"), kUid), Success);
@@ -246,11 +246,11 @@ XIGU_TEST(已读与撤回的标识必须为正)
 		Success);
 }
 
-XIGU_TEST(未知请求一律拒绝)
+YUNJIAN_TEST(未知请求一律拒绝)
 {
 	//校验层是白名单：没有对应分支的 msg id 不能默认放行到业务层
 	const auto request = Parse(R"({"fromuid":1004,"touid":1001})");
 	CHECK_EQ(ValidateChatRequest(9999, request, kUid), Error_Json);
 }
 
-XIGU_TEST_MAIN()
+YUNJIAN_TEST_MAIN()

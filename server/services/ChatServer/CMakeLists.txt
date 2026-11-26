@@ -5,8 +5,8 @@
 #    config/<实例名>.ini  ->  build/bin/<实例名>/（可执行文件 + 依赖库 + config.ini）
 #  新增实例只需往 config/ 下再放一份 ini，无需改动本文件。
 #
-#  依赖: xiguchat_proto（共享 proto 库）+ gRPC/protobuf + Boost
-#        + hiredis + jsoncpp（MySQL 走 xiguchat_common 的 Boost.MySQL）
+#  依赖: yunjian_proto（共享 proto 库）+ gRPC/protobuf + Boost
+#        + hiredis + jsoncpp（MySQL 走 yunjian_common 的 Boost.MySQL）
 #  产物: 单配置为 bin/<实例名>/；多配置为 bin/<实例名>/<配置名>/
 # ============================================================
 
@@ -94,7 +94,7 @@ add_executable(${SERVER_NAME} ${SERVER_SOURCES} ${SERVER_HEADERS})
 target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---------- 链接库 ----------
-# xiguchat_proto:            共享 proto 生成代码（静态库）
+# yunjian_proto:            共享 proto 生成代码（静态库）
 # gRPC::grpc++:          gRPC C++ 运行时
 # protobuf::libprotobuf: protobuf 运行时
 # Boost::filesystem:     路径处理
@@ -103,8 +103,8 @@ target_include_directories(${SERVER_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/i
 # JsonCpp::JsonCpp:      JSON 库
 # Threads::Threads:      线程支持
 target_link_libraries(${SERVER_NAME} PRIVATE
-    xiguchat_common
-    xiguchat_proto
+    yunjian_common
+    yunjian_proto
     gRPC::grpc++
     protobuf::libprotobuf
     Boost::filesystem

@@ -1,6 +1,6 @@
 <RCC>
     <qresource prefix="/">
-        <file alias="res/xiguchat.png">xiguchat.png</file>
+        <file alias="res/yunjian.png">yunjian.png</file>
         <file alias="res/emoji/smile.png">emoji/smile.png</file>
         <file alias="res/emoji/laugh.png">emoji/laugh.png</file>
         <file alias="res/emoji/wink.png">emoji/wink.png</file>

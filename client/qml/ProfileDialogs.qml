@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 资料编辑共用弹层，两种形态：
 //   self   —— 改自己的昵称、性别、个性签名

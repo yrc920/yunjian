@@ -193,7 +193,7 @@ Item {
 
             Text {
                 x: 16
-                text: "信笺 " + Qt.application.version
+                text: "云笺 " + Qt.application.version
                 color: Theme.textHint
                 font.pixelSize: Theme.fontCaption
             }

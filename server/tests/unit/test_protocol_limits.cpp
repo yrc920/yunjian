@@ -17,7 +17,7 @@
 
 #include "TestSupport.h"
 
-XIGU_TEST(UTF8字符计数按首字节统计)
+YUNJIAN_TEST(UTF8字符计数按首字节统计)
 {
 	CHECK_EQ(Utf8CharCount(""), static_cast<std::size_t>(0));
 	CHECK_EQ(Utf8CharCount("hello"), static_cast<std::size_t>(5));
@@ -34,7 +34,7 @@ XIGU_TEST(UTF8字符计数按首字节统计)
 	CHECK_EQ(Utf8CharCount("你好\xF0\x9F\x98\x80" "abc"), static_cast<std::size_t>(6));
 }
 
-XIGU_TEST(协议号分段且请求响应相邻)
+YUNJIAN_TEST(协议号分段且请求响应相邻)
 {
 	//2xxx 连接、3xxx 好友、4xxx 消息、5xxx 群聊；1000 段只留 HTTP 与错误码
 	CHECK(MSG_CHAT_LOGIN >= 2000 && MSG_CHAT_LOGIN < 3000);
@@ -50,7 +50,7 @@ XIGU_TEST(协议号分段且请求响应相邻)
 	CHECK(MAX_REQUEST_ID > ID_NOTIFY_GROUP_CHANGED);
 }
 
-XIGU_TEST(发包时必须转网络序)
+YUNJIAN_TEST(发包时必须转网络序)
 {
 	const std::uint16_t msg_id = ID_TEXT_CHAT_MSG_REQ; //4007 = 0x0FA7
 	SendNode node("hello", 5, msg_id);
@@ -63,7 +63,7 @@ XIGU_TEST(发包时必须转网络序)
 	CHECK(std::string(node._data + HEAD_TOTAL_LEN, 5) == "hello");
 }
 
-XIGU_TEST(长度字段的2字节上限不被截断)
+YUNJIAN_TEST(长度字段的2字节上限不被截断)
 {
 	//MAX_RESPONSE_LEN = 65535 - 4，是 2 字节长度字段能承载的最大包体；
 	//再大就必须回错误包而不是截断后发出去
@@ -77,7 +77,7 @@ XIGU_TEST(长度字段的2字节上限不被截断)
 	CHECK(std::string(node._data + HEAD_TOTAL_LEN, body.size()) == body);
 }
 
-XIGU_TEST(空包体只发包头)
+YUNJIAN_TEST(空包体只发包头)
 {
 	SendNode node("", 0, ID_HEARTBEAT_RSP);
 	const auto* bytes = reinterpret_cast<const unsigned char*>(node._data);
@@ -87,7 +87,7 @@ XIGU_TEST(空包体只发包头)
 	CHECK_EQ(static_cast<int>((bytes[2] << 8) | bytes[3]), 0);
 }
 
-XIGU_TEST(整型列按实际kind取值)
+YUNJIAN_TEST(整型列按实际kind取值)
 {
 	//signed 与 unsigned 都要能读：库里 id 列多是 unsigned，
 	//早期统一按 as_int64() 取值会在 uid 上抛 bad_value_access
@@ -99,7 +99,7 @@ XIGU_TEST(整型列按实际kind取值)
 	CHECK_EQ(MysqlFieldToInt64(boost::mysql::field_view(big)), std::int64_t(-1));
 }
 
-XIGU_TEST(空值与不可转换的列按零处理)
+YUNJIAN_TEST(空值与不可转换的列按零处理)
 {
 	//NULL 不能抛异常：COUNT(*) 之外的聚合、可空外键都会读到 NULL
 	CHECK_EQ(MysqlFieldToInt64(boost::mysql::field_view()), std::int64_t(0));
@@ -113,14 +113,14 @@ XIGU_TEST(空值与不可转换的列按零处理)
 	CHECK_EQ(MysqlFieldToInt64(boost::mysql::field_view(1.9)), std::int64_t(1));
 }
 
-XIGU_TEST(字符串列转换保留空值语义)
+YUNJIAN_TEST(字符串列转换保留空值语义)
 {
 	CHECK_EQ(MysqlFieldToString(boost::mysql::field_view()), std::string());
-	CHECK_EQ(MysqlFieldToString(boost::mysql::field_view(boost::mysql::string_view("xigu"))),
-		std::string("xigu"));
+	CHECK_EQ(MysqlFieldToString(boost::mysql::field_view(boost::mysql::string_view("yunjian"))),
+		std::string("yunjian"));
 	//整型列按十进制输出，调用方不必区分列的原始类型
 	CHECK_EQ(MysqlFieldToString(boost::mysql::field_view(std::int64_t(1004))),
 		std::string("1004"));
 }
 
-XIGU_TEST_MAIN()
+YUNJIAN_TEST_MAIN()

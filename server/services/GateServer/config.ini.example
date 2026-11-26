@@ -28,7 +28,7 @@ Port = 3306
 QueryTimeoutMs = 5000
 User = root
 Passwd = 123456
-Schema = xigu
+Schema = yunjian
 [Redis]
 Host = 127.0.0.1
 Port = 6380

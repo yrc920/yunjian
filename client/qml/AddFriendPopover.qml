@@ -1,5 +1,5 @@
 import QtQuick
-import XiguChat
+import YunJian
 
 // 联系人页的加好友浮层：说明、搜索按钮和结果都在这里，输入框仍是上方那一条。
 // 搜索、已是好友、已发申请、未找到都在浮层内表达，只有填写申请时才打开表单。

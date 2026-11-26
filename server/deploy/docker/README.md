@@ -1,6 +1,6 @@
 # Docker 部署入口
 
-这个目录提供 XiguChat 后端的单容器部署：镜像内包含编译工具链、MySQL 8、Redis 与全部服务，服务器只需要 Docker。完整的部署、TLS、洗库与升级说明在 [docs/12-deployment.md](../../../docs/12-deployment.md)。
+这个目录提供 YunJian 后端的单容器部署：镜像内包含编译工具链、MySQL 8、Redis 与全部服务，服务器只需要 Docker。完整的部署、TLS、洗库与升级说明在 [docs/12-deployment.md](../../../docs/12-deployment.md)。
 
 ## 目录内容
 
@@ -18,7 +18,7 @@
 ```bash
 # 1. 构建镜像（上下文是 server/）
 cd server
-docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t xiguchat-server:amd64 .
+docker build --platform linux/amd64 -f deploy/docker/Dockerfile -t yunjian-server:amd64 .
 
 # 2. 配置
 cd deploy/docker
@@ -30,7 +30,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-首次启动依次完成：启动 Redis → 拉取代码 → 初始化 MySQL 并导入 `backup/xigu.sql` → 编译 → 渲染配置 → 启动六个服务进程。
+首次启动依次完成：启动 Redis → 拉取代码 → 初始化 MySQL 并导入 `backup/yunjian.sql` → 编译 → 渲染配置 → 启动六个服务进程。
 
 健康检查：
 
@@ -56,14 +56,14 @@ docker compose up -d
 只洗数据库、保留资源文件：
 
 ```bash
-docker exec -i xiguchat bash -c "
-  mysql -uroot -p123456 -e 'DROP DATABASE xigu;
-    CREATE DATABASE xigu DEFAULT CHARACTER SET utf8mb4;' &&
-  mysql -uroot -p123456 xigu < /workspace/backup/xigu.sql"
+docker exec -i yunjian bash -c "
+  mysql -uroot -p123456 -e 'DROP DATABASE yunjian;
+    CREATE DATABASE yunjian DEFAULT CHARACTER SET utf8mb4;' &&
+  mysql -uroot -p123456 yunjian < /workspace/backup/yunjian.sql"
 docker compose restart
 ```
 
-`backup/xigu.sql` 含演示数据；`backup/xigu_clean.sql` 是干净库。两份结构一致。
+`backup/yunjian.sql` 含演示数据；`backup/yunjian_clean.sql` 是干净库。两份结构一致。
 
 ## TLS
 
@@ -79,7 +79,7 @@ docker compose restart
 ## 更新
 
 ```bash
-docker exec xiguchat /opt/xiguchat/scripts/update.sh
+docker exec yunjian /opt/yunjian/scripts/update.sh
 ```
 
 脚本会拉取代码、编译、停旧服务、启动新服务；编译失败时旧服务不受影响。**修改了 `config-templates/` 或 `scripts/` 时必须重建镜像**，只更新代码不会更新镜像内的模板。

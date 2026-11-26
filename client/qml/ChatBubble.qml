@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Effects
-import XiguChat
+import YunJian
 
 // 文本用气泡，图片直接显示圆角缩略图；自己发的消息左侧留状态位。
 // 图片上方没有百分比数字，只在底部叠一条随上传推进的细进度条，完成后整条消失。

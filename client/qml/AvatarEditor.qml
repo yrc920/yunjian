@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Dialogs
-import XiguChat
+import YunJian
 
 // 系统选图与模态裁剪分开，取消选图或裁剪都不会改变当前头像。
 // 弹层本身不做图像处理，加载、缩放、保存都交给 ImageCropper。

@@ -27,8 +27,9 @@ int main(int argc, char *argv[])
     //QApplication 只为 QSystemTrayIcon 提供 QtWidgets 后端；QML/Quick 仍是唯一 UI 层，
     //不创建任何 QWidget 页面。QApplication 是 QGuiApplication 的子类，事件循环不变
     QApplication app(argc, argv);
-    QGuiApplication::setApplicationName(QStringLiteral("xiguchat"));
-    QGuiApplication::setOrganizationName(QStringLiteral("XiguChat"));
+    QGuiApplication::setApplicationName(QStringLiteral("yunjian"));
+    QGuiApplication::setOrganizationName(QStringLiteral("YunJian"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("云笺"));
     QGuiApplication::setApplicationVersion(QStringLiteral("1.2.0"));
     //日志要在其它单例之前就绪：启动阶段的失败同样要落到文件里
     Log::Init();
@@ -45,7 +46,7 @@ int main(int argc, char *argv[])
     // 统一设置应用窗口图标（三端通用，从 qrc 资源加载）：
     // Windows/Linux 显示在窗口标题栏与任务栏；
     // macOS 窗口标题栏不显示图标，Dock 图标由 .app bundle 内的 .icns 提供（见 CMakeLists APPLE 分支）
-    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/res/xiguchat.png")));
+    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/res/yunjian.png")));
 
     // config.ini 与可执行文件同目录（构建后由 CMake 拷到产物目录）
     const QString config_path = QDir(QCoreApplication::applicationDirPath())
@@ -75,7 +76,7 @@ int main(int argc, char *argv[])
         FileTcpThread file_tcp_thread;
 
         QQmlApplicationEngine engine;
-        engine.load(QUrl(QStringLiteral("qrc:/qt/qml/XiguChat/qml/Main.qml")));
+        engine.load(QUrl(QStringLiteral("qrc:/qt/qml/YunJian/qml/Main.qml")));
         if (engine.rootObjects().isEmpty())
             exitCode = 1;
         else

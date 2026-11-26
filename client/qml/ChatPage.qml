@@ -2,7 +2,7 @@ import QtQuick
 import QtCore
 import QtQuick.Controls
 import QtQuick.Dialogs
-import XiguChat
+import YunJian
 
 // 会话页只管理编辑与呈现，提交内容由外层交给聊天服务。
 // 结构：标题栏 → 消息列表 → 输入区；列表滚动与光标跟随都在本页处理。

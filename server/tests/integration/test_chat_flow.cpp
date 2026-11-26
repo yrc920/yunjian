@@ -183,7 +183,7 @@ int main(int argc, char** argv)
 
 	conn.Close();
 	//失败时把最后一次传输/协议错误的原文带出来：断言只打印条件，看不到 error 的内容
-	if (::xigutest::Failures() > 0 && !error.empty())
+	if (::yunjiantest::Failures() > 0 && !error.empty())
 		std::cout << "最后一个错误: " << error << "\n";
-	return XIGU_TEST_SUMMARY();
+	return YUNJIAN_TEST_SUMMARY();
 }
